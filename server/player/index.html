@@ -108,7 +108,12 @@
     let streamTimer = null;
     let layout = null;
     let zones = {};
-    let userHasInteracted = !!localStorage.getItem('rd_audio_unlocked');
+    // Tracks whether the user has gestured in *this* page load. Browser autoplay
+    // policy is per-document — a flag from a previous session does NOT grant
+    // autoplay rights here, so we always start as false. The cold-load tap overlay
+    // is the only thing that flips this to true (or its 5s timeout, which keeps
+    // playback muted).
+    let userHasInteracted = false;
     let advanceTimer = null;
     // YouTube player state. Declared up front because the cached-playlist restore
     // (a few lines below) may synchronously call into createYoutubeEmbed before the
@@ -123,7 +128,6 @@
     ['click', 'touchstart', 'keydown'].forEach(evt => {
       document.addEventListener(evt, () => {
         userHasInteracted = true;
-        localStorage.setItem('rd_audio_unlocked', '1');
         // Try to unmute any playing HTML5 video
         const video = document.querySelector('#playerContainer video');
         if (video && video.muted) {
@@ -229,7 +233,6 @@
     // Unlock audio on any user interaction
     function unlockAudio() {
       userHasInteracted = true;
-      localStorage.setItem('rd_audio_unlocked', '1');
       // Create and resume AudioContext (unlocks audio for the session)
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -241,8 +244,15 @@
         src.connect(ctx.destination);
         src.start(0);
       } catch(e) { console.warn('Audio unlock failed:', e); }
-      // Unmute any playing video
+      // Unmute any playing HTML5 video
       document.querySelectorAll('video').forEach(v => { v.muted = false; });
+      // Unmute the active YouTube embed (iframe — querySelectorAll('video') misses it)
+      try {
+        if (activeYtPlayer && typeof activeYtPlayer.unMute === 'function') {
+          activeYtPlayer.unMute();
+          activeYtPlayer.setVolume(100);
+        }
+      } catch (e) { console.warn('YT unmute failed:', e); }
     }
 
     document.getElementById('connectBtn').onclick = () => {
