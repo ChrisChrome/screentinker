@@ -139,16 +139,24 @@
     ['click', 'touchstart', 'keydown'].forEach(evt => {
       document.addEventListener(evt, () => {
         userHasInteracted = true;
-        // Try to unmute any playing HTML5 video
+        // HTML5 video: setting muted=false on a video that's been muted-autoplaying
+        // causes the browser to pause it as a side effect. We have a real user
+        // gesture here, so play() should succeed — but if it doesn't, fall back to
+        // muted playback rather than leaving a black/paused screen.
         const video = document.querySelector('#playerContainer video');
         if (video && video.muted) {
           video.muted = false;
-          video.play().catch(() => {});
-          console.log('Unmuted video after user interaction');
+          video.play()
+            .then(() => console.log('Unmuted video after user interaction'))
+            .catch(err => {
+              console.warn('Unmuted play() rejected, falling back to muted:', err?.message || err);
+              video.muted = true;
+              video.play().catch(e => console.warn('Muted fallback play() failed:', e?.message || e));
+            });
         }
         // Unmute YouTube player if active
         if (activeYtPlayer && typeof activeYtPlayer.unMute === 'function') {
-          try { activeYtPlayer.unMute(); console.log('Unmuted YouTube player'); } catch {}
+          try { activeYtPlayer.unMute(); activeYtPlayer.setVolume(100); console.log('Unmuted YouTube player'); } catch {}
         }
       }, { once: false });
     });
