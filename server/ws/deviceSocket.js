@@ -118,6 +118,19 @@ module.exports = function setupDeviceSocket(io) {
   const deviceNs = io.of('/device');
   const dashboardNs = io.of('/dashboard');
 
+  // Disconnect any existing socket that is currently registered for this device_id.
+  // Called when a fresh registration comes in for the same device so the old (likely
+  // half-dead) socket can't fire its disconnect handler and clobber the new entry.
+  function evictPriorSocket(deviceId, exceptSocketId) {
+    const prior = heartbeat.getConnection(deviceId);
+    if (!prior || prior.socketId === exceptSocketId) return;
+    const oldSocket = deviceNs.sockets.get(prior.socketId);
+    if (oldSocket) {
+      console.log(`Evicting prior socket ${prior.socketId} for device ${deviceId}`);
+      try { oldSocket.disconnect(true); } catch (_) {}
+    }
+  }
+
   deviceNs.on('connection', (socket) => {
     console.log(`Device socket connected: ${socket.id}`);
     let currentDeviceId = null;
@@ -145,6 +158,7 @@ module.exports = function setupDeviceSocket(io) {
                 db.prepare('UPDATE devices SET device_token = ? WHERE id = ?').run(newToken, existing.device_id);
                 console.log(`Fingerprint match: linking reinstalled app to existing device ${existing.device_id} (new token issued)`);
                 authenticated = true;
+                evictPriorSocket(existing.device_id, socket.id);
                 db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
                   .run(getClientIp(socket), existing.device_id);
                 socket.emit('device:registered', { device_id: existing.device_id, device_token: newToken, status: 'online' });
@@ -189,6 +203,7 @@ module.exports = function setupDeviceSocket(io) {
 
           currentDeviceId = device_id;
           authenticated = true;
+          evictPriorSocket(device_id, socket.id);
           db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
             .run(getClientIp(socket), device_id);
 
@@ -384,6 +399,15 @@ module.exports = function setupDeviceSocket(io) {
 
     socket.on('disconnect', () => {
       if (currentDeviceId) {
+        // If a newer socket has already taken over this device_id, this is a stale
+        // disconnect from a replaced socket — skip the offline transition so we don't
+        // flip an actively-connected device offline or clobber the new heartbeat entry.
+        const activeConn = heartbeat.getConnection(currentDeviceId);
+        if (activeConn && activeConn.socketId !== socket.id) {
+          console.log(`Stale disconnect for ${currentDeviceId} (socket ${socket.id}); active is ${activeConn.socketId}, skipping offline`);
+          return;
+        }
+
         console.log(`Device disconnected: ${currentDeviceId}`);
         db.prepare("UPDATE devices SET status = 'offline', updated_at = strftime('%s','now') WHERE id = ?")
           .run(currentDeviceId);

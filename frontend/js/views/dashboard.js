@@ -246,7 +246,6 @@ export function render(container) {
   };
 
   screenshotHandler = (data) => {
-    // Update all instances of this device's preview (may appear in multiple groups)
     document.querySelectorAll(`#preview-${data.device_id}`).forEach(preview => {
       const imgSrc = data.image_data || (data.url + '&token=' + localStorage.getItem('token'));
       const img = preview.querySelector('img');
@@ -286,7 +285,13 @@ async function loadDashboard() {
   if (!main) return;
 
   try {
-    const [devices, groups, playlists] = await Promise.all([api.getDevices(), api.getGroups(), api.getPlaylists()]);
+    const [rawDevices, groups, playlists] = await Promise.all([api.getDevices(), api.getGroups(), api.getPlaylists()]);
+
+    // Deduplicate devices by id — a stale reconnect race can briefly cause the same
+    // device to appear twice in the list. Last-write-wins keeps the freshest state.
+    const seen = new Map();
+    for (const d of rawDevices) seen.set(d.id, d);
+    const devices = Array.from(seen.values());
 
     // Stats
     const online = devices.filter(d => d.status === 'online').length;
@@ -339,10 +344,17 @@ async function loadDashboard() {
       return { ...g, devices: fullDevices, memberIds };
     }));
 
-    // Find ungrouped devices
-    const allGroupedIds = new Set();
-    groupsWithDevices.forEach(g => g.memberIds.forEach(id => allGroupedIds.add(id)));
-    const ungrouped = devices.filter(d => !allGroupedIds.has(d.id));
+    // Render each device exactly once: the first group it belongs to wins.
+    // memberIds is preserved for the Manage modal so multi-group membership info stays accurate.
+    const renderedIds = new Set();
+    for (const g of groupsWithDevices) {
+      g.devices = g.devices.filter(d => {
+        if (renderedIds.has(d.id)) return false;
+        renderedIds.add(d.id);
+        return true;
+      });
+    }
+    const ungrouped = devices.filter(d => !renderedIds.has(d.id));
 
     let html = '';
 
