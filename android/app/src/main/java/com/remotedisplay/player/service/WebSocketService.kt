@@ -69,7 +69,7 @@ class WebSocketService : Service() {
     // (or a transient state error during disconnect) used to surface as an unhandled
     // exception on the Socket.IO IO thread and crash the whole app.
     private fun Socket.safeOn(event: String, handler: (Array<Any?>) -> Unit): Socket {
-        return on(event) { args ->
+        on(event) { args ->
             try {
                 @Suppress("UNCHECKED_CAST")
                 handler(args as Array<Any?>)
@@ -77,6 +77,7 @@ class WebSocketService : Service() {
                 Log.e("WebSocketService", "Listener for '$event' failed: ${e.message}", e)
             }
         }
+        return this
     }
 
     fun connect(serverUrl: String? = null) {
