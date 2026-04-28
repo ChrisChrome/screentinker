@@ -65,6 +65,20 @@ class WebSocketService : Service() {
         return START_STICKY
     }
 
+    // Wrap every Socket.IO listener body in try/catch. A malformed payload from the server
+    // (or a transient state error during disconnect) used to surface as an unhandled
+    // exception on the Socket.IO IO thread and crash the whole app.
+    private fun Socket.safeOn(event: String, handler: (Array<Any?>) -> Unit): Socket {
+        return on(event) { args ->
+            try {
+                @Suppress("UNCHECKED_CAST")
+                handler(args as Array<Any?>)
+            } catch (e: Throwable) {
+                Log.e("WebSocketService", "Listener for '$event' failed: ${e.message}", e)
+            }
+        }
+    }
+
     fun connect(serverUrl: String? = null) {
         val url = serverUrl ?: config.serverUrl
         if (url.isEmpty()) {
@@ -79,189 +93,206 @@ class WebSocketService : Service() {
                 forceNew = true
                 reconnection = true
                 reconnectionAttempts = Integer.MAX_VALUE
-                reconnectionDelay = 2000
-                reconnectionDelayMax = 10000
+                // Exponential backoff: starts at 1s, doubles each attempt, capped at 60s,
+                // ±50% jitter so a fleet doesn't reconnect in lockstep after a server blip.
+                reconnectionDelay = 1000
+                reconnectionDelayMax = 60_000
+                randomizationFactor = 0.5
                 timeout = 20000
             }
 
             socket = IO.socket(URI.create("$url/device"), options).apply {
-                on(Socket.EVENT_CONNECT) {
+                safeOn(Socket.EVENT_CONNECT) {
                     Log.i("WebSocketService", "Connected to server")
                     register()
                 }
 
-                on(Socket.EVENT_DISCONNECT) {
-                    Log.w("WebSocketService", "Disconnected from server")
+                safeOn(Socket.EVENT_DISCONNECT) { args ->
+                    val reason = args.firstOrNull()?.toString() ?: "unknown"
+                    Log.w("WebSocketService", "Disconnected from server: $reason")
+                    // Stop heartbeat while disconnected; player keeps showing cached content.
+                    // Socket.IO will reconnect automatically per the options above.
+                    stopHeartbeat()
                 }
 
-                on(Socket.EVENT_CONNECT_ERROR) { args ->
+                safeOn(Socket.EVENT_CONNECT_ERROR) { args ->
                     Log.e("WebSocketService", "Connection error: ${args.firstOrNull()}")
                 }
 
-                on("device:registered") { args ->
-                    val data = args[0] as JSONObject
-                    val newDeviceId = data.getString("device_id")
+                safeOn("device:registered") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    val newDeviceId = data.optString("device_id", "")
+                    if (newDeviceId.isEmpty()) {
+                        Log.w("WebSocketService", "device:registered missing device_id")
+                        return@safeOn
+                    }
                     config.deviceId = newDeviceId
                     // Persist device_token (issued on first register, or refreshed on reconnect)
                     if (data.has("device_token")) {
-                        config.deviceToken = data.getString("device_token")
+                        config.deviceToken = data.optString("device_token", "")
                     }
                     Log.i("WebSocketService", "Registered as: $newDeviceId")
-                    handler.post { onRegistered?.invoke(newDeviceId) }
+                    handler.post { try { onRegistered?.invoke(newDeviceId) } catch (e: Throwable) { Log.e("WebSocketService", "onRegistered cb: ${e.message}") } }
                     startHeartbeat()
                 }
 
-                on("device:unpaired") {
+                safeOn("device:unpaired") {
                     Log.w("WebSocketService", "Device not found on server - clearing credentials")
                     config.clearDeviceCredentials()
-                    handler.post { onUnpaired?.invoke() }
+                    handler.post { try { onUnpaired?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onUnpaired cb: ${e.message}") } }
                 }
 
-                on("device:auth-error") { args ->
+                safeOn("device:auth-error") { args ->
                     val msg = (args.firstOrNull() as? JSONObject)?.optString("error", "Authentication failed") ?: "Authentication failed"
                     Log.w("WebSocketService", "Device auth rejected: $msg — clearing credentials for re-pair")
                     config.clearDeviceCredentials()
-                    handler.post { onUnpaired?.invoke() }
+                    handler.post { try { onUnpaired?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onUnpaired cb: ${e.message}") } }
                 }
 
-                on("device:paired") { args ->
-                    val data = args[0] as JSONObject
-                    val id = data.getString("device_id")
+                safeOn("device:paired") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    val id = data.optString("device_id", "")
                     val name = data.optString("name", "Display")
                     config.setPaired(true)
                     config.deviceName = name
                     Log.i("WebSocketService", "Paired as: $name")
-                    handler.post { onPaired?.invoke(id, name) }
+                    handler.post { try { onPaired?.invoke(id, name) } catch (e: Throwable) { Log.e("WebSocketService", "onPaired cb: ${e.message}") } }
                 }
 
-                on("device:playlist-update") { args ->
-                    Log.i("WebSocketService", "Playlist raw args: ${args.size} items, type=${args[0]?.javaClass?.name}, data=${args[0]}")
-                    val data = args[0] as JSONObject
-                    Log.i("WebSocketService", "Playlist update received, keys=${data.keys().asSequence().toList()}, assignments=${data.optJSONArray("assignments")?.length() ?: "null"}")
-                    handler.post { onPlaylistUpdate?.invoke(data) }
+                safeOn("device:playlist-update") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: run {
+                        Log.w("WebSocketService", "playlist-update with non-JSONObject payload: ${args.firstOrNull()}")
+                        return@safeOn
+                    }
+                    Log.i("WebSocketService", "Playlist update received, assignments=${data.optJSONArray("assignments")?.length() ?: "null"}")
+                    handler.post { try { onPlaylistUpdate?.invoke(data) } catch (e: Throwable) { Log.e("WebSocketService", "onPlaylistUpdate cb: ${e.message}") } }
                 }
 
-                on("device:content-delete") { args ->
-                    val data = args[0] as JSONObject
-                    val contentId = data.getString("content_id")
-                    handler.post { onContentDelete?.invoke(contentId) }
-                }
-
-                on("device:screenshot-request") {
-                    captureAndSendScreenshot()
-                    handler.post { onScreenshotRequest?.invoke() }
-                }
-
-                on("device:remote-start") {
-                    startScreenshotStream()
-                    handler.post { onRemoteStart?.invoke() }
-                }
-
-                on("device:remote-stop") {
-                    stopScreenshotStream()
-                    handler.post { onRemoteStop?.invoke() }
-                }
-
-                on("device:remote-touch") { args ->
-                    val data = args[0] as JSONObject
-                    val x = data.getDouble("x").toFloat()
-                    val y = data.getDouble("y").toFloat()
-                    val action = data.optString("action", "tap")
-                    // Use AccessibilityService for system-wide touch (works on dialogs too)
-                    val svc = PowerAccessibilityService.instance
-                    if (svc != null && action == "tap") {
-                        handler.post { svc.injectTap(x, y) }
-                    } else {
-                        handler.post { onRemoteTouch?.invoke(x, y, action) }
+                safeOn("device:content-delete") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    val contentId = data.optString("content_id", "")
+                    if (contentId.isNotEmpty()) {
+                        handler.post { try { onContentDelete?.invoke(contentId) } catch (e: Throwable) { Log.e("WebSocketService", "onContentDelete cb: ${e.message}") } }
                     }
                 }
 
-                on("device:remote-key") { args ->
-                    val data = args[0] as JSONObject
-                    val keycode = data.getString("keycode")
-                    // Always inject via shell (works even when app not in foreground)
-                    injectKey(keycode)
-                    handler.post { onRemoteKey?.invoke(keycode) }
+                safeOn("device:screenshot-request") {
+                    captureAndSendScreenshot()
+                    handler.post { try { onScreenshotRequest?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onScreenshotRequest cb: ${e.message}") } }
                 }
 
-                on("device:command") { args ->
-                    val data = args[0] as JSONObject
-                    val type = data.getString("type")
+                safeOn("device:remote-start") {
+                    startScreenshotStream()
+                    handler.post { try { onRemoteStart?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onRemoteStart cb: ${e.message}") } }
+                }
+
+                safeOn("device:remote-stop") {
+                    stopScreenshotStream()
+                    handler.post { try { onRemoteStop?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onRemoteStop cb: ${e.message}") } }
+                }
+
+                safeOn("device:remote-touch") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    val x = data.optDouble("x", 0.0).toFloat()
+                    val y = data.optDouble("y", 0.0).toFloat()
+                    val action = data.optString("action", "tap")
+                    val svc = PowerAccessibilityService.instance
+                    if (svc != null && action == "tap") {
+                        handler.post { try { svc.injectTap(x, y) } catch (e: Throwable) { Log.e("WebSocketService", "injectTap: ${e.message}") } }
+                    } else {
+                        handler.post { try { onRemoteTouch?.invoke(x, y, action) } catch (e: Throwable) { Log.e("WebSocketService", "onRemoteTouch cb: ${e.message}") } }
+                    }
+                }
+
+                safeOn("device:remote-key") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    val keycode = data.optString("keycode", "")
+                    if (keycode.isEmpty()) return@safeOn
+                    injectKey(keycode)
+                    handler.post { try { onRemoteKey?.invoke(keycode) } catch (e: Throwable) { Log.e("WebSocketService", "onRemoteKey cb: ${e.message}") } }
+                }
+
+                safeOn("device:command") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    val type = data.optString("type", "")
+                    if (type.isEmpty()) return@safeOn
                     val payload = data.optJSONObject("payload")
                     Log.i("WebSocketService", "Command received: $type")
 
-                    // Handle system commands directly in the service
                     when (type) {
                         "launch" -> {
                             handler.post {
-                                val intent = Intent(this@WebSocketService, MainActivity::class.java).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                                }
-                                startActivity(intent)
-                                Log.i("WebSocketService", "Launched MainActivity from service")
+                                try {
+                                    val intent = Intent(this@WebSocketService, MainActivity::class.java).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                                    }
+                                    startActivity(intent)
+                                    Log.i("WebSocketService", "Launched MainActivity from service")
+                                } catch (e: Throwable) { Log.e("WebSocketService", "launch cmd: ${e.message}") }
                             }
                         }
                         "settings" -> {
                             handler.post {
-                                val intent = Intent(android.provider.Settings.ACTION_SETTINGS).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                startActivity(intent)
-                                Log.i("WebSocketService", "Opened system settings")
+                                try {
+                                    val intent = Intent(android.provider.Settings.ACTION_SETTINGS).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    startActivity(intent)
+                                } catch (e: Throwable) { Log.e("WebSocketService", "settings cmd: ${e.message}") }
                             }
                         }
                         "enable_system_capture" -> {
-                            // Trigger MediaProjection permission request on device
                             handler.post {
-                                com.remotedisplay.player.ScreenCapturePermissionActivity.requestPermission(this@WebSocketService)
-                                Log.i("WebSocketService", "Requesting system capture permission")
+                                try {
+                                    com.remotedisplay.player.ScreenCapturePermissionActivity.requestPermission(this@WebSocketService)
+                                } catch (e: Throwable) { Log.e("WebSocketService", "enable_system_capture: ${e.message}") }
                             }
                         }
                         "screen_off" -> {
                             val a11y = PowerAccessibilityService.instance
                             if (a11y != null) {
-                                handler.post { a11y.lockScreen() }
+                                handler.post { try { a11y.lockScreen() } catch (e: Throwable) { Log.e("WebSocketService", "lockScreen: ${e.message}") } }
                             } else {
                                 Thread { try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "26")).waitFor() } catch (_: Exception) {} }.start()
                             }
                         }
                         "screen_on" -> {
-                            // WAKEUP keyevent works from shell on most devices
                             Thread { try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "224")).waitFor() } catch (_: Exception) {} }.start()
                         }
-                        else -> handler.post { onCommand?.invoke(type, payload) }
+                        else -> handler.post { try { onCommand?.invoke(type, payload) } catch (e: Throwable) { Log.e("WebSocketService", "onCommand cb: ${e.message}") } }
                     }
                 }
 
                 connect()
             }
-        } catch (e: Exception) {
-            Log.e("WebSocketService", "Socket setup error: ${e.message}")
+        } catch (e: Throwable) {
+            Log.e("WebSocketService", "Socket setup error: ${e.message}", e)
         }
     }
 
     private fun register() {
-        val data = JSONObject().apply {
-            if (config.isProvisioned && config.isPaired) {
-                put("device_id", config.deviceId)
-                // Send device_token for authentication (may be empty for legacy devices)
-                val token = config.deviceToken
-                if (token.isNotEmpty()) {
-                    put("device_token", token)
+        try {
+            val data = JSONObject().apply {
+                if (config.isProvisioned && config.isPaired) {
+                    put("device_id", config.deviceId)
+                    val token = config.deviceToken
+                    if (token.isNotEmpty()) {
+                        put("device_token", token)
+                    }
+                } else {
+                    val pairingCode = (100000..999999).random().toString()
+                    put("pairing_code", pairingCode)
+                    config.deviceId = ""
+                    getSharedPreferences("remote_display", MODE_PRIVATE)
+                        .edit().putString("pairing_code", pairingCode).apply()
                 }
-            } else {
-                // Generate a pairing code if we don't have one
-                val pairingCode = (100000..999999).random().toString()
-                put("pairing_code", pairingCode)
-                config.deviceId = "" // Will be set on registered event
-                // Store pairing code temporarily
-                getSharedPreferences("remote_display", MODE_PRIVATE)
-                    .edit().putString("pairing_code", pairingCode).apply()
+                try { put("device_info", deviceInfo.getDeviceInfo()) } catch (e: Throwable) { Log.w("WebSocketService", "device_info: ${e.message}") }
+                try { put("fingerprint", deviceInfo.getFingerprint()) } catch (e: Throwable) { Log.w("WebSocketService", "fingerprint: ${e.message}") }
             }
-            put("device_info", deviceInfo.getDeviceInfo())
-            put("fingerprint", deviceInfo.getFingerprint())
+            socket?.emit("device:register", data)
+        } catch (e: Throwable) {
+            Log.e("WebSocketService", "register failed: ${e.message}", e)
         }
-        socket?.emit("device:register", data)
     }
 
     fun getPairingCode(): String {
@@ -291,16 +322,17 @@ class WebSocketService : Service() {
     fun requestPlaylistRefresh() {
         if (socket?.connected() != true || config.deviceId.isEmpty()) return
         Log.i("WebSocketService", "Requesting playlist refresh")
-        // Re-register triggers the server to send current playlist
-        val data = org.json.JSONObject().apply {
-            put("device_id", config.deviceId)
-            val token = config.deviceToken
-            if (token.isNotEmpty()) {
-                put("device_token", token)
+        try {
+            val data = org.json.JSONObject().apply {
+                put("device_id", config.deviceId)
+                val token = config.deviceToken
+                if (token.isNotEmpty()) put("device_token", token)
+                try { put("device_info", deviceInfo.getDeviceInfo()) } catch (e: Throwable) { Log.w("WebSocketService", "device_info: ${e.message}") }
             }
-            put("device_info", deviceInfo.getDeviceInfo())
+            socket?.emit("device:register", data)
+        } catch (e: Throwable) {
+            Log.e("WebSocketService", "requestPlaylistRefresh failed: ${e.message}")
         }
-        socket?.emit("device:register", data)
     }
 
     private fun stopHeartbeat() {
@@ -310,11 +342,15 @@ class WebSocketService : Service() {
 
     private fun sendHeartbeat() {
         if (socket?.connected() != true) return
-        val data = JSONObject().apply {
-            put("device_id", config.deviceId)
-            put("telemetry", deviceInfo.getTelemetry())
+        try {
+            val data = JSONObject().apply {
+                put("device_id", config.deviceId)
+                try { put("telemetry", deviceInfo.getTelemetry()) } catch (e: Throwable) { Log.w("WebSocketService", "telemetry: ${e.message}") }
+            }
+            socket?.emit("device:heartbeat", data)
+        } catch (e: Throwable) {
+            Log.e("WebSocketService", "sendHeartbeat failed: ${e.message}")
         }
-        socket?.emit("device:heartbeat", data)
     }
 
     // Screenshot streaming from the service (works even when activity is paused)
@@ -381,11 +417,13 @@ class WebSocketService : Service() {
 
     fun sendScreenshot(imageBase64: String) {
         if (socket?.connected() != true) return
-        val data = JSONObject().apply {
-            put("device_id", config.deviceId)
-            put("image_b64", imageBase64)
-        }
-        socket?.emit("device:screenshot", data)
+        try {
+            val data = JSONObject().apply {
+                put("device_id", config.deviceId)
+                put("image_b64", imageBase64)
+            }
+            socket?.emit("device:screenshot", data)
+        } catch (e: Throwable) { Log.w("WebSocketService", "sendScreenshot: ${e.message}") }
     }
 
     private fun injectKey(keycode: String) {
@@ -440,28 +478,32 @@ class WebSocketService : Service() {
 
     fun sendContentAck(contentId: String, status: String) {
         if (socket?.connected() != true) return
-        val data = JSONObject().apply {
-            put("device_id", config.deviceId)
-            put("content_id", contentId)
-            put("status", status)
-        }
-        socket?.emit("device:content-ack", data)
+        try {
+            val data = JSONObject().apply {
+                put("device_id", config.deviceId)
+                put("content_id", contentId)
+                put("status", status)
+            }
+            socket?.emit("device:content-ack", data)
+        } catch (e: Throwable) { Log.w("WebSocketService", "sendContentAck: ${e.message}") }
     }
 
     fun sendPlaybackState(contentId: String, positionSec: Float) {
         if (socket?.connected() != true) return
-        val data = JSONObject().apply {
-            put("device_id", config.deviceId)
-            put("current_content_id", contentId)
-            put("position_sec", positionSec)
-        }
-        socket?.emit("device:playback-state", data)
+        try {
+            val data = JSONObject().apply {
+                put("device_id", config.deviceId)
+                put("current_content_id", contentId)
+                put("position_sec", positionSec)
+            }
+            socket?.emit("device:playback-state", data)
+        } catch (e: Throwable) { Log.w("WebSocketService", "sendPlaybackState: ${e.message}") }
     }
 
     fun disconnect() {
         stopHeartbeat()
-        socket?.disconnect()
-        socket?.off()
+        try { socket?.disconnect() } catch (e: Throwable) { Log.w("WebSocketService", "disconnect: ${e.message}") }
+        try { socket?.off() } catch (e: Throwable) { Log.w("WebSocketService", "off: ${e.message}") }
         socket = null
     }
 
