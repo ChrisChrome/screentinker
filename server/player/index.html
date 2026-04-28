@@ -110,6 +110,14 @@
     let zones = {};
     let userHasInteracted = !!localStorage.getItem('rd_audio_unlocked');
     let advanceTimer = null;
+    // YouTube player state. Declared up front because the cached-playlist restore
+    // (a few lines below) may synchronously call into createYoutubeEmbed before the
+    // script reaches the original declaration site, which used to throw a temporal
+    // dead zone error.
+    let ytApiReady = false;
+    let ytApiCallbacks = [];
+    let activeYtPlayer = null;
+    let ytGeneration = 0;
 
     // Track user interaction for autoplay policy
     ['click', 'touchstart', 'keydown'].forEach(evt => {
@@ -608,9 +616,8 @@
       } catch { return null; }
     }
 
-    // Load YouTube IFrame API once
-    let ytApiReady = false;
-    let ytApiCallbacks = [];
+    // Load YouTube IFrame API once. (ytApiReady / ytApiCallbacks are declared at the
+    // top of the script alongside the other player state.)
     function loadYoutubeApi(cb) {
       if (ytApiReady) { cb(); return; }
       ytApiCallbacks.push(cb);
@@ -626,9 +633,6 @@
         };
       }
     }
-
-    let activeYtPlayer = null;
-    let ytGeneration = 0; // Incremented on each new YouTube embed to ignore stale callbacks
 
     function createYoutubeEmbed(src, item, container) {
       const videoId = extractVideoId(src);
