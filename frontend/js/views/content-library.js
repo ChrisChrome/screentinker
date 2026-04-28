@@ -246,6 +246,35 @@ async function loadContent() {
         state.currentFolderId = id || null;
         loadContent();
       });
+      // Make breadcrumb segments drop targets too — otherwise the only way to move
+      // a file out of a folder is via the edit modal. Dropping on "All Content"
+      // moves to root; dropping on a parent name moves there.
+      a.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer.types.includes('text/content-id')) return;
+        e.preventDefault();
+        a.style.background = 'var(--primary)';
+        a.style.color = '#fff';
+        a.style.padding = '2px 8px';
+        a.style.borderRadius = '4px';
+      });
+      a.addEventListener('dragleave', () => {
+        a.style.background = '';
+        a.style.color = '';
+        a.style.padding = '';
+        a.style.borderRadius = '';
+      });
+      a.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        a.style.background = ''; a.style.color = ''; a.style.padding = ''; a.style.borderRadius = '';
+        const contentId = e.dataTransfer.getData('text/content-id');
+        if (!contentId) return;
+        const targetFolderId = a.dataset.folderNav || null; // empty string = root
+        try {
+          await api.moveContent(contentId, targetFolderId);
+          showToast(targetFolderId ? 'Moved' : 'Moved to root', 'success');
+          loadContent();
+        } catch (err) { showToast(err.message, 'error'); }
+      });
     });
     const renameBtn = breadcrumb.querySelector('#renameFolderBtn');
     if (renameBtn) renameBtn.onclick = async () => {
