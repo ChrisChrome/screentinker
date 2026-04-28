@@ -152,6 +152,22 @@ module.exports = function setupDeviceSocket(io) {
               // Someone reinstalled - link them back to existing device
               const oldDevice = db.prepare('SELECT * FROM devices WHERE id = ?').get(existing.device_id);
               if (oldDevice) {
+                // Fingerprint reclaim guard: a leaked/duplicated fingerprint shouldn't be enough
+                // to take over a live device. Reject the reclaim if the device is currently
+                // online OR has been online within the last 24h — by then a real reinstall has
+                // had plenty of time to come back, but a credential thief is more likely caught.
+                const liveConn = heartbeat.getConnection(existing.device_id);
+                const RECLAIM_GRACE_SECONDS = 24 * 60 * 60;
+                const lastBeat = oldDevice.last_heartbeat || 0;
+                const secondsSince = Math.floor(Date.now() / 1000) - lastBeat;
+                if (liveConn || (oldDevice.status === 'online') || secondsSince < RECLAIM_GRACE_SECONDS) {
+                  console.warn(`Fingerprint reclaim rejected for ${existing.device_id}: device active (status=${oldDevice.status}, ${secondsSince}s since last heartbeat, liveConn=${!!liveConn})`);
+                  socket.emit('device:auth-error', {
+                    error: 'This display is currently active. If you reinstalled the app, the original device must be offline for 24 hours before its slot can be reclaimed.'
+                  });
+                  return;
+                }
+
                 // Fingerprint matched — this is a reinstalled app reconnecting to its old device.
                 // Issue a fresh token so the app can authenticate going forward.
                 const newToken = generateDeviceToken();

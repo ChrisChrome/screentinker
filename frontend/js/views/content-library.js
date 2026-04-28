@@ -322,7 +322,7 @@ async function loadContent() {
         <div class="content-item-preview">
           ${c.mime_type === 'video/youtube'
             ? `<div style="position:relative;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center">
-                <img src="${c.thumbnail_path}" alt="${c.filename}" loading="lazy" style="width:100%;height:100%;object-fit:cover">
+                <img src="${c.thumbnail_path}" alt="${esc(c.filename)}" loading="lazy" style="width:100%;height:100%;object-fit:cover">
                 <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">
                   <svg width="40" height="40" viewBox="0 0 24 24" fill="red" stroke="none">
                     <path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19.13C5.12 19.56 12 19.56 12 19.56s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.43z"/>
@@ -339,18 +339,18 @@ async function loadContent() {
                 <span style="font-size:10px;color:var(--text-muted)">Remote</span>
               </div>`
             : c.thumbnail_path
-              ? `<img src="/api/content/${c.id}/thumbnail" alt="${c.filename}" loading="lazy">`
+              ? `<img src="/api/content/${c.id}/thumbnail" alt="${esc(c.filename)}" loading="lazy">`
               : c.mime_type?.startsWith('video/')
                 ? `<div class="video-icon">
                     <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                       <polygon points="5 3 19 12 5 21 5 3"/>
                     </svg>
                   </div>`
-                : `<img src="/api/content/${c.id}/file" alt="${c.filename}" loading="lazy">`
+                : `<img src="/api/content/${c.id}/file" alt="${esc(c.filename)}" loading="lazy">`
           }
         </div>
         <div class="content-item-body">
-          <div class="content-item-name" title="${c.filename}">${c.filename}</div>
+          <div class="content-item-name" title="${esc(c.filename)}">${esc(c.filename)}</div>
           <div class="content-item-size">
             ${c.mime_type === 'video/youtube' ? 'YouTube' : c.remote_url ? 'Remote URL' : (c.mime_type?.startsWith('video/') ? 'Video' : 'Image')}
             ${c.duration_sec ? ` &middot; ${Math.floor(c.duration_sec / 60)}:${String(Math.floor(c.duration_sec % 60)).padStart(2, '0')}` : ''}
@@ -469,12 +469,12 @@ function showEditModal(contentItem, onSave) {
       <div class="modal-body">
         <div class="form-group">
           <label>Filename / Display Name</label>
-          <input type="text" id="editFilename" class="input" value="${contentItem.filename}">
+          <input type="text" id="editFilename" class="input" value="${esc(contentItem.filename)}">
         </div>
         ${isRemote ? `
         <div class="form-group">
           <label>Remote URL</label>
-          <input type="text" id="editRemoteUrl" class="input" value="${contentItem.remote_url}">
+          <input type="text" id="editRemoteUrl" class="input" value="${esc(contentItem.remote_url)}">
         </div>
         ` : ''}
         <div class="form-group">
@@ -576,13 +576,13 @@ function showPreview(content) {
         ${isYoutube
           ? `<iframe src="${(() => { try { const u = new URL(src); if (!u.searchParams.has('mute')) u.searchParams.set('mute','1'); if (!u.searchParams.has('enablejsapi')) u.searchParams.set('enablejsapi','1'); if (!u.searchParams.has('origin')) u.searchParams.set('origin', window.location.origin); return u.toString(); } catch { return src; } })()}" style="width:80vw;height:45vw;max-height:80vh;display:block;border:none" allow="autoplay;encrypted-media" allowfullscreen></iframe>`
           : isVideo
-            ? `<video src="${src}" controls autoplay style="max-width:80vw;max-height:80vh;display:block"></video>`
-            : `<img src="${src}" style="max-width:80vw;max-height:80vh;display:block">`
+            ? `<video src="${esc(src)}" controls autoplay style="max-width:80vw;max-height:80vh;display:block"></video>`
+            : `<img src="${esc(src)}" style="max-width:80vw;max-height:80vh;display:block">`
         }
       </div>
       <div style="padding:12px 16px;border-top:1px solid var(--border)">
-        <div style="font-weight:500">${content.filename}</div>
-        <div style="font-size:12px;color:var(--text-muted)">${content.mime_type} ${content.remote_url ? '(Remote URL)' : ''}</div>
+        <div style="font-weight:500">${esc(content.filename)}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${esc(content.mime_type)} ${content.remote_url ? '(Remote URL)' : ''}</div>
       </div>
     </div>
   `;

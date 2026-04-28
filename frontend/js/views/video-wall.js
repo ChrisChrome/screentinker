@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
+import { esc } from '../utils.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
 
@@ -98,7 +99,7 @@ async function renderWallEditor(container, wallId) {
         <h3 style="font-size:14px;margin:24px 0 12px">Content</h3>
         <select id="wallContent" class="input" style="width:300px;background:var(--bg-input)">
           <option value="">No content</option>
-          ${content.filter(c => c.mime_type?.startsWith('video/')).map(c => `<option value="${c.id}" ${c.id === wall.content_id ? 'selected' : ''}>${c.filename}</option>`).join('')}
+          ${content.filter(c => c.mime_type?.startsWith('video/')).map(c => `<option value="${c.id}" ${c.id === wall.content_id ? 'selected' : ''}>${esc(c.filename)}</option>`).join('')}
         </select>
         <button class="btn btn-primary btn-sm" id="setContentBtn" style="margin-left:8px">Set Content</button>
       </div>

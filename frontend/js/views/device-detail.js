@@ -319,7 +319,7 @@ async function loadDevice(deviceId, activeTab = null) {
           </div>
           <div class="form-group">
             <label>Notes</label>
-            <textarea id="deviceNotes" class="input" rows="3" placeholder="Location, setup details, etc." style="resize:vertical">${device.notes || ''}</textarea>
+            <textarea id="deviceNotes" class="input" rows="3" placeholder="Location, setup details, etc." style="resize:vertical">${esc(device.notes || '')}</textarea>
           </div>
           <button class="btn btn-secondary btn-sm" id="saveNotesBtn">Save Settings</button>
         </div>
@@ -493,7 +493,7 @@ function renderPlaylist(assignments) {
             </div>`
       }
       <div class="playlist-item-info">
-        <div class="playlist-item-name">${a.filename || a.widget_name || 'Unknown'}</div>
+        <div class="playlist-item-name">${esc(a.filename || a.widget_name || 'Unknown')}</div>
         <div class="playlist-item-meta">
           ${a.widget_id && !a.content_id ? `Widget (${a.widget_type || 'custom'})` : a.mime_type === 'video/youtube' ? 'YouTube' : a.mime_type?.startsWith('video/') ? 'Video' : 'Image'}
           ${a.zone_id ? ` &middot; <span style="color:var(--accent)">Zone: ${a.zone_id.slice(0,8)}</span>` : ''}
@@ -934,7 +934,7 @@ async function setupPlaylistActions(device) {
                           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                         </div>`
                   }
-                  <div class="assign-content-item-name">${c.filename}</div>
+                  <div class="assign-content-item-name">${esc(c.filename)}</div>
                 </div>
               `).join('') || '<p style="color:var(--text-muted);padding:16px;text-align:center">No media uploaded yet</p>'}
             </div>

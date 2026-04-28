@@ -140,7 +140,8 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(req.params.id);
   if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
-  if (!['admin','superadmin'].includes(req.user.role) && schedule.user_id !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+  const isAdmin = ['admin','superadmin'].includes(req.user.role);
+  if (!isAdmin && schedule.user_id !== req.user.id) return res.status(403).json({ error: 'Access denied' });
 
   // If changing target, enforce mutual exclusion
   const newDeviceId = req.body.device_id !== undefined ? req.body.device_id : schedule.device_id;
@@ -152,13 +153,28 @@ router.put('/:id', (req, res) => {
     return res.status(400).json({ error: 'Either device_id or group_id is required' });
   }
 
-  // Ownership check if changing to a new group
-  if (req.body.group_id && req.body.group_id !== schedule.group_id) {
-    const group = db.prepare('SELECT user_id FROM device_groups WHERE id = ?').get(req.body.group_id);
-    if (!group) return res.status(404).json({ error: 'Group not found' });
-    if (!['admin','superadmin'].includes(req.user.role) && group.user_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
+  // Re-verify ownership on every target field that is changing. Without this, a user
+  // could create a schedule on their own device and then PUT in another user's
+  // device_id / content_id / playlist_id to fire arbitrary content on victim devices.
+  function verifyOwnership(table, id) {
+    if (!id) return null;
+    const row = db.prepare(`SELECT user_id FROM ${table} WHERE id = ?`).get(id);
+    if (!row) return { status: 404, error: `${table.replace(/_/g, ' ').slice(0, -1)} not found` };
+    if (!isAdmin && row.user_id !== req.user.id) return { status: 403, error: 'Access denied' };
+    return null;
+  }
+  const ownershipChecks = [
+    ['devices',       req.body.device_id,   schedule.device_id],
+    ['device_groups', req.body.group_id,    schedule.group_id],
+    ['content',       req.body.content_id,  schedule.content_id],
+    ['widgets',       req.body.widget_id,   schedule.widget_id],
+    ['layouts',       req.body.layout_id,   schedule.layout_id],
+    ['playlists',     req.body.playlist_id, schedule.playlist_id],
+  ];
+  for (const [table, newVal, oldVal] of ownershipChecks) {
+    if (newVal === undefined || newVal === oldVal || !newVal) continue;
+    const err = verifyOwnership(table, newVal);
+    if (err) return res.status(err.status).json({ error: err.error });
   }
 
   const fields = ['device_id', 'group_id', 'zone_id', 'content_id', 'widget_id', 'layout_id', 'playlist_id', 'title',

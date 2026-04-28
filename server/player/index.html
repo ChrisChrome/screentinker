@@ -946,20 +946,24 @@
     infoDiv.onclick = () => { infoDiv.style.display = 'none'; };
     document.body.appendChild(infoDiv);
 
+    // Escape user-controllable values before injecting into innerHTML — filenames,
+    // device names, and server URLs are stored on the server and could contain HTML.
+    const escHtml = (s) => s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
     // Update info overlay content periodically
     setInterval(() => {
       const el = document.getElementById('infoContent');
       if (!el) return;
       const item = playlist[currentIndex];
       el.innerHTML = `
-        Device ID: ${config.deviceId?.slice(0, 8) || 'N/A'}...<br>
-        Device Name: ${config.deviceName || 'N/A'}<br>
-        Server: ${config.serverUrl || 'N/A'}<br>
+        Device ID: ${escHtml(config.deviceId?.slice(0, 8) || 'N/A')}...<br>
+        Device Name: ${escHtml(config.deviceName || 'N/A')}<br>
+        Server: ${escHtml(config.serverUrl || 'N/A')}<br>
         Status: ${socket?.connected ? '<span style="color:#22c55e">Connected</span>' : '<span style="color:#ef4444">Disconnected</span>'}<br>
-        Now Playing: ${item?.filename || 'Nothing'} (${currentIndex + 1}/${playlist.length})<br>
+        Now Playing: ${escHtml(item?.filename || 'Nothing')} (${currentIndex + 1}/${playlist.length})<br>
         Resolution: ${screen.width}x${screen.height}<br>
         Uptime: ${Math.floor(performance.now() / 60000)}m<br>
-        Platform: ${navigator.platform}<br>
+        Platform: ${escHtml(navigator.platform)}<br>
         Cache: Service Worker ${navigator.serviceWorker?.controller ? '<span style="color:#22c55e">Active</span>' : 'Inactive'}
       `;
     }, 2000);

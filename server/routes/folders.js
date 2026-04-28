@@ -5,15 +5,25 @@ const { db } = require('../db/database');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Per-user folder cap. The route has no rate limit (multer doesn't go through the
+// global API limiter chain), so without a count cap a single account could insert
+// millions of rows. 100 is a generous ceiling for a real organisational hierarchy
+// — admins/superadmins are exempt because they may manage cross-user data.
+const MAX_FOLDERS_PER_USER = 100;
+
 // Verify a folder belongs to the current user (or null = root, also allowed).
 // Returns the row, or null if it exists but isn't owned by the user.
+//
+// Only superadmin gets cross-user access — matching the GET /api/folders listing
+// (which has always been superadmin-only). The previous mismatch let a regular
+// "admin" mutate folders they couldn't see, so the inconsistency was exploitable.
 function ownedFolder(req, folderId) {
   if (!folderId) return { id: null };
   if (!UUID_RE.test(folderId)) return null;
   const row = db.prepare('SELECT * FROM content_folders WHERE id = ?').get(folderId);
   if (!row) return null;
-  const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
-  if (!isAdmin && row.user_id !== req.user.id) return null;
+  const isSuperadmin = req.user.role === 'superadmin';
+  if (!isSuperadmin && row.user_id !== req.user.id) return null;
   return row;
 }
 
@@ -32,6 +42,16 @@ router.post('/', (req, res) => {
   const name = (req.body.name || '').trim();
   if (!name) return res.status(400).json({ error: 'name is required' });
   if (name.length > 100) return res.status(400).json({ error: 'name too long' });
+
+  const isSuperadmin = req.user.role === 'superadmin';
+  if (!isSuperadmin) {
+    const { count } = db.prepare('SELECT COUNT(*) AS count FROM content_folders WHERE user_id = ?').get(req.user.id);
+    if (count >= MAX_FOLDERS_PER_USER) {
+      return res.status(429).json({
+        error: `Folder limit reached (${MAX_FOLDERS_PER_USER}). Delete unused folders before creating more.`
+      });
+    }
+  }
 
   const parentId = req.body.parent_id || null;
   if (parentId) {

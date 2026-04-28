@@ -134,14 +134,14 @@ router.get('/:id/render', (req, res) => {
       });
     });
 
-    // Idle screen after ${config.idleTimeout || 60} seconds of no interaction
+    // Idle screen after ${safeNumber(config.idleTimeout, 60)} seconds of no interaction
     let idleTimer;
     function resetIdleTimer() {
       document.getElementById('idleOverlay').style.display = 'none';
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
         document.getElementById('idleOverlay').style.display = 'flex';
-      }, ${(config.idleTimeout || 60) * 1000});
+      }, ${safeNumber(config.idleTimeout, 60) * 1000});
     }
     document.getElementById('idleOverlay').addEventListener('click', resetIdleTimer);
     ['touchstart', 'click', 'mousemove'].forEach(e => document.addEventListener(e, resetIdleTimer));

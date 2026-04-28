@@ -163,18 +163,35 @@ function checkTeamAccess(req, res) {
   return true;
 }
 
-// Assign device to team
+// Assign device to team. The caller must own the device (or be an admin) — without
+// this check, any team member could pull any device into their team by guessing the
+// UUID and then read/control it via the team-membership grants in routes/devices.js.
 router.post('/:id/devices', (req, res) => {
   if (!checkTeamAccess(req, res)) return;
   const { device_id } = req.body;
   if (!device_id) return res.status(400).json({ error: 'device_id required' });
+
+  const device = db.prepare('SELECT user_id FROM devices WHERE id = ?').get(device_id);
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+  const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
+  if (!isAdmin && device.user_id !== req.user.id) {
+    return res.status(403).json({ error: 'You do not own this device' });
+  }
+
   db.prepare('UPDATE devices SET team_id = ? WHERE id = ?').run(req.params.id, device_id);
   res.json({ success: true });
 });
 
-// Remove device from team
+// Remove device from team. Only the device owner (or an admin) can detach a device
+// from a team — otherwise a team member could orphan another user's device.
 router.delete('/:id/devices/:deviceId', (req, res) => {
   if (!checkTeamAccess(req, res)) return;
+  const device = db.prepare('SELECT user_id FROM devices WHERE id = ?').get(req.params.deviceId);
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+  const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
+  if (!isAdmin && device.user_id !== req.user.id) {
+    return res.status(403).json({ error: 'You do not own this device' });
+  }
   db.prepare('UPDATE devices SET team_id = NULL WHERE id = ? AND team_id = ?').run(req.params.deviceId, req.params.id);
   res.json({ success: true });
 });

@@ -7,6 +7,37 @@ const { db } = require('../db/database');
 const upload = require('../middleware/upload');
 const config = require('../config');
 const { checkStorageLimit, checkRemoteUrl } = require('../middleware/subscription');
+const { sanitizeString } = require('../middleware/sanitize');
+
+// Multer captures file.originalname directly from the multipart filename header,
+// bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
+// `"><img src=x onerror=alert(1)>.jpg` is stored as `&quot;&gt;&lt;img...` and
+// renders as text in every UI sink. Umlauts, spaces, dots, and other unicode are
+// preserved — sanitizeString only touches `& < > " '`.
+function safeFilename(name) {
+  return sanitizeString(name || '');
+}
+
+// SSRF gate for remote_url. Returns null if valid, else { status, error }.
+// Used by both POST /remote and PUT /:id so a user can't bypass the check by
+// uploading a benign URL and then PUT-updating it to file:///etc/passwd.
+function validateRemoteUrl(url) {
+  let parsed;
+  try { parsed = new URL(url); }
+  catch { return { status: 400, error: 'Invalid URL format' }; }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    return { status: 400, error: 'URL must use http or https' };
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const isPrivate = hostname === 'localhost' || hostname === '0.0.0.0' ||
+    hostname.startsWith('127.') || hostname.startsWith('10.') ||
+    hostname.startsWith('192.168.') || hostname.startsWith('169.254.') ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname) ||
+    hostname.startsWith('fc') || hostname.startsWith('fd') || hostname === '::1' ||
+    hostname.endsWith('.local') || hostname.endsWith('.internal');
+  if (isPrivate) return { status: 400, error: 'Internal URLs are not allowed' };
+  return null;
+}
 
 // List content for current user (admins see all).
 // folder_id filter: omit for everything; "root" or "" for root-level only; <uuid> for that folder.
@@ -96,7 +127,7 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
     db.prepare(`
       INSERT INTO content (id, user_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, req.user.id, req.file.originalname, filepath, req.file.mimetype, req.file.size, durationSec, thumbnailPath, width, height);
+    `).run(id, req.user.id, safeFilename(req.file.originalname), filepath, req.file.mimetype, req.file.size, durationSec, thumbnailPath, width, height);
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
@@ -111,26 +142,8 @@ router.post('/remote', checkRemoteUrl, (req, res) => {
   try {
     const { url, name, mime_type } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
-    // Validate URL format
-    try {
-      const parsed = new URL(url);
-      if (!['http:', 'https:'].includes(parsed.protocol)) {
-        return res.status(400).json({ error: 'URL must use http or https' });
-      }
-      // Block private/internal IPs (SSRF protection)
-      const hostname = parsed.hostname.toLowerCase();
-      const isPrivate = hostname === 'localhost' || hostname === '0.0.0.0' ||
-        hostname.startsWith('127.') || hostname.startsWith('10.') ||
-        hostname.startsWith('192.168.') || hostname.startsWith('169.254.') ||
-        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname) || // 172.16.0.0 - 172.31.255.255
-        hostname.startsWith('fc') || hostname.startsWith('fd') || hostname === '::1' || // IPv6 private
-        hostname.endsWith('.local') || hostname.endsWith('.internal');
-      if (isPrivate) {
-        return res.status(400).json({ error: 'Internal URLs are not allowed' });
-      }
-    } catch {
-      return res.status(400).json({ error: 'Invalid URL format' });
-    }
+    const urlErr = validateRemoteUrl(url);
+    if (urlErr) return res.status(urlErr.status).json({ error: urlErr.error });
 
     const id = uuidv4();
     const filename = name || url.split('/').pop()?.split('?')[0] || 'remote_content';
@@ -139,7 +152,7 @@ router.post('/remote', checkRemoteUrl, (req, res) => {
     db.prepare(`
       INSERT INTO content (id, user_id, filename, filepath, mime_type, file_size, remote_url)
       VALUES (?, ?, ?, '', ?, 0, ?)
-    `).run(id, req.user.id, filename, mimeType, url);
+    `).run(id, req.user.id, safeFilename(filename), mimeType, url);
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
@@ -179,7 +192,7 @@ router.post('/youtube', async (req, res) => {
     db.prepare(`
       INSERT INTO content (id, user_id, filename, filepath, mime_type, file_size, remote_url, thumbnail_path)
       VALUES (?, ?, ?, '', 'video/youtube', 0, ?, ?)
-    `).run(id, req.user.id, filename, embedUrl, thumbnailUrl);
+    `).run(id, req.user.id, safeFilename(filename), embedUrl, thumbnailUrl);
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
@@ -226,18 +239,26 @@ router.put('/:id', (req, res) => {
   const { filename, mime_type, remote_url, folder, folder_id } = req.body;
   const updates = [];
   const values = [];
-  if (filename !== undefined) { updates.push('filename = ?'); values.push(filename); }
+  if (filename !== undefined) { updates.push('filename = ?'); values.push(safeFilename(filename)); }
   if (mime_type !== undefined) { updates.push('mime_type = ?'); values.push(mime_type); }
-  if (remote_url !== undefined) { updates.push('remote_url = ?'); values.push(remote_url || null); }
+  if (remote_url !== undefined) {
+    if (remote_url) {
+      const urlErr = validateRemoteUrl(remote_url);
+      if (urlErr) return res.status(urlErr.status).json({ error: urlErr.error });
+    }
+    updates.push('remote_url = ?');
+    values.push(remote_url || null);
+  }
   if (folder !== undefined) { updates.push('folder = ?'); values.push(folder || null); }
   if (folder_id !== undefined) {
-    // Verify the destination folder belongs to the same user (admins can move anywhere).
-    let target = null;
+    // Verify the destination folder belongs to the same user. Only superadmin gets
+    // cross-user access — matches the policy in routes/folders.js so a plain "admin"
+    // can't move content into a folder they can't see in GET /api/folders.
     if (folder_id) {
-      target = db.prepare('SELECT user_id FROM content_folders WHERE id = ?').get(folder_id);
+      const target = db.prepare('SELECT user_id FROM content_folders WHERE id = ?').get(folder_id);
       if (!target) return res.status(400).json({ error: 'Invalid folder_id' });
-      const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
-      if (!isAdmin && target.user_id !== req.user.id) {
+      const isSuperadmin = req.user.role === 'superadmin';
+      if (!isSuperadmin && target.user_id !== req.user.id) {
         return res.status(403).json({ error: 'Cannot move content to another user\'s folder' });
       }
     }

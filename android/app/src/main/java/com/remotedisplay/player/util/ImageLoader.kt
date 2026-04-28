@@ -44,6 +44,14 @@ object ImageLoader {
     }
 
     fun decodeUrl(url: String, maxW: Int, maxH: Int): Bitmap? {
+        // Reject anything that isn't HTTP/HTTPS. URL.openConnection() otherwise
+        // happily handles file://, jar:, ftp:, etc. — which would let a server-supplied
+        // remote_url read local files off the device or talk to internal services.
+        val scheme = try { URL(url).protocol?.lowercase() } catch (_: Throwable) { null }
+        if (scheme != "http" && scheme != "https") {
+            Log.w(TAG, "Rejecting non-http(s) URL scheme: $scheme")
+            return null
+        }
         return try {
             val bytes = URL(url).openConnection().apply {
                 connectTimeout = 10_000
