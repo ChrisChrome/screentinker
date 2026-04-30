@@ -281,8 +281,9 @@ export async function render(container) {
   });
 
   document.getElementById('langSelect')?.addEventListener('change', (e) => {
+    // setLanguage dispatches hashchange so the router re-renders the current
+    // view (including this settings page) with new strings — no refresh needed.
     setLanguage(e.target.value);
-    showToast('Language changed. Refresh for full effect.', 'info');
   });
 
   document.getElementById('saveAcctBtn')?.addEventListener('click', async () => {

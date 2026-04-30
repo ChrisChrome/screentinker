@@ -19,10 +19,40 @@ import * as admin from './views/admin.js';
 import * as designer from './views/designer.js';
 import * as playlists from './views/playlists.js';
 import { applyBranding } from './branding.js';
+import { t } from './i18n.js';
 
 const app = document.getElementById('app');
 const sidebar = document.querySelector('.sidebar');
 let currentView = null;
+
+// Map nav-link data-view to its translation key.
+const NAV_LABEL_KEYS = {
+  dashboard: 'nav.displays',
+  content: 'nav.content',
+  playlists: 'nav.playlists',
+  layouts: 'nav.layouts',
+  widgets: 'nav.widgets',
+  schedule: 'nav.schedule',
+  walls: 'nav.walls',
+  reports: 'nav.reports',
+  kiosk: 'nav.kiosk',
+  designer: 'nav.designer',
+  activity: 'nav.activity',
+  teams: 'nav.teams',
+  help: 'nav.help',
+  settings: 'nav.settings',
+  billing: 'nav.subscription',
+  admin: 'nav.admin',
+};
+
+function renderNavLabels() {
+  document.querySelectorAll('.nav-link').forEach((link) => {
+    const key = NAV_LABEL_KEYS[link.dataset.view];
+    if (!key) return;
+    const span = link.querySelector('span');
+    if (span) span.textContent = t(key);
+  });
+}
 
 function isAuthenticated() {
   return !!localStorage.getItem('token');
@@ -200,7 +230,7 @@ function updateSidebarUser() {
       <div style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${user.name || user.email}</div>
       <div style="font-size:10px;color:var(--text-muted)">${user.role}</div>
     </div>
-    <button id="logoutBtn" class="btn-icon" title="Sign out" style="flex-shrink:0">
+    <button id="logoutBtn" class="btn-icon" title="${t('auth.sign_out')}" style="flex-shrink:0">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
         <polyline points="16 17 21 12 16 7"/>
@@ -218,6 +248,9 @@ function updateSidebarUser() {
 }
 
 // Initialize
+renderNavLabels();
+window.addEventListener('language-changed', renderNavLabels);
+
 if (isAuthenticated()) {
   connectSocket();
   applyBranding();

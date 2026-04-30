@@ -1,4 +1,5 @@
 import { showToast } from '../components/toast.js';
+import { t } from '../i18n.js';
 
 let authConfig = null;
 
@@ -26,34 +27,34 @@ export async function render(container) {
           </svg>
           <h1 style="font-size:24px;font-weight:700;color:var(--accent)">ScreenTinker</h1>
           <p style="color:var(--text-secondary);font-size:13px;margin-top:4px">
-            ${isSetup ? 'Create your admin account to get started' : 'Sign in to manage your displays'}
+            ${isSetup ? t('auth.subtitle_setup') : t('auth.subtitle_signin')}
           </p>
-          ${!isSetup && canRegister ? '<p style="color:var(--warning);font-size:12px;margin-top:8px">New accounts get a 14-day free Pro trial</p>' : ''}
+          ${!isSetup && canRegister ? `<p style="color:var(--warning);font-size:12px;margin-top:8px">${t('auth.trial_notice')}</p>` : ''}
         </div>
 
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px">
           <!-- Local Auth Form -->
           <div id="localAuthForm">
             <div class="form-group">
-              <label>Email</label>
-              <input type="email" id="loginEmail" class="input" placeholder="you@example.com" autocomplete="email">
+              <label>${t('auth.email')}</label>
+              <input type="email" id="loginEmail" class="input" placeholder="${t('auth.placeholder_email')}" autocomplete="email">
             </div>
             <div class="form-group">
-              <label>Password</label>
-              <input type="password" id="loginPassword" class="input" placeholder="••••••••" autocomplete="current-password">
+              <label>${t('auth.password')}</label>
+              <input type="password" id="loginPassword" class="input" placeholder="${t('auth.placeholder_password')}" autocomplete="current-password">
             </div>
             ${isSetup ? `
             <div class="form-group">
-              <label>Name</label>
-              <input type="text" id="loginName" class="input" placeholder="Your name">
+              <label>${t('auth.name')}</label>
+              <input type="text" id="loginName" class="input" placeholder="${t('auth.placeholder_name')}">
             </div>
             ` : ''}
             <button class="btn btn-primary" id="loginBtn" style="width:100%;justify-content:center;padding:10px">
-              ${isSetup ? 'Create Admin Account' : 'Sign In'}
+              ${isSetup ? t('auth.create_admin_account') : t('auth.sign_in')}
             </button>
             ${!isSetup && canRegister ? `
             <button class="btn btn-secondary" id="showRegisterBtn" style="width:100%;justify-content:center;padding:10px;margin-top:8px">
-              Create Account
+              ${t('auth.create_account')}
             </button>
             ` : ''}
           </div>
@@ -61,29 +62,29 @@ export async function render(container) {
           <!-- Register form (hidden by default) -->
           <div id="registerForm" style="display:none">
             <div class="form-group">
-              <label>Name</label>
-              <input type="text" id="regName" class="input" placeholder="Your name">
+              <label>${t('auth.name')}</label>
+              <input type="text" id="regName" class="input" placeholder="${t('auth.placeholder_name')}">
             </div>
             <div class="form-group">
-              <label>Email</label>
-              <input type="email" id="regEmail" class="input" placeholder="you@example.com">
+              <label>${t('auth.email')}</label>
+              <input type="email" id="regEmail" class="input" placeholder="${t('auth.placeholder_email')}">
             </div>
             <div class="form-group">
-              <label>Password</label>
-              <input type="password" id="regPassword" class="input" placeholder="At least 6 characters">
+              <label>${t('auth.password')}</label>
+              <input type="password" id="regPassword" class="input" placeholder="${t('auth.placeholder_register_password')}">
             </div>
             <button class="btn btn-primary" id="registerBtn" style="width:100%;justify-content:center;padding:10px">
-              Create Account
+              ${t('auth.create_account')}
             </button>
             <button class="btn btn-secondary" id="showLoginBtn" style="width:100%;justify-content:center;padding:10px;margin-top:8px">
-              Back to Sign In
+              ${t('auth.back_to_signin')}
             </button>
           </div>
 
           ${config.googleEnabled || config.microsoftEnabled ? `
           <div style="display:flex;align-items:center;gap:12px;margin:20px 0">
             <hr style="flex:1;border-color:var(--border)">
-            <span style="color:var(--text-muted);font-size:12px">OR</span>
+            <span style="color:var(--text-muted);font-size:12px">${t('auth.divider_or')}</span>
             <hr style="flex:1;border-color:var(--border)">
           </div>
           ` : ''}
@@ -97,7 +98,7 @@ export async function render(container) {
                 <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
                 <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
               </svg>
-              Sign in with Google
+              ${t('auth.signin_google')}
             </button>
           </div>
           ` : ''}
@@ -110,25 +111,25 @@ export async function render(container) {
               <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
               <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
             </svg>
-            Sign in with Microsoft
+            ${t('auth.signin_microsoft')}
           </button>
           ` : ''}
         </div>
 
         <!-- Support Access (collapsible) -->
         <details style="margin-top:16px">
-          <summary style="font-size:11px;color:var(--text-muted);cursor:pointer;text-align:center">Support Access</summary>
+          <summary style="font-size:11px;color:var(--text-muted);cursor:pointer;text-align:center">${t('auth.support_access')}</summary>
           <div style="margin-top:8px">
-            <input type="text" id="supportToken" class="input" placeholder="Paste support token" style="font-family:monospace">
-            <button class="btn btn-secondary" id="supportLoginBtn" style="width:100%;justify-content:center;padding:8px;margin-top:6px;font-size:12px">Authenticate with Support Token</button>
+            <input type="text" id="supportToken" class="input" placeholder="${t('auth.support_token_placeholder')}" style="font-family:monospace">
+            <button class="btn btn-secondary" id="supportLoginBtn" style="width:100%;justify-content:center;padding:8px;margin-top:6px;font-size:12px">${t('auth.support_authenticate')}</button>
           </div>
         </details>
 
         <p id="loginError" style="color:var(--danger);font-size:12px;text-align:center;margin-top:12px;display:none"></p>
         <p style="text-align:center;margin-top:16px;font-size:11px;color:var(--text-muted)">
-          <a href="/legal/terms.html" target="_blank" style="color:var(--text-muted);text-decoration:underline">Terms of Service</a>
+          <a href="/legal/terms.html" target="_blank" style="color:var(--text-muted);text-decoration:underline">${t('auth.terms')}</a>
           &nbsp;&middot;&nbsp;
-          <a href="/legal/privacy.html" target="_blank" style="color:var(--text-muted);text-decoration:underline">Privacy Policy</a>
+          <a href="/legal/privacy.html" target="_blank" style="color:var(--text-muted);text-decoration:underline">${t('auth.privacy')}</a>
         </p>
       </div>
     </div>
@@ -147,7 +148,7 @@ function setupHandlers(config, isSetup) {
   // Support token login
   document.getElementById('supportLoginBtn')?.addEventListener('click', async () => {
     const token = document.getElementById('supportToken')?.value.trim();
-    if (!token) { showError('Paste a support token'); return; }
+    if (!token) { showError(t('auth.error_paste_support_token')); return; }
     try {
       const res = await fetch('/api/auth/support', {
         method: 'POST',
@@ -157,7 +158,7 @@ function setupHandlers(config, isSetup) {
       const data = await res.json();
       if (!res.ok) { showError(data.error); return; }
       onAuthSuccess(data);
-    } catch (err) { showError('Support login failed'); }
+    } catch (err) { showError(t('auth.error_support_failed')); }
   });
 
   // Local login/register
@@ -184,7 +185,7 @@ function setupHandlers(config, isSetup) {
   async function doLogin() {
     const email = document.getElementById('loginEmail').value.trim();
     const password = document.getElementById('loginPassword').value;
-    if (!email || !password) { showError('Email and password required'); return; }
+    if (!email || !password) { showError(t('auth.error_email_password_required')); return; }
 
     try {
       const res = await fetch('/api/auth/login', {
@@ -196,7 +197,7 @@ function setupHandlers(config, isSetup) {
       if (!res.ok) { showError(data.error); return; }
       onAuthSuccess(data);
     } catch (err) {
-      showError('Login failed');
+      showError(t('auth.error_login_failed'));
     }
   }
 
@@ -204,8 +205,8 @@ function setupHandlers(config, isSetup) {
     const email = document.getElementById(isFirstUser ? 'loginEmail' : 'regEmail').value.trim();
     const password = document.getElementById(isFirstUser ? 'loginPassword' : 'regPassword').value;
     const name = document.getElementById(isFirstUser ? 'loginName' : 'regName')?.value.trim() || '';
-    if (!email || !password) { showError('Email and password required'); return; }
-    if (password.length < 6) { showError('Password must be at least 6 characters'); return; }
+    if (!email || !password) { showError(t('auth.error_email_password_required')); return; }
+    if (password.length < 6) { showError(t('auth.error_password_min_6')); return; }
 
     try {
       const res = await fetch('/api/auth/register', {
@@ -217,7 +218,7 @@ function setupHandlers(config, isSetup) {
       if (!res.ok) { showError(data.error); return; }
       onAuthSuccess(data);
     } catch (err) {
-      showError('Registration failed');
+      showError(t('auth.error_registration_failed'));
     }
   }
 
@@ -248,7 +249,7 @@ function setupHandlers(config, isSetup) {
         });
         client.requestAccessToken();
       } catch (err) {
-        showError('Google sign-in failed');
+        showError(t('auth.error_google_failed'));
       }
     });
   }
@@ -278,7 +279,7 @@ function setupHandlers(config, isSetup) {
           else showError(data.error);
         }
       } catch (err) {
-        showError('Microsoft sign-in failed');
+        showError(t('auth.error_microsoft_failed'));
       }
     });
   }

@@ -1,147 +1,60 @@
-const translations = {
-  en: {
-    // Nav
-    'nav.displays': 'Displays',
-    'nav.content': 'Content',
-    'nav.layouts': 'Layouts',
-    'nav.widgets': 'Widgets',
-    'nav.schedule': 'Schedule',
-    'nav.walls': 'Video Walls',
-    'nav.reports': 'Reports',
-    'nav.designer': 'Designer',
-    'nav.activity': 'Activity',
-    'nav.settings': 'Settings',
-    'nav.subscription': 'Subscription',
-    // Dashboard
-    'dashboard.title': 'Displays',
-    'dashboard.subtitle': 'Manage your remote displays',
-    'dashboard.add': 'Add Display',
-    'dashboard.search': 'Search displays...',
-    'dashboard.all_status': 'All Status',
-    'dashboard.online': 'Online',
-    'dashboard.offline': 'Offline',
-    'dashboard.no_displays': 'No displays yet',
-    'dashboard.no_displays_desc': 'Install the ScreenTinker app on your TV and pair it using the button above.',
-    // Content
-    'content.title': 'Content Library',
-    'content.subtitle': 'Upload and manage your media files',
-    'content.drop': 'Drop files here or click to upload',
-    'content.remote_url': 'Remote URL',
-    'content.no_content': 'No content yet',
-    // Common
-    'common.save': 'Save',
-    'common.cancel': 'Cancel',
-    'common.delete': 'Delete',
-    'common.edit': 'Edit',
-    'common.loading': 'Loading...',
-    'common.connected': 'Connected',
-    'common.disconnected': 'Disconnected',
-    // Auth
-    'auth.sign_in': 'Sign In',
-    'auth.create_account': 'Create Account',
-    'auth.email': 'Email',
-    'auth.password': 'Password',
-    'auth.name': 'Name',
-    'auth.sign_out': 'Sign out',
-  },
-  es: {
-    'nav.displays': 'Pantallas',
-    'nav.content': 'Contenido',
-    'nav.layouts': 'Diseños',
-    'nav.widgets': 'Widgets',
-    'nav.schedule': 'Horario',
-    'nav.walls': 'Video Walls',
-    'nav.reports': 'Informes',
-    'nav.designer': 'Diseñador',
-    'nav.activity': 'Actividad',
-    'nav.settings': 'Configuración',
-    'nav.subscription': 'Suscripción',
-    'dashboard.title': 'Pantallas',
-    'dashboard.subtitle': 'Administra tus pantallas remotas',
-    'dashboard.add': 'Agregar Pantalla',
-    'dashboard.search': 'Buscar pantallas...',
-    'dashboard.all_status': 'Todos los estados',
-    'dashboard.online': 'En línea',
-    'dashboard.offline': 'Desconectado',
-    'dashboard.no_displays': 'Aún no hay pantallas',
-    'content.title': 'Biblioteca de Contenido',
-    'content.subtitle': 'Sube y administra tus archivos multimedia',
-    'content.drop': 'Arrastra archivos aquí o haz clic para subir',
-    'content.remote_url': 'URL Remota',
-    'common.save': 'Guardar',
-    'common.cancel': 'Cancelar',
-    'common.delete': 'Eliminar',
-    'common.edit': 'Editar',
-    'common.loading': 'Cargando...',
-    'common.connected': 'Conectado',
-    'common.disconnected': 'Desconectado',
-    'auth.sign_in': 'Iniciar Sesión',
-    'auth.create_account': 'Crear Cuenta',
-    'auth.email': 'Correo electrónico',
-    'auth.password': 'Contraseña',
-    'auth.name': 'Nombre',
-    'auth.sign_out': 'Cerrar sesión',
-  },
-  fr: {
-    'nav.displays': 'Écrans',
-    'nav.content': 'Contenu',
-    'nav.layouts': 'Mises en page',
-    'nav.widgets': 'Widgets',
-    'nav.schedule': 'Calendrier',
-    'nav.walls': 'Murs vidéo',
-    'nav.reports': 'Rapports',
-    'nav.designer': 'Concepteur',
-    'nav.activity': 'Activité',
-    'nav.settings': 'Paramètres',
-    'nav.subscription': 'Abonnement',
-    'dashboard.title': 'Écrans',
-    'dashboard.subtitle': 'Gérez vos écrans distants',
-    'dashboard.add': 'Ajouter un écran',
-    'dashboard.search': 'Rechercher des écrans...',
-    'common.save': 'Enregistrer',
-    'common.cancel': 'Annuler',
-    'common.delete': 'Supprimer',
-    'common.loading': 'Chargement...',
-    'auth.sign_in': 'Se connecter',
-    'auth.create_account': 'Créer un compte',
-    'auth.sign_out': 'Se déconnecter',
-  },
-  de: {
-    'nav.displays': 'Bildschirme',
-    'nav.content': 'Inhalt',
-    'nav.layouts': 'Layouts',
-    'nav.widgets': 'Widgets',
-    'nav.schedule': 'Zeitplan',
-    'nav.walls': 'Videowände',
-    'nav.reports': 'Berichte',
-    'nav.designer': 'Designer',
-    'nav.activity': 'Aktivität',
-    'nav.settings': 'Einstellungen',
-    'nav.subscription': 'Abonnement',
-    'dashboard.title': 'Bildschirme',
-    'dashboard.subtitle': 'Verwalten Sie Ihre Remote-Displays',
-    'dashboard.add': 'Bildschirm hinzufügen',
-    'dashboard.search': 'Bildschirme suchen...',
-    'common.save': 'Speichern',
-    'common.cancel': 'Abbrechen',
-    'common.delete': 'Löschen',
-    'common.loading': 'Laden...',
-    'auth.sign_in': 'Anmelden',
-    'auth.create_account': 'Konto erstellen',
-    'auth.sign_out': 'Abmelden',
-  },
-};
+// Lightweight i18n loader. Each language is its own file under ./i18n/ so a
+// translator can edit one file without touching the others. English is the
+// canonical source — every other locale falls back to en for any missing key.
+import en from './i18n/en.js';
+import es from './i18n/es.js';
+import fr from './i18n/fr.js';
+import de from './i18n/de.js';
+import pt from './i18n/pt.js';
+import hi from './i18n/hi.js';
+
+const fallback = en;
+const registry = { en, es, fr, de, pt, hi };
 
 let currentLang = localStorage.getItem('rd_lang') || navigator.language?.split('-')[0] || 'en';
-if (!translations[currentLang]) currentLang = 'en';
+if (!registry[currentLang]) currentLang = 'en';
 
-export function t(key) {
-  return translations[currentLang]?.[key] || translations.en[key] || key;
+function lookup(key) {
+  return registry[currentLang]?.[key] ?? fallback[key] ?? key;
+}
+
+// Replace {name} placeholders in a string with the matching property of vars.
+// Unknown placeholders pass through unchanged so a missing var is visible
+// during development rather than silently dropped.
+function format(s, vars) {
+  if (!vars) return s;
+  return s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
+}
+
+export function t(key, vars) {
+  return format(lookup(key), vars);
+}
+
+// Plural helper: looks up `${keyBase}_one` for n===1 else `${keyBase}_other`,
+// auto-injects `{n}` into vars. Use for any string that varies on a count.
+export function tn(keyBase, n, vars = {}) {
+  const key = keyBase + (n === 1 ? '_one' : '_other');
+  return format(lookup(key), { n, ...vars });
+}
+
+const subscribers = new Set();
+
+// Views and the navbar subscribe so they can rebuild themselves on language
+// change. Also fires a `language-changed` CustomEvent and a hashchange so the
+// existing hash router naturally re-renders the current view.
+export function subscribe(fn) {
+  subscribers.add(fn);
+  return () => subscribers.delete(fn);
 }
 
 export function setLanguage(lang) {
+  if (!registry[lang] || lang === currentLang) return;
   currentLang = lang;
   localStorage.setItem('rd_lang', lang);
+  document.documentElement.setAttribute('lang', lang);
+  subscribers.forEach((fn) => { try { fn(lang); } catch {} });
+  window.dispatchEvent(new CustomEvent('language-changed', { detail: { lang } }));
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
 }
 
 export function getLanguage() {
@@ -154,5 +67,13 @@ export function getAvailableLanguages() {
     { code: 'es', name: 'Español' },
     { code: 'fr', name: 'Français' },
     { code: 'de', name: 'Deutsch' },
+    { code: 'pt', name: 'Português' },
+    { code: 'hi', name: 'हिन्दी' },
   ];
+}
+
+// Apply the persisted language to <html lang=...> on first load so screen
+// readers and CSS :lang() selectors are accurate before any user interaction.
+if (typeof document !== 'undefined') {
+  document.documentElement.setAttribute('lang', currentLang);
 }

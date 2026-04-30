@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { esc } from '../utils.js';
+import { t } from '../i18n.js';
 
 function formatFileSize(bytes) {
   if (!bytes) return '--';
@@ -14,8 +15,8 @@ export function render(container) {
   container.innerHTML = `
     <div class="page-header">
       <div>
-        <h1>Content Library <span class="help-tip" data-tip="Upload videos and images here. Select multiple files for bulk upload. Use Remote URL to stream from external sources. Click a thumbnail to preview.">?</span></h1>
-        <div class="subtitle">Upload and manage your media files</div>
+        <h1>${t('content.title')} <span class="help-tip" data-tip="${t('content.help_tip')}">?</span></h1>
+        <div class="subtitle">${t('content.subtitle')}</div>
       </div>
     </div>
 
@@ -26,14 +27,14 @@ export function render(container) {
           <polyline points="17 8 12 3 7 8"/>
           <line x1="12" y1="3" x2="12" y2="15"/>
         </svg>
-        <p>Drop files here or click to upload</p>
-        <p class="upload-hint">Supports MP4, WebM, AVI, MKV, JPEG, PNG, GIF, WebP</p>
+        <p>${t('content.drop')}</p>
+        <p class="upload-hint">${t('content.upload_hint')}</p>
         <input type="file" id="fileInput" style="display:none" multiple accept="video/*,image/*">
         <div class="upload-progress" id="uploadProgress" style="display:none">
           <div class="upload-progress-bar">
             <div class="upload-progress-fill" id="uploadProgressFill" style="width:0%"></div>
           </div>
-          <p style="font-size:12px;color:var(--text-secondary);margin-top:6px" id="uploadProgressText">Uploading...</p>
+          <p style="font-size:12px;color:var(--text-secondary);margin-top:6px" id="uploadProgressText">${t('content.upload_progress')}</p>
         </div>
       </div>
       <div style="width:320px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;display:flex;flex-direction:column;gap:12px">
@@ -42,18 +43,18 @@ export function render(container) {
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
           </svg>
-          Remote URL
+          ${t('content.remote_url')}
         </div>
-        <p style="font-size:12px;color:var(--text-muted)">Stream directly from a URL. Saves local bandwidth.</p>
-        <input type="text" id="remoteUrlInput" class="input" placeholder="https://example.com/video.mp4">
-        <input type="text" id="remoteNameInput" class="input" placeholder="Display name (optional)">
+        <p style="font-size:12px;color:var(--text-muted)">${t('content.remote_desc')}</p>
+        <input type="text" id="remoteUrlInput" class="input" placeholder="${t('content.remote_url_placeholder')}">
+        <input type="text" id="remoteNameInput" class="input" placeholder="${t('content.remote_name_placeholder')}">
         <select id="remoteMimeType" class="input" style="background:var(--bg-input)">
-          <option value="video/mp4">Video (MP4)</option>
-          <option value="video/webm">Video (WebM)</option>
-          <option value="image/jpeg">Image (JPEG)</option>
-          <option value="image/png">Image (PNG)</option>
+          <option value="video/mp4">${t('content.mime.video_mp4')}</option>
+          <option value="video/webm">${t('content.mime.video_webm')}</option>
+          <option value="image/jpeg">${t('content.mime.image_jpeg')}</option>
+          <option value="image/png">${t('content.mime.image_png')}</option>
         </select>
-        <button class="btn btn-primary" id="addRemoteBtn">Add Remote URL</button>
+        <button class="btn btn-primary" id="addRemoteBtn">${t('content.remote_add_btn')}</button>
       </div>
       <div style="width:320px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;display:flex;flex-direction:column;gap:12px">
         <div style="display:flex;align-items:center;gap:8px;color:var(--text-primary);font-weight:500">
@@ -61,24 +62,24 @@ export function render(container) {
             <path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19.13C5.12 19.56 12 19.56 12 19.56s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.43z"/>
             <polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02"/>
           </svg>
-          YouTube
+          ${t('content.youtube')}
         </div>
-        <p style="font-size:12px;color:var(--text-muted)">Embed a YouTube video on your displays.</p>
-        <input type="text" id="youtubeUrlInput" class="input" placeholder="https://youtube.com/watch?v=...">
-        <input type="text" id="youtubeNameInput" class="input" placeholder="Display name (optional)">
-        <button class="btn btn-primary" id="addYoutubeBtn">Add YouTube Video</button>
+        <p style="font-size:12px;color:var(--text-muted)">${t('content.youtube_desc')}</p>
+        <input type="text" id="youtubeUrlInput" class="input" placeholder="${t('content.youtube_url_placeholder')}">
+        <input type="text" id="youtubeNameInput" class="input" placeholder="${t('content.youtube_name_placeholder')}">
+        <button class="btn btn-primary" id="addYoutubeBtn">${t('content.youtube_add_btn')}</button>
       </div>
     </div>
     </div>
 
     <div style="display:flex;gap:12px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="contentSearch" class="input" placeholder="Search content..." style="max-width:250px;width:100%">
-      <button class="btn btn-secondary btn-sm" id="newFolderBtn">+ New Folder</button>
+      <input type="text" id="contentSearch" class="input" placeholder="${t('content.search_placeholder')}" style="max-width:250px;width:100%">
+      <button class="btn btn-secondary btn-sm" id="newFolderBtn">${t('content.new_folder_btn')}</button>
     </div>
     <div id="folderBreadcrumb" style="display:flex;gap:6px;align-items:center;margin-bottom:12px;font-size:13px;flex-wrap:wrap"></div>
     <div id="folderGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px"></div>
     <div class="content-grid" id="contentGrid">
-      <div class="empty-state" style="grid-column:1/-1"><h3>Loading...</h3></div>
+      <div class="empty-state" style="grid-column:1/-1"><h3>${t('common.loading')}</h3></div>
     </div>
   `;
 
@@ -114,12 +115,12 @@ export function render(container) {
     const name = document.getElementById('remoteNameInput').value.trim();
     const mimeType = document.getElementById('remoteMimeType').value;
     if (!url) {
-      showToast('Enter a URL', 'error');
+      showToast(t('content.error_enter_url'), 'error');
       return;
     }
     try {
       await api.addRemoteContent(url, name, mimeType);
-      showToast('Remote content added', 'success');
+      showToast(t('content.toast.remote_added'), 'success');
       document.getElementById('remoteUrlInput').value = '';
       document.getElementById('remoteNameInput').value = '';
       loadContent();
@@ -133,12 +134,12 @@ export function render(container) {
     const url = document.getElementById('youtubeUrlInput').value.trim();
     const name = document.getElementById('youtubeNameInput').value.trim();
     if (!url) {
-      showToast('Enter a YouTube URL', 'error');
+      showToast(t('content.error_enter_youtube_url'), 'error');
       return;
     }
     try {
       await api.addYoutubeContent(url, name);
-      showToast('YouTube video added', 'success');
+      showToast(t('content.toast.youtube_added'), 'success');
       document.getElementById('youtubeUrlInput').value = '';
       document.getElementById('youtubeNameInput').value = '';
       loadContent();
@@ -163,11 +164,11 @@ export function render(container) {
 
   // Create folder in the current folder.
   document.getElementById('newFolderBtn').onclick = async () => {
-    const name = prompt('Folder name:');
+    const name = prompt(t('content.prompt_folder_name'));
     if (!name || !name.trim()) return;
     try {
       await api.createFolder(name.trim(), state.currentFolderId);
-      showToast(`Folder "${name}" created`, 'success');
+      showToast(t('content.toast.folder_created_named', { name }), 'success');
       loadContent();
     } catch (err) { showToast(err.message, 'error'); }
   };
@@ -190,16 +191,16 @@ async function handleFiles(files) {
   for (const file of files) {
     progress.style.display = 'block';
     progressFill.style.width = '0%';
-    progressText.textContent = `Uploading ${file.name}...`;
+    progressText.textContent = t('content.upload_progress_named', { name: file.name });
 
     try {
       await api.uploadContent(file, (pct) => {
         progressFill.style.width = pct + '%';
-        progressText.textContent = `Uploading ${file.name}... ${pct}%`;
+        progressText.textContent = t('content.upload_progress_named_pct', { name: file.name, pct });
       });
-      showToast(`${file.name} uploaded successfully`, 'success');
+      showToast(t('content.toast.uploaded_named', { name: file.name }), 'success');
     } catch (err) {
-      showToast(`Failed to upload ${file.name}: ${err.message}`, 'error');
+      showToast(t('content.toast.upload_failed_named', { name: file.name, error: err.message }), 'error');
     }
   }
 
@@ -229,14 +230,14 @@ async function loadContent() {
       cursor = cursor.parent_id ? folderById.get(cursor.parent_id) : null;
     }
     breadcrumb.innerHTML = `
-      <a href="#" data-folder-nav="" style="color:var(--text-secondary);text-decoration:none">All Content</a>
+      <a href="#" data-folder-nav="" style="color:var(--text-secondary);text-decoration:none">${t('content.breadcrumb_root')}</a>
       ${path.map(f => `
         <span style="color:var(--text-muted)">/</span>
         <a href="#" data-folder-nav="${f.id}" style="color:var(--text-primary);text-decoration:none">${esc(f.name)}</a>
       `).join('')}
       ${state.currentFolderId ? `
-        <button class="btn btn-secondary btn-sm" id="renameFolderBtn" style="margin-left:auto">Rename</button>
-        <button class="btn btn-danger btn-sm" id="deleteFolderBtn">Delete folder</button>
+        <button class="btn btn-secondary btn-sm" id="renameFolderBtn" style="margin-left:auto">${t('content.rename_btn')}</button>
+        <button class="btn btn-danger btn-sm" id="deleteFolderBtn">${t('content.delete_folder_btn')}</button>
       ` : ''}
     `;
     breadcrumb.querySelectorAll('[data-folder-nav]').forEach(a => {
@@ -271,7 +272,7 @@ async function loadContent() {
         const targetFolderId = a.dataset.folderNav || null; // empty string = root
         try {
           await api.moveContent(contentId, targetFolderId);
-          showToast(targetFolderId ? 'Moved' : 'Moved to root', 'success');
+          showToast(targetFolderId ? t('content.toast.moved') : t('content.toast.moved_to_root'), 'success');
           loadContent();
         } catch (err) { showToast(err.message, 'error'); }
       });
@@ -279,21 +280,21 @@ async function loadContent() {
     const renameBtn = breadcrumb.querySelector('#renameFolderBtn');
     if (renameBtn) renameBtn.onclick = async () => {
       const current = folderById.get(state.currentFolderId);
-      const name = prompt('Rename folder:', current?.name || '');
+      const name = prompt(t('content.prompt_rename_folder'), current?.name || '');
       if (!name || !name.trim() || name === current?.name) return;
       try {
         await api.renameFolder(state.currentFolderId, name.trim());
-        showToast('Folder renamed', 'success');
+        showToast(t('content.toast.folder_renamed'), 'success');
         loadContent();
       } catch (err) { showToast(err.message, 'error'); }
     };
     const deleteBtn = breadcrumb.querySelector('#deleteFolderBtn');
     if (deleteBtn) deleteBtn.onclick = async () => {
-      if (!confirm('Delete this folder? Content inside moves back to the root level. Subfolders will also be deleted.')) return;
+      if (!confirm(t('content.confirm_delete_folder'))) return;
       try {
         const parentId = folderById.get(state.currentFolderId)?.parent_id || null;
         await api.deleteFolder(state.currentFolderId);
-        showToast('Folder deleted', 'success');
+        showToast(t('content.toast.folder_deleted'), 'success');
         state.currentFolderId = parentId;
         loadContent();
       } catch (err) { showToast(err.message, 'error'); }
@@ -326,7 +327,7 @@ async function loadContent() {
         if (!contentId) return;
         try {
           await api.moveContent(contentId, card.dataset.folderId);
-          showToast('Moved', 'success');
+          showToast(t('content.toast.moved'), 'success');
           loadContent();
         } catch (err) { showToast(err.message, 'error'); }
       });
@@ -339,8 +340,8 @@ async function loadContent() {
             <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
             <polyline points="13 2 13 9 20 9"/>
           </svg>
-          <h3>${state.currentFolderId ? 'This folder is empty' : 'No content yet'}</h3>
-          <p>${state.currentFolderId ? 'Drag content here, or use the Move action.' : 'Upload videos and images to get started.'}</p>
+          <h3>${state.currentFolderId ? t('content.empty_folder_title') : t('content.no_content')}</h3>
+          <p>${state.currentFolderId ? t('content.empty_folder_desc') : t('content.no_content_desc')}</p>
         </div>
       `;
       return;
@@ -365,7 +366,7 @@ async function loadContent() {
                   <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
                   <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
                 </svg>
-                <span style="font-size:10px;color:var(--text-muted)">Remote</span>
+                <span style="font-size:10px;color:var(--text-muted)">${t('content.type_remote_short')}</span>
               </div>`
             : c.thumbnail_path
               ? `<img src="/api/content/${c.id}/thumbnail" alt="${esc(c.filename)}" loading="lazy">`
@@ -381,26 +382,26 @@ async function loadContent() {
         <div class="content-item-body">
           <div class="content-item-name" title="${esc(c.filename)}">${esc(c.filename)}</div>
           <div class="content-item-size">
-            ${c.mime_type === 'video/youtube' ? 'YouTube' : c.remote_url ? 'Remote URL' : (c.mime_type?.startsWith('video/') ? 'Video' : 'Image')}
+            ${c.mime_type === 'video/youtube' ? t('content.type_youtube') : c.remote_url ? t('content.type_remote') : (c.mime_type?.startsWith('video/') ? t('content.type_video') : t('content.type_image'))}
             ${c.duration_sec ? ` &middot; ${Math.floor(c.duration_sec / 60)}:${String(Math.floor(c.duration_sec % 60)).padStart(2, '0')}` : ''}
             ${c.file_size ? ' &middot; ' + formatFileSize(c.file_size) : ''}
             ${c.width && c.height ? ` &middot; ${c.width}x${c.height}` : ''}
           </div>
         </div>
         <div class="content-item-actions">
-          <button class="btn btn-secondary btn-sm" data-edit-content="${c.id}" title="Edit">
+          <button class="btn btn-secondary btn-sm" data-edit-content="${c.id}" title="${t('content.btn_edit')}">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
               <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
             </svg>
-            Edit
+            ${t('content.btn_edit')}
           </button>
-          <button class="btn btn-danger btn-sm" data-delete-content="${c.id}" title="Delete">
+          <button class="btn btn-danger btn-sm" data-delete-content="${c.id}" title="${t('content.btn_delete')}">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"/>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
             </svg>
-            Delete
+            ${t('content.btn_delete')}
           </button>
         </div>
       </div>
@@ -446,14 +447,14 @@ async function loadContent() {
       if (btn.dataset.confirming === 'true') {
         try {
           btn.disabled = true;
-          btn.textContent = 'Deleting...';
+          btn.textContent = t('content.btn_deleting');
           await api.deleteContent(id);
-          showToast('Content deleted', 'success');
+          showToast(t('content.toast.deleted'), 'success');
           loadContent();
         } catch (err) {
           showToast(err.message, 'error');
           btn.disabled = false;
-          btn.textContent = 'Delete';
+          btn.textContent = t('content.btn_delete');
           btn.dataset.confirming = 'false';
         }
         return;
@@ -461,14 +462,14 @@ async function loadContent() {
 
       // First click - show confirm state
       btn.dataset.confirming = 'true';
-      btn.innerHTML = 'Confirm Delete?';
+      btn.innerHTML = t('content.btn_confirm_delete');
       btn.style.background = 'var(--danger)';
       btn.style.color = 'white';
       // Reset after 3 seconds if not clicked
       setTimeout(() => {
         if (btn.dataset.confirming === 'true') {
           btn.dataset.confirming = 'false';
-          btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Delete`;
+          btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> ${t('content.btn_delete')}`;
           btn.style.background = '';
           btn.style.color = '';
         }
@@ -476,7 +477,7 @@ async function loadContent() {
     };
 
   } catch (err) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><h3>Failed to load content</h3><p>${esc(err.message)}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><h3>${t('content.failed_to_load')}</h3><p>${esc(err.message)}</p></div>`;
   }
 }
 
@@ -490,51 +491,51 @@ function showEditModal(contentItem, onSave) {
   overlay.innerHTML = `
     <div class="modal" style="max-width:500px;width:95vw">
       <div class="modal-header">
-        <h3>Edit Content</h3>
+        <h3>${t('content.edit_modal_title')}</h3>
         <button class="btn-icon" id="closeEditModal">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
       <div class="modal-body">
         <div class="form-group">
-          <label>Filename / Display Name</label>
+          <label>${t('content.label_filename')}</label>
           <input type="text" id="editFilename" class="input" value="${esc(contentItem.filename)}">
         </div>
         ${isRemote ? `
         <div class="form-group">
-          <label>Remote URL</label>
+          <label>${t('content.label_remote_url_field')}</label>
           <input type="text" id="editRemoteUrl" class="input" value="${esc(contentItem.remote_url)}">
         </div>
         ` : ''}
         <div class="form-group">
-          <label>MIME Type</label>
+          <label>${t('content.label_mime_type')}</label>
           <select id="editMimeType" class="input" style="background:var(--bg-input)">
-            <option value="video/mp4" ${contentItem.mime_type === 'video/mp4' ? 'selected' : ''}>Video (MP4)</option>
-            <option value="video/webm" ${contentItem.mime_type === 'video/webm' ? 'selected' : ''}>Video (WebM)</option>
-            <option value="image/jpeg" ${contentItem.mime_type === 'image/jpeg' ? 'selected' : ''}>Image (JPEG)</option>
-            <option value="image/png" ${contentItem.mime_type === 'image/png' ? 'selected' : ''}>Image (PNG)</option>
-            <option value="image/gif" ${contentItem.mime_type === 'image/gif' ? 'selected' : ''}>Image (GIF)</option>
-            <option value="image/webp" ${contentItem.mime_type === 'image/webp' ? 'selected' : ''}>Image (WebP)</option>
+            <option value="video/mp4" ${contentItem.mime_type === 'video/mp4' ? 'selected' : ''}>${t('content.mime.video_mp4')}</option>
+            <option value="video/webm" ${contentItem.mime_type === 'video/webm' ? 'selected' : ''}>${t('content.mime.video_webm')}</option>
+            <option value="image/jpeg" ${contentItem.mime_type === 'image/jpeg' ? 'selected' : ''}>${t('content.mime.image_jpeg')}</option>
+            <option value="image/png" ${contentItem.mime_type === 'image/png' ? 'selected' : ''}>${t('content.mime.image_png')}</option>
+            <option value="image/gif" ${contentItem.mime_type === 'image/gif' ? 'selected' : ''}>${t('content.mime.image_gif')}</option>
+            <option value="image/webp" ${contentItem.mime_type === 'image/webp' ? 'selected' : ''}>${t('content.mime.image_webp')}</option>
           </select>
         </div>
         <div class="form-group">
-          <label>Folder</label>
+          <label>${t('content.label_folder')}</label>
           <select id="editFolderId" class="input" style="background:var(--bg-input)">
-            <option value="">— Root —</option>
+            <option value="">${t('content.folder_root_option')}</option>
             ${state.folders.map(f => `<option value="${f.id}" ${contentItem.folder_id === f.id ? 'selected' : ''}>${esc(folderPath(f, state.folders))}</option>`).join('')}
           </select>
         </div>
         ${!isRemote ? `
         <div class="form-group">
-          <label>Replace File</label>
+          <label>${t('content.label_replace_file')}</label>
           <input type="file" id="editFileReplace" accept="video/*,image/*" style="font-size:13px;color:var(--text-secondary)">
-          <p style="font-size:11px;color:var(--text-muted);margin-top:4px">Leave empty to keep current file</p>
+          <p style="font-size:11px;color:var(--text-muted);margin-top:4px">${t('content.replace_file_hint')}</p>
         </div>
         ` : ''}
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" id="cancelEditBtn">Cancel</button>
-        <button class="btn btn-primary" id="saveEditBtn">Save Changes</button>
+        <button class="btn btn-secondary" id="cancelEditBtn">${t('common.cancel')}</button>
+        <button class="btn btn-primary" id="saveEditBtn">${t('content.save_changes')}</button>
       </div>
     </div>
   `;
@@ -582,10 +583,10 @@ function showEditModal(contentItem, onSave) {
       }
 
       overlay.remove();
-      showToast('Content updated', 'success');
+      showToast(t('content.toast.updated'), 'success');
       if (onSave) onSave();
     } catch (err) {
-      showToast(err.message || 'Update failed', 'error');
+      showToast(err.message || t('content.error_update_failed'), 'error');
     }
   };
 }
@@ -611,7 +612,7 @@ function showPreview(content) {
       </div>
       <div style="padding:12px 16px;border-top:1px solid var(--border)">
         <div style="font-weight:500">${esc(content.filename)}</div>
-        <div style="font-size:12px;color:var(--text-muted)">${esc(content.mime_type)} ${content.remote_url ? '(Remote URL)' : ''}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${esc(content.mime_type)} ${content.remote_url ? `(${t('content.type_remote')})` : ''}</div>
       </div>
     </div>
   `;
