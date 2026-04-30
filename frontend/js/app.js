@@ -54,6 +54,23 @@ function renderNavLabels() {
   });
 }
 
+// Translate any element marked with data-i18n / data-i18n-placeholder /
+// data-i18n-html. Runs on init and on every language change. Used for static
+// HTML in index.html (e.g. the Add-Display modal) where t() can't be inlined
+// at template time.
+function translateStaticDom(root = document) {
+  root.querySelectorAll('[data-i18n]').forEach((el) => {
+    const key = el.getAttribute('data-i18n');
+    el.textContent = t(key);
+  });
+  root.querySelectorAll('[data-i18n-html]').forEach((el) => {
+    el.innerHTML = t(el.getAttribute('data-i18n-html'));
+  });
+  root.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+    el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
+  });
+}
+
 function isAuthenticated() {
   return !!localStorage.getItem('token');
 }
@@ -249,7 +266,11 @@ function updateSidebarUser() {
 
 // Initialize
 renderNavLabels();
-window.addEventListener('language-changed', renderNavLabels);
+translateStaticDom();
+window.addEventListener('language-changed', () => {
+  renderNavLabels();
+  translateStaticDom();
+});
 
 if (isAuthenticated()) {
   connectSocket();

@@ -1047,4 +1047,18 @@ export default {
   'help.shortcuts': 'Atajos de teclado',
   'help.shortcut_esc': 'Reiniciar reproductor web (en la página del reproductor)',
   'help.shortcut_f': 'Alternar pantalla completa (reproductor web)',
+
+  // Add Display modal
+  'add_display.title': 'Agregar pantalla',
+  'add_display.intro': 'Ingresa el código de vinculación de 6 dígitos mostrado en la pantalla.',
+  'add_display.pairing_code': 'Código de vinculación',
+  'add_display.display_name': 'Nombre (opcional)',
+  'add_display.name_placeholder': 'p. ej., TV Vestíbulo',
+  'add_display.need_player': '¿Necesitas la app del reproductor? Instala una para obtener un código:',
+  'add_display.android_apk': 'APK Android',
+  'add_display.web_player': 'Reproductor web',
+  'add_display.raspberry_pi': 'Raspberry Pi',
+  'add_display.windows': 'Windows',
+  'add_display.smart_tv_note': 'Smart TVs (LG/Samsung): abre el navegador integrado y ve a <code style="background:var(--bg-input,#0f172a);padding:1px 4px;border-radius:3px">/player</code>',
+  'add_display.pair_btn': 'Vincular pantalla',
 };

@@ -1048,4 +1048,18 @@ export default {
   'help.shortcuts': 'Atalhos de teclado',
   'help.shortcut_esc': 'Reiniciar player web (na página do player)',
   'help.shortcut_f': 'Alternar tela cheia (player web)',
+
+  // Add Display modal
+  'add_display.title': 'Adicionar tela',
+  'add_display.intro': 'Digite o código de pareamento de 6 dígitos exibido na tela.',
+  'add_display.pairing_code': 'Código de pareamento',
+  'add_display.display_name': 'Nome (opcional)',
+  'add_display.name_placeholder': 'ex. TV do lobby',
+  'add_display.need_player': 'Precisa de um app player? Instale um para obter um código:',
+  'add_display.android_apk': 'APK Android',
+  'add_display.web_player': 'Player web',
+  'add_display.raspberry_pi': 'Raspberry Pi',
+  'add_display.windows': 'Windows',
+  'add_display.smart_tv_note': 'Smart TVs (LG/Samsung): abra o navegador integrado e vá para <code style="background:var(--bg-input,#0f172a);padding:1px 4px;border-radius:3px">/player</code>',
+  'add_display.pair_btn': 'Parear tela',
 };

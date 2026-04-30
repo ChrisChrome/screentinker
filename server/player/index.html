@@ -85,11 +85,85 @@
   <div id="statusOverlay" style="display:none">
     <div class="spinner"></div>
     <h2>ScreenTinker</h2>
-    <p id="statusText">Connecting...</p>
+    <p id="statusText" data-i18n="connecting">Connecting...</p>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // ==================== i18n ====================
+    // Lightweight inline i18n for the player. The player is a standalone page
+    // on display devices — it doesn't import the dashboard's i18n module.
+    // Keep keys in sync with the player overlay strings; falls back to en.
+    const PLAYER_I18N = {
+      en: {
+        web_player: 'Web Player',
+        server_url: 'Server URL',
+        server_url_placeholder: 'https://sign.yourdomain.com',
+        connect: 'Connect',
+        pairing_code: 'Pairing Code',
+        pairing_hint: 'Enter this code in the dashboard to pair this display',
+        connecting: 'Connecting...',
+        connecting_muted: 'Connecting (audio muted)...',
+        info_title: 'ScreenTinker Web Player',
+        info_close_hint: 'Press Back again or click to close',
+        info_device_id: 'Device ID',
+        info_device_name: 'Device Name',
+        info_server: 'Server',
+        info_status: 'Status',
+        info_now_playing: 'Now Playing',
+        info_resolution: 'Resolution',
+        info_uptime: 'Uptime',
+        info_platform: 'Platform',
+        info_cache: 'Cache',
+        info_connected: 'Connected',
+        info_disconnected: 'Disconnected',
+        info_active: 'Active',
+        info_inactive: 'Inactive',
+        info_nothing: 'Nothing',
+        info_na: 'N/A',
+        info_sw: 'Service Worker',
+      },
+      es: {
+        web_player: 'Reproductor web', server_url: 'URL del servidor', server_url_placeholder: 'https://signage.tudominio.com', connect: 'Conectar', pairing_code: 'Código de vinculación', pairing_hint: 'Ingresa este código en el panel para vincular esta pantalla', connecting: 'Conectando...', connecting_muted: 'Conectando (audio silenciado)...', info_title: 'Reproductor web ScreenTinker', info_close_hint: 'Presiona Atrás de nuevo o haz clic para cerrar', info_device_id: 'ID del dispositivo', info_device_name: 'Nombre del dispositivo', info_server: 'Servidor', info_status: 'Estado', info_now_playing: 'Reproduciendo', info_resolution: 'Resolución', info_uptime: 'Tiempo activo', info_platform: 'Plataforma', info_cache: 'Caché', info_connected: 'Conectado', info_disconnected: 'Desconectado', info_active: 'Activo', info_inactive: 'Inactivo', info_nothing: 'Nada', info_na: 'N/D', info_sw: 'Service Worker',
+      },
+      fr: {
+        web_player: 'Lecteur web', server_url: 'URL du serveur', server_url_placeholder: 'https://signage.votredomaine.com', connect: 'Connecter', pairing_code: 'Code d’appairage', pairing_hint: 'Saisissez ce code dans le tableau de bord pour apparier cet écran', connecting: 'Connexion...', connecting_muted: 'Connexion (audio coupé)...', info_title: 'Lecteur web ScreenTinker', info_close_hint: 'Appuyez à nouveau sur Retour ou cliquez pour fermer', info_device_id: 'ID de l’appareil', info_device_name: 'Nom de l’appareil', info_server: 'Serveur', info_status: 'État', info_now_playing: 'En lecture', info_resolution: 'Résolution', info_uptime: 'Disponibilité', info_platform: 'Plateforme', info_cache: 'Cache', info_connected: 'Connecté', info_disconnected: 'Déconnecté', info_active: 'Actif', info_inactive: 'Inactif', info_nothing: 'Rien', info_na: 'N/D', info_sw: 'Service Worker',
+      },
+      de: {
+        web_player: 'Web-Player', server_url: 'Server-URL', server_url_placeholder: 'https://signage.ihredomain.com', connect: 'Verbinden', pairing_code: 'Kopplungscode', pairing_hint: 'Geben Sie diesen Code im Dashboard ein, um diesen Bildschirm zu koppeln', connecting: 'Verbindung wird hergestellt...', connecting_muted: 'Verbindung (Audio stummgeschaltet)...', info_title: 'ScreenTinker Web-Player', info_close_hint: 'Erneut Zurück drücken oder klicken zum Schließen', info_device_id: 'Geräte-ID', info_device_name: 'Gerätename', info_server: 'Server', info_status: 'Status', info_now_playing: 'Aktuelle Wiedergabe', info_resolution: 'Auflösung', info_uptime: 'Betriebszeit', info_platform: 'Plattform', info_cache: 'Cache', info_connected: 'Verbunden', info_disconnected: 'Getrennt', info_active: 'Aktiv', info_inactive: 'Inaktiv', info_nothing: 'Nichts', info_na: 'N/V', info_sw: 'Service Worker',
+      },
+      pt: {
+        web_player: 'Player web', server_url: 'URL do servidor', server_url_placeholder: 'https://sign.seudominio.com', connect: 'Conectar', pairing_code: 'Código de pareamento', pairing_hint: 'Digite este código no painel para parear esta tela', connecting: 'Conectando...', connecting_muted: 'Conectando (áudio mudo)...', info_title: 'Player web ScreenTinker', info_close_hint: 'Pressione Voltar novamente ou clique para fechar', info_device_id: 'ID do dispositivo', info_device_name: 'Nome do dispositivo', info_server: 'Servidor', info_status: 'Status', info_now_playing: 'Reproduzindo', info_resolution: 'Resolução', info_uptime: 'Tempo ativo', info_platform: 'Plataforma', info_cache: 'Cache', info_connected: 'Conectado', info_disconnected: 'Desconectado', info_active: 'Ativo', info_inactive: 'Inativo', info_nothing: 'Nada', info_na: 'N/D', info_sw: 'Service Worker',
+      },
+    };
+    const PLAYER_LANG = (() => {
+      const stored = localStorage.getItem('rd_lang');
+      const detected = (stored || navigator.language || 'en').split('-')[0];
+      return PLAYER_I18N[detected] ? detected : 'en';
+    })();
+    const _t = (k) => (PLAYER_I18N[PLAYER_LANG] && PLAYER_I18N[PLAYER_LANG][k]) || PLAYER_I18N.en[k] || k;
+
+    // Apply translations to the static setup screen markup
+    document.addEventListener('DOMContentLoaded', () => {
+      const setSubtitle = document.querySelector('#setupScreen .subtitle');
+      if (setSubtitle) setSubtitle.textContent = _t('web_player');
+      const lblServer = document.querySelector('#urlForm label');
+      if (lblServer) lblServer.textContent = _t('server_url');
+      const inputServer = document.getElementById('serverUrl');
+      if (inputServer) inputServer.placeholder = _t('server_url_placeholder');
+      const connectBtn = document.getElementById('connectBtn');
+      if (connectBtn) connectBtn.textContent = _t('connect');
+      const pairingP = document.querySelector('#pairingSection p:first-child');
+      if (pairingP) pairingP.textContent = _t('pairing_code');
+      const pairingHint = document.querySelector('#pairingSection .pairing-hint');
+      if (pairingHint) pairingHint.textContent = _t('pairing_hint');
+      // Translate any element with data-i18n attribute
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const k = el.getAttribute('data-i18n');
+        if (k) el.textContent = _t(k);
+      });
+    });
+
     // ==================== Config ====================
     const STORAGE_KEY = 'rd_web_player';
     const HEARTBEAT_INTERVAL = 15000;
@@ -228,7 +302,7 @@
         tapOverlay.onclick = () => {
           unlockAudio();
           tapOverlay.remove();
-          if (!isPlaying) showStatus('Connecting...');
+          if (!isPlaying) showStatus(_t('connecting'));
           connect(config.serverUrl);
         };
         document.body.appendChild(tapOverlay);
@@ -237,7 +311,7 @@
         setTimeout(() => {
           if (tapOverlay.parentNode) {
             tapOverlay.remove();
-            if (!isPlaying) showStatus('Connecting (audio muted)...');
+            if (!isPlaying) showStatus(_t('connecting_muted'));
             connect(config.serverUrl);
           }
         }, 5000);
@@ -973,9 +1047,9 @@
     infoDiv.id = 'infoOverlay';
     infoDiv.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:800;display:none;flex-direction:column;align-items:center;justify-content:center;color:#f1f5f9;font-family:-apple-system,sans-serif';
     infoDiv.innerHTML = `
-      <h2 style="color:#3b82f6;margin-bottom:16px">ScreenTinker Web Player</h2>
+      <h2 style="color:#3b82f6;margin-bottom:16px">${_t('info_title')}</h2>
       <div style="font-size:14px;line-height:2;text-align:center;color:#94a3b8" id="infoContent"></div>
-      <p style="margin-top:24px;font-size:12px;color:#64748b">Press Back again or click to close</p>
+      <p style="margin-top:24px;font-size:12px;color:#64748b">${_t('info_close_hint')}</p>
     `;
     infoDiv.onclick = () => { infoDiv.style.display = 'none'; };
     document.body.appendChild(infoDiv);
@@ -990,15 +1064,15 @@
       if (!el) return;
       const item = playlist[currentIndex];
       el.innerHTML = `
-        Device ID: ${escHtml(config.deviceId?.slice(0, 8) || 'N/A')}...<br>
-        Device Name: ${escHtml(config.deviceName || 'N/A')}<br>
-        Server: ${escHtml(config.serverUrl || 'N/A')}<br>
-        Status: ${socket?.connected ? '<span style="color:#22c55e">Connected</span>' : '<span style="color:#ef4444">Disconnected</span>'}<br>
-        Now Playing: ${escHtml(item?.filename || 'Nothing')} (${currentIndex + 1}/${playlist.length})<br>
-        Resolution: ${screen.width}x${screen.height}<br>
-        Uptime: ${Math.floor(performance.now() / 60000)}m<br>
-        Platform: ${escHtml(navigator.platform)}<br>
-        Cache: Service Worker ${navigator.serviceWorker?.controller ? '<span style="color:#22c55e">Active</span>' : 'Inactive'}
+        ${_t('info_device_id')}: ${escHtml(config.deviceId?.slice(0, 8) || _t('info_na'))}...<br>
+        ${_t('info_device_name')}: ${escHtml(config.deviceName || _t('info_na'))}<br>
+        ${_t('info_server')}: ${escHtml(config.serverUrl || _t('info_na'))}<br>
+        ${_t('info_status')}: ${socket?.connected ? `<span style="color:#22c55e">${_t('info_connected')}</span>` : `<span style="color:#ef4444">${_t('info_disconnected')}</span>`}<br>
+        ${_t('info_now_playing')}: ${escHtml(item?.filename || _t('info_nothing'))} (${currentIndex + 1}/${playlist.length})<br>
+        ${_t('info_resolution')}: ${screen.width}x${screen.height}<br>
+        ${_t('info_uptime')}: ${Math.floor(performance.now() / 60000)}m<br>
+        ${_t('info_platform')}: ${escHtml(navigator.platform)}<br>
+        ${_t('info_cache')}: ${_t('info_sw')} ${navigator.serviceWorker?.controller ? `<span style="color:#22c55e">${_t('info_active')}</span>` : _t('info_inactive')}
       `;
     }, 2000);
 

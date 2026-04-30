@@ -1084,4 +1084,18 @@ export default {
   'help.shortcuts': 'Keyboard Shortcuts',
   'help.shortcut_esc': 'Reset web player (on player page)',
   'help.shortcut_f': 'Toggle fullscreen (web player)',
+
+  // Add Display modal (in index.html)
+  'add_display.title': 'Add Display',
+  'add_display.intro': 'Enter the 6-digit pairing code shown on the display.',
+  'add_display.pairing_code': 'Pairing Code',
+  'add_display.display_name': 'Display Name (optional)',
+  'add_display.name_placeholder': 'e.g., Lobby TV',
+  'add_display.need_player': 'Need a player app? Install one to get a pairing code:',
+  'add_display.android_apk': 'Android APK',
+  'add_display.web_player': 'Web Player',
+  'add_display.raspberry_pi': 'Raspberry Pi',
+  'add_display.windows': 'Windows',
+  'add_display.smart_tv_note': 'Smart TVs (LG/Samsung): open the built-in browser and navigate to <code style="background:var(--bg-input,#0f172a);padding:1px 4px;border-radius:3px">/player</code>',
+  'add_display.pair_btn': 'Pair Display',
 };
