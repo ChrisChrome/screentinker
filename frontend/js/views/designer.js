@@ -1,16 +1,19 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
+import { t } from '../i18n.js';
 
+// Background swatches: ids resolve to translated names; values are the actual
+// CSS to apply.
 const BACKGROUNDS = [
-  { name: 'Black', value: '#000000' },
-  { name: 'Dark Blue', value: '#0f172a' },
-  { name: 'Dark Gradient', value: 'linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #16213e 100%)' },
-  { name: 'Blue Gradient', value: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' },
-  { name: 'Sunset', value: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)' },
-  { name: 'Ocean', value: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' },
-  { name: 'Forest', value: 'linear-gradient(135deg, #134e5e 0%, #71b280 100%)' },
-  { name: 'Dark Red', value: 'linear-gradient(135deg, #200122 0%, #6f0000 100%)' },
-  { name: 'White', value: '#FFFFFF' },
+  { id: 'black', value: '#000000' },
+  { id: 'dark_blue', value: '#0f172a' },
+  { id: 'dark_gradient', value: 'linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #16213e 100%)' },
+  { id: 'blue_gradient', value: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' },
+  { id: 'sunset', value: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)' },
+  { id: 'ocean', value: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' },
+  { id: 'forest', value: 'linear-gradient(135deg, #134e5e 0%, #71b280 100%)' },
+  { id: 'dark_red', value: 'linear-gradient(135deg, #200122 0%, #6f0000 100%)' },
+  { id: 'white', value: '#FFFFFF' },
 ];
 
 const FONTS = ['Arial', 'Helvetica', 'Georgia', 'Impact', 'Verdana', 'Trebuchet MS', 'Courier New', 'Times New Roman'];
@@ -30,11 +33,11 @@ export function render(container) {
 
   container.innerHTML = `
     <div class="page-header">
-      <div><h1>Content Designer <span class="help-tip" data-tip="Create custom signage with live elements: clocks, weather, RSS tickers, countdowns, QR codes. Publish as a widget or export as PNG.">?</span></h1><div class="subtitle">Create dynamic signage content</div></div>
+      <div><h1>${t('designer.title')} <span class="help-tip" data-tip="${t('designer.help_tip')}">?</span></h1><div class="subtitle">${t('designer.subtitle')}</div></div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-secondary" id="loadDesignBtn">Load Design</button>
-        <button class="btn btn-secondary" id="exportPngBtn">Export PNG</button>
-        <button class="btn btn-primary" id="publishBtn">Publish to Library</button>
+        <button class="btn btn-secondary" id="loadDesignBtn">${t('designer.load_design')}</button>
+        <button class="btn btn-secondary" id="exportPngBtn">${t('designer.export_png')}</button>
+        <button class="btn btn-primary" id="publishBtn">${t('designer.publish')}</button>
       </div>
     </div>
     <div style="display:flex;gap:20px">
@@ -43,51 +46,51 @@ export function render(container) {
         <div id="previewWrap" style="position:relative;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:#000;aspect-ratio:16/9">
           <div id="designPreview" style="position:relative;width:100%;height:100%;overflow:hidden"></div>
         </div>
-        <p style="font-size:11px;color:var(--text-muted);margin-top:8px">Click elements to select. Drag to reposition. Live preview updates in real-time.</p>
+        <p style="font-size:11px;color:var(--text-muted);margin-top:8px">${t('designer.preview_hint')}</p>
       </div>
       <!-- Sidebar -->
       <div style="width:300px;display:flex;flex-direction:column;gap:12px;max-height:calc(100vh - 120px);overflow-y:auto">
         <!-- Add Elements -->
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
-          <h4 style="font-size:13px;margin-bottom:10px">Add Element</h4>
+          <h4 style="font-size:13px;margin-bottom:10px">${t('designer.add_element')}</h4>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-            <button class="btn btn-secondary btn-sm" id="addText" style="justify-content:center">&#128172; Text</button>
-            <button class="btn btn-secondary btn-sm" id="addHeading" style="justify-content:center">&#128220; Heading</button>
-            <button class="btn btn-secondary btn-sm" id="addImage" style="justify-content:center">&#128247; Image</button>
-            <button class="btn btn-secondary btn-sm" id="addVideo" style="justify-content:center">&#127916; Video</button>
-            <button class="btn btn-secondary btn-sm" id="addClock" style="justify-content:center">&#128339; Clock</button>
-            <button class="btn btn-secondary btn-sm" id="addDate" style="justify-content:center">&#128197; Date</button>
-            <button class="btn btn-secondary btn-sm" id="addWeather" style="justify-content:center">&#9925; Weather</button>
-            <button class="btn btn-secondary btn-sm" id="addTicker" style="justify-content:center">&#128240; Ticker</button>
-            <button class="btn btn-secondary btn-sm" id="addShape" style="justify-content:center">&#9632; Shape</button>
-            <button class="btn btn-secondary btn-sm" id="addQR" style="justify-content:center">&#9641; QR Code</button>
-            <button class="btn btn-secondary btn-sm" id="addCountdown" style="justify-content:center">&#9201; Countdown</button>
-            <button class="btn btn-secondary btn-sm" id="addWebpage" style="justify-content:center">&#127760; Webpage</button>
+            <button class="btn btn-secondary btn-sm" id="addText" style="justify-content:center">&#128172; ${t('designer.el.text')}</button>
+            <button class="btn btn-secondary btn-sm" id="addHeading" style="justify-content:center">&#128220; ${t('designer.el.heading')}</button>
+            <button class="btn btn-secondary btn-sm" id="addImage" style="justify-content:center">&#128247; ${t('designer.el.image')}</button>
+            <button class="btn btn-secondary btn-sm" id="addVideo" style="justify-content:center">&#127916; ${t('designer.el.video')}</button>
+            <button class="btn btn-secondary btn-sm" id="addClock" style="justify-content:center">&#128339; ${t('designer.el.clock')}</button>
+            <button class="btn btn-secondary btn-sm" id="addDate" style="justify-content:center">&#128197; ${t('designer.el.date')}</button>
+            <button class="btn btn-secondary btn-sm" id="addWeather" style="justify-content:center">&#9925; ${t('designer.el.weather')}</button>
+            <button class="btn btn-secondary btn-sm" id="addTicker" style="justify-content:center">&#128240; ${t('designer.el.ticker')}</button>
+            <button class="btn btn-secondary btn-sm" id="addShape" style="justify-content:center">&#9632; ${t('designer.el.shape')}</button>
+            <button class="btn btn-secondary btn-sm" id="addQR" style="justify-content:center">&#9641; ${t('designer.el.qr')}</button>
+            <button class="btn btn-secondary btn-sm" id="addCountdown" style="justify-content:center">&#9201; ${t('designer.el.countdown')}</button>
+            <button class="btn btn-secondary btn-sm" id="addWebpage" style="justify-content:center">&#127760; ${t('designer.el.webpage')}</button>
           </div>
         </div>
         <!-- Background -->
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
-          <h4 style="font-size:13px;margin-bottom:8px">Background</h4>
+          <h4 style="font-size:13px;margin-bottom:8px">${t('designer.background')}</h4>
           <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
-            ${BACKGROUNDS.map(b => `<div style="width:30px;height:30px;border-radius:4px;cursor:pointer;border:2px solid var(--border);background:${b.value}" data-bg="${b.value}" title="${b.name}"></div>`).join('')}
+            ${BACKGROUNDS.map(b => `<div style="width:30px;height:30px;border-radius:4px;cursor:pointer;border:2px solid var(--border);background:${b.value}" data-bg="${b.value}" title="${t('designer.bg.' + b.id)}"></div>`).join('')}
           </div>
           <div style="display:flex;gap:6px">
             <input type="color" id="bgColor" value="#000000" style="flex:1;height:32px;border:none;cursor:pointer;border-radius:4px">
-            <button class="btn btn-secondary btn-sm" id="bgImageBtn">Image</button>
+            <button class="btn btn-secondary btn-sm" id="bgImageBtn">${t('designer.bg_image')}</button>
           </div>
           <input type="file" id="bgImageInput" style="display:none" accept="image/*">
         </div>
         <!-- Properties -->
         <div id="propPanel" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px;display:none">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <h4 style="font-size:13px">Properties</h4>
-            <button class="btn btn-danger btn-sm" id="deleteEl">Delete</button>
+            <h4 style="font-size:13px">${t('designer.properties')}</h4>
+            <button class="btn btn-danger btn-sm" id="deleteEl">${t('common.delete')}</button>
           </div>
           <div id="propFields"></div>
         </div>
         <!-- Layers -->
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
-          <h4 style="font-size:13px;margin-bottom:8px">Layers</h4>
+          <h4 style="font-size:13px;margin-bottom:8px">${t('designer.layers')}</h4>
           <div id="layerList" style="font-size:12px"></div>
         </div>
       </div>
@@ -108,8 +111,8 @@ export function render(container) {
   };
 
   // Add element handlers
-  document.getElementById('addText').onclick = () => addElement({ type: 'text', x: 10, y: 60, text: 'Your text here', fontSize: 24, fontFamily: 'Arial', color: '#FFFFFF', bold: false, shadow: false });
-  document.getElementById('addHeading').onclick = () => addElement({ type: 'text', x: 5, y: 5, text: 'HEADING', fontSize: 64, fontFamily: 'Impact', color: '#FFFFFF', bold: true, shadow: true });
+  document.getElementById('addText').onclick = () => addElement({ type: 'text', x: 10, y: 60, text: t('designer.default.text'), fontSize: 24, fontFamily: 'Arial', color: '#FFFFFF', bold: false, shadow: false });
+  document.getElementById('addHeading').onclick = () => addElement({ type: 'text', x: 5, y: 5, text: t('designer.default.heading'), fontSize: 64, fontFamily: 'Impact', color: '#FFFFFF', bold: true, shadow: true });
   document.getElementById('addImage').onclick = () => {
     const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
     input.onchange = () => {
@@ -120,30 +123,30 @@ export function render(container) {
     input.click();
   };
   document.getElementById('addVideo').onclick = () => {
-    const url = prompt('Video URL (MP4):');
+    const url = prompt(t('designer.prompt.video_url'));
     if (url) addElement({ type: 'video', x: 5, y: 5, width: 50, height: 50, src: url, muted: true, loop: true });
   };
   document.getElementById('addClock').onclick = () => addElement({ type: 'clock', x: 60, y: 5, fontSize: 48, fontFamily: 'Arial', color: '#FFFFFF', format: '12h', showSeconds: true, shadow: true });
   document.getElementById('addDate').onclick = () => addElement({ type: 'date', x: 60, y: 20, fontSize: 24, fontFamily: 'Arial', color: '#FFFFFF', shadow: false });
   document.getElementById('addWeather').onclick = () => {
-    const location = prompt('City, State:', 'Milwaukee, WI');
+    const location = prompt(t('designer.prompt.weather_location'), 'Milwaukee, WI');
     if (location) addElement({ type: 'weather', x: 5, y: 70, fontSize: 36, color: '#FFFFFF', location, units: 'imperial' });
   };
   document.getElementById('addTicker').onclick = () => {
-    const url = prompt('RSS Feed URL:', 'https://feeds.bbci.co.uk/news/rss.xml');
+    const url = prompt(t('designer.prompt.rss_url'), 'https://feeds.bbci.co.uk/news/rss.xml');
     if (url) addElement({ type: 'ticker', x: 0, y: 90, width: 100, height: 10, feedUrl: url, speed: 30, fontSize: 20, color: '#FFFFFF', bgColor: 'rgba(0,0,0,0.7)' });
   };
   document.getElementById('addShape').onclick = () => addElement({ type: 'shape', x: 20, y: 20, width: 30, height: 20, color: '#3b82f6', opacity: 0.7, radius: 8, shape: 'rect' });
   document.getElementById('addQR').onclick = () => {
-    const data = prompt('QR Code URL:', 'https://example.com');
+    const data = prompt(t('designer.prompt.qr_url'), 'https://example.com');
     if (data) addElement({ type: 'qr', x: 80, y: 70, size: 15, data, fgColor: '#FFFFFF', bgColor: '#000000' });
   };
   document.getElementById('addCountdown').onclick = () => {
-    const target = prompt('Target date (YYYY-MM-DD):', '2026-04-01');
-    if (target) addElement({ type: 'countdown', x: 20, y: 40, fontSize: 48, color: '#FFFFFF', targetDate: target, label: 'Coming Soon' });
+    const target = prompt(t('designer.prompt.countdown_date'), '2026-04-01');
+    if (target) addElement({ type: 'countdown', x: 20, y: 40, fontSize: 48, color: '#FFFFFF', targetDate: target, label: t('designer.default.coming_soon') });
   };
   document.getElementById('addWebpage').onclick = () => {
-    const url = prompt('Webpage URL:');
+    const url = prompt(t('designer.prompt.webpage_url'));
     if (url) addElement({ type: 'webpage', x: 5, y: 5, width: 40, height: 40, url });
   };
 
@@ -159,10 +162,10 @@ export function render(container) {
       const res = await fetch('/api/widgets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` },
-        body: JSON.stringify({ widget_type: 'text', name: `Design ${new Date().toLocaleDateString()}`, config: { html: generateInnerHTML(), css: '', background: bgValue } })
+        body: JSON.stringify({ widget_type: 'text', name: t('designer.widget_name', { date: new Date().toLocaleDateString() }), config: { html: generateInnerHTML(), css: '', background: bgValue } })
       });
-      if (res.ok) showToast('Published as widget! Assign it to a layout zone.', 'success');
-      else showToast('Publish failed', 'error');
+      if (res.ok) showToast(t('designer.toast.published'), 'success');
+      else showToast(t('designer.toast.publish_failed'), 'error');
     } catch (err) { showToast(err.message, 'error'); }
   };
 
@@ -207,7 +210,7 @@ export function render(container) {
       }
       const link = document.createElement('a');
       link.download = 'signage-design.png'; link.href = canvas.toDataURL('image/png'); link.click();
-    } catch (err) { showToast('Export failed: ' + err.message, 'error'); }
+    } catch (err) { showToast(t('designer.toast.export_failed', { error: err.message }), 'error'); }
   };
 
   // Load saved design
@@ -222,8 +225,8 @@ export function render(container) {
           bgValue = data.bgValue || '#000';
           bgImageDataUrl = data.bgImageDataUrl || null;
           redraw();
-          showToast('Design loaded', 'success');
-        } catch { showToast('Invalid design file', 'error'); }
+          showToast(t('designer.toast.loaded'), 'success');
+        } catch { showToast(t('designer.toast.invalid_file'), 'error'); }
       };
       reader.readAsText(input.files[0]);
     };
@@ -315,16 +318,16 @@ function redraw() {
         html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;width:${el.width}%;height:${el.height}%;background:${el.color};opacity:${el.opacity};border-radius:${el.radius || 0}px;${el.shape === 'circle' ? 'border-radius:50%;' : ''}${border}${cursor}" data-idx="${i}"></div>`;
         break;
       case 'weather':
-        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;color:${el.color};${border}${cursor}" data-idx="${i}" id="weather_${i}">&#9925; Loading...</div>`;
+        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;color:${el.color};${border}${cursor}" data-idx="${i}" id="weather_${i}">&#9925; ${t('common.loading')}</div>`;
         break;
       case 'ticker':
         html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;width:${el.width}%;height:${el.height}%;background:${el.bgColor};overflow:hidden;display:flex;align-items:center;${border}" data-idx="${i}">
-          <div style="white-space:nowrap;animation:ticker ${el.speed || 30}s linear infinite;font-size:${el.fontSize / 10}vw;color:${el.color}" id="ticker_${i}">Loading news...</div>
+          <div style="white-space:nowrap;animation:ticker ${el.speed || 30}s linear infinite;font-size:${el.fontSize / 10}vw;color:${el.color}" id="ticker_${i}">${t('designer.loading_news')}</div>
         </div>`;
         break;
       case 'qr':
         html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;width:${el.size}%;aspect-ratio:1;background:${el.bgColor};display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:8px;${border}${cursor}" data-idx="${i}">
-          <div style="font-size:1.5vw;color:${el.fgColor};font-weight:bold">QR CODE</div>
+          <div style="font-size:1.5vw;color:${el.fgColor};font-weight:bold">${t('designer.qr_label')}</div>
           <div style="font-size:0.8vw;color:${el.fgColor};opacity:0.7;margin-top:4px">${el.data?.slice(0, 25)}</div>
         </div>`;
         break;
@@ -378,7 +381,7 @@ function updateDynamic() {
       if (cdEl && el.targetDate) {
         const update = () => {
           const diff = new Date(el.targetDate) - new Date();
-          if (diff <= 0) { cdEl.textContent = 'NOW!'; return; }
+          if (diff <= 0) { cdEl.textContent = t('designer.countdown_now'); return; }
           const days = Math.floor(diff / 86400000);
           const hours = Math.floor((diff % 86400000) / 3600000);
           const mins = Math.floor((diff % 3600000) / 60000);
@@ -397,15 +400,15 @@ function updateDynamic() {
             const temp = el.units === 'metric' ? cur.temp_C + '°C' : cur.temp_F + '°F';
             wEl.textContent = `${temp} ${cur.weatherDesc?.[0]?.value || ''}`;
           }
-        }).catch(() => { wEl.textContent = '&#9925; ' + el.location; });
+        }).catch(() => { wEl.textContent = '⛅ ' + el.location; });
       }
     }
     if (el.type === 'ticker') {
       const tEl = document.getElementById(`ticker_${i}`);
       if (tEl && el.feedUrl) {
         fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(el.feedUrl)}`).then(r => r.json()).then(d => {
-          tEl.textContent = (d.items || []).map(item => item.title).join('  •  ') || 'No items';
-        }).catch(() => { tEl.textContent = 'Feed unavailable'; });
+          tEl.textContent = (d.items || []).map(item => item.title).join('  •  ') || t('designer.no_items');
+        }).catch(() => { tEl.textContent = t('designer.feed_unavailable'); });
       }
     }
   });
@@ -426,42 +429,42 @@ function updateProps() {
   </div>`;
 
   if (el.type === 'text') {
-    html += `<div class="form-group"><label>Text</label><input type="text" class="input" value="${el.text}" data-prop="text"></div>
-      <div class="form-group"><label>Size</label><input type="range" min="8" max="120" value="${el.fontSize}" data-prop="fontSize" style="width:100%"><span style="font-size:11px;color:var(--text-muted)">${el.fontSize}px</span></div>
-      <div class="form-group"><label>Font</label><select class="input" style="background:var(--bg-input)" data-prop="fontFamily">${FONTS.map(f => `<option ${f === el.fontFamily ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
-      <div class="form-group"><label>Color</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none;cursor:pointer"></div>
-      <label style="font-size:12px;display:flex;gap:6px;margin:4px 0"><input type="checkbox" ${el.bold ? 'checked' : ''} data-prop="bold"> Bold</label>
-      <label style="font-size:12px;display:flex;gap:6px;margin:4px 0"><input type="checkbox" ${el.shadow ? 'checked' : ''} data-prop="shadow"> Shadow</label>`;
+    html += `<div class="form-group"><label>${t('designer.prop.text')}</label><input type="text" class="input" value="${el.text}" data-prop="text"></div>
+      <div class="form-group"><label>${t('designer.prop.size')}</label><input type="range" min="8" max="120" value="${el.fontSize}" data-prop="fontSize" style="width:100%"><span style="font-size:11px;color:var(--text-muted)">${el.fontSize}px</span></div>
+      <div class="form-group"><label>${t('designer.prop.font')}</label><select class="input" style="background:var(--bg-input)" data-prop="fontFamily">${FONTS.map(f => `<option ${f === el.fontFamily ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
+      <div class="form-group"><label>${t('designer.prop.color')}</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none;cursor:pointer"></div>
+      <label style="font-size:12px;display:flex;gap:6px;margin:4px 0"><input type="checkbox" ${el.bold ? 'checked' : ''} data-prop="bold"> ${t('designer.prop.bold')}</label>
+      <label style="font-size:12px;display:flex;gap:6px;margin:4px 0"><input type="checkbox" ${el.shadow ? 'checked' : ''} data-prop="shadow"> ${t('designer.prop.shadow')}</label>`;
   } else if (el.type === 'clock') {
-    html += `<div class="form-group"><label>Size</label><input type="range" min="16" max="120" value="${el.fontSize}" data-prop="fontSize" style="width:100%"></div>
-      <div class="form-group"><label>Color</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>
-      <div class="form-group"><label>Format</label><select class="input" style="background:var(--bg-input)" data-prop="format"><option ${el.format === '12h' ? 'selected' : ''} value="12h">12h</option><option ${el.format === '24h' ? 'selected' : ''} value="24h">24h</option></select></div>
-      <label style="font-size:12px;display:flex;gap:6px;margin:4px 0"><input type="checkbox" ${el.showSeconds ? 'checked' : ''} data-prop="showSeconds"> Show seconds</label>`;
+    html += `<div class="form-group"><label>${t('designer.prop.size')}</label><input type="range" min="16" max="120" value="${el.fontSize}" data-prop="fontSize" style="width:100%"></div>
+      <div class="form-group"><label>${t('designer.prop.color')}</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>
+      <div class="form-group"><label>${t('designer.prop.format')}</label><select class="input" style="background:var(--bg-input)" data-prop="format"><option ${el.format === '12h' ? 'selected' : ''} value="12h">12h</option><option ${el.format === '24h' ? 'selected' : ''} value="24h">24h</option></select></div>
+      <label style="font-size:12px;display:flex;gap:6px;margin:4px 0"><input type="checkbox" ${el.showSeconds ? 'checked' : ''} data-prop="showSeconds"> ${t('designer.prop.show_seconds')}</label>`;
   } else if (el.type === 'image' || el.type === 'video' || el.type === 'webpage') {
     html += `<div style="display:flex;gap:6px"><div class="form-group" style="flex:1;margin:0"><label>W%</label><input type="number" class="input" value="${Math.round(el.width)}" data-prop="width"></div>
       <div class="form-group" style="flex:1;margin:0"><label>H%</label><input type="number" class="input" value="${Math.round(el.height)}" data-prop="height"></div></div>`;
-    if (el.type === 'video') html += `<label style="font-size:12px;display:flex;gap:6px;margin:8px 0"><input type="checkbox" ${el.muted ? 'checked' : ''} data-prop="muted"> Muted</label>
-      <label style="font-size:12px;display:flex;gap:6px;margin:4px 0"><input type="checkbox" ${el.loop ? 'checked' : ''} data-prop="loop"> Loop</label>`;
+    if (el.type === 'video') html += `<label style="font-size:12px;display:flex;gap:6px;margin:8px 0"><input type="checkbox" ${el.muted ? 'checked' : ''} data-prop="muted"> ${t('designer.prop.muted')}</label>
+      <label style="font-size:12px;display:flex;gap:6px;margin:4px 0"><input type="checkbox" ${el.loop ? 'checked' : ''} data-prop="loop"> ${t('designer.prop.loop')}</label>`;
   } else if (el.type === 'shape') {
     html += `<div style="display:flex;gap:6px"><div class="form-group" style="flex:1;margin:0"><label>W%</label><input type="number" class="input" value="${Math.round(el.width)}" data-prop="width"></div>
       <div class="form-group" style="flex:1;margin:0"><label>H%</label><input type="number" class="input" value="${Math.round(el.height)}" data-prop="height"></div></div>
-      <div class="form-group"><label>Color</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>
-      <div class="form-group"><label>Opacity</label><input type="range" min="0" max="1" step="0.1" value="${el.opacity}" data-prop="opacity" style="width:100%"></div>
-      <div class="form-group"><label>Shape</label><select class="input" style="background:var(--bg-input)" data-prop="shape"><option ${el.shape === 'rect' ? 'selected' : ''}>rect</option><option ${el.shape === 'circle' ? 'selected' : ''}>circle</option></select></div>`;
+      <div class="form-group"><label>${t('designer.prop.color')}</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>
+      <div class="form-group"><label>${t('designer.prop.opacity')}</label><input type="range" min="0" max="1" step="0.1" value="${el.opacity}" data-prop="opacity" style="width:100%"></div>
+      <div class="form-group"><label>${t('designer.prop.shape')}</label><select class="input" style="background:var(--bg-input)" data-prop="shape"><option ${el.shape === 'rect' ? 'selected' : ''}>rect</option><option ${el.shape === 'circle' ? 'selected' : ''}>circle</option></select></div>`;
   } else if (el.type === 'weather') {
-    html += `<div class="form-group"><label>Location</label><input type="text" class="input" value="${el.location}" data-prop="location"></div>
-      <div class="form-group"><label>Size</label><input type="range" min="16" max="80" value="${el.fontSize}" data-prop="fontSize" style="width:100%"></div>
-      <div class="form-group"><label>Color</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>`;
+    html += `<div class="form-group"><label>${t('designer.prop.location')}</label><input type="text" class="input" value="${el.location}" data-prop="location"></div>
+      <div class="form-group"><label>${t('designer.prop.size')}</label><input type="range" min="16" max="80" value="${el.fontSize}" data-prop="fontSize" style="width:100%"></div>
+      <div class="form-group"><label>${t('designer.prop.color')}</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>`;
   } else if (el.type === 'ticker') {
-    html += `<div class="form-group"><label>Feed URL</label><input type="text" class="input" value="${el.feedUrl}" data-prop="feedUrl"></div>
-      <div class="form-group"><label>Speed (seconds)</label><input type="number" class="input" value="${el.speed}" data-prop="speed"></div>
-      <div class="form-group"><label>Text Color</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>
-      <div class="form-group"><label>BG Color</label><input type="text" class="input" value="${el.bgColor}" data-prop="bgColor"></div>`;
+    html += `<div class="form-group"><label>${t('designer.prop.feed_url')}</label><input type="text" class="input" value="${el.feedUrl}" data-prop="feedUrl"></div>
+      <div class="form-group"><label>${t('designer.prop.speed')}</label><input type="number" class="input" value="${el.speed}" data-prop="speed"></div>
+      <div class="form-group"><label>${t('designer.prop.text_color')}</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>
+      <div class="form-group"><label>${t('designer.prop.bg_color')}</label><input type="text" class="input" value="${el.bgColor}" data-prop="bgColor"></div>`;
   } else if (el.type === 'countdown') {
-    html += `<div class="form-group"><label>Target Date</label><input type="date" class="input" value="${el.targetDate}" data-prop="targetDate"></div>
-      <div class="form-group"><label>Label</label><input type="text" class="input" value="${el.label}" data-prop="label"></div>
-      <div class="form-group"><label>Size</label><input type="range" min="16" max="100" value="${el.fontSize}" data-prop="fontSize" style="width:100%"></div>
-      <div class="form-group"><label>Color</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>`;
+    html += `<div class="form-group"><label>${t('designer.prop.target_date')}</label><input type="date" class="input" value="${el.targetDate}" data-prop="targetDate"></div>
+      <div class="form-group"><label>${t('designer.prop.label')}</label><input type="text" class="input" value="${el.label}" data-prop="label"></div>
+      <div class="form-group"><label>${t('designer.prop.size')}</label><input type="range" min="16" max="100" value="${el.fontSize}" data-prop="fontSize" style="width:100%"></div>
+      <div class="form-group"><label>${t('designer.prop.color')}</label><input type="color" value="${el.color}" data-prop="color" style="width:100%;height:28px;border:none"></div>`;
   }
 
   // Save design button
@@ -470,7 +473,7 @@ function updateProps() {
     a.download = 'design.json';
     a.href = 'data:application/json,' + encodeURIComponent(JSON.stringify({elements: ${JSON.stringify(elements)}, bgValue: '${bgValue}'}));
     a.click();
-  })()">Save Design File</button>`;
+  })()">${t('designer.save_design_file')}</button>`;
 
   fields.innerHTML = html;
 
@@ -498,7 +501,7 @@ function updateLayers() {
       <span>${typeIcons[el.type] || '?'}</span>
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${el.text || el.type}</span>
     </div>
-  `).join('') || '<p style="color:var(--text-muted)">No elements yet</p>';
+  `).join('') || `<p style="color:var(--text-muted)">${t('designer.no_elements')}</p>`;
 
   list.querySelectorAll('[data-layer]').forEach(el => {
     el.onclick = () => { selectedIdx = parseInt(el.dataset.layer); redraw(); };
