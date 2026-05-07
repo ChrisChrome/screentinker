@@ -6,7 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const { OAuth2Client } = require('google-auth-library');
 const { db } = require('../db/database');
 const { generateToken, requireAuth, requireAdmin, requireSuperAdmin } = require('../middleware/auth');
-const { logActivity } = require('../services/activity');
+const { logActivity, getClientIp } = require('../services/activity');
 const config = require('../config');
 
 function logFailedLogin(email, ip, reason) {
@@ -74,16 +74,16 @@ router.post('/login', (req, res) => {
 
   const user = db.prepare('SELECT * FROM users WHERE email = ? AND auth_provider = ?').get(email.toLowerCase(), 'local');
   if (!user) {
-    logFailedLogin(email, req.ip, 'User not found');
+    logFailedLogin(email, getClientIp(req), 'User not found');
     return res.status(401).json({ error: 'Invalid email or password' });
   }
 
   if (!bcrypt.compareSync(password, user.password_hash)) {
-    logFailedLogin(email, req.ip, 'Wrong password');
+    logFailedLogin(email, getClientIp(req), 'Wrong password');
     return res.status(401).json({ error: 'Invalid email or password' });
   }
 
-  logSuccessfulLogin(user.id, email, req.ip);
+  logSuccessfulLogin(user.id, email, getClientIp(req));
   const token = generateToken(user);
   const { password_hash, ...safeUser } = user;
   res.json({ token, user: safeUser });
@@ -348,7 +348,7 @@ router.put('/users/:id/password', requireAuth, requireAdmin, (req, res) => {
   // Explicit audit entry — the generic activity logger captures the route
   // and target id, but a labeled detail string makes the audit log readable.
   // Never include the password; just who reset whose password.
-  logActivity(req.user.id, 'password_reset_for_user', `target: ${target.email}`, null, req.ip);
+  logActivity(req.user.id, 'password_reset_for_user', `target: ${target.email}`, null, getClientIp(req));
   res.json({ success: true });
 });
 

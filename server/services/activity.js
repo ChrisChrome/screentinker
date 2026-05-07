@@ -1,4 +1,31 @@
 const { db } = require('../db/database');
+const proxyaddr = require('proxy-addr');
+const { trustedProxies } = require('../config/cloudflareIps');
+
+// Gate function: returns true when an immediate TCP peer is one we trust
+// to populate forwarding headers (Cloudflare edges, loopback, link-local,
+// unique-local). Mirrors what `app.set('trust proxy', trustedProxies)` does
+// for X-Forwarded-For so that CF-Connecting-IP is held to the same standard.
+const isTrustedPeer = proxyaddr.compile(trustedProxies);
+
+// Resolve the real client IP for logging.
+//
+// Cloudflare always sets `CF-Connecting-IP` to the original client address
+// when it proxies a request. We prefer that header — but only when the
+// connection's immediate peer is a trusted CF/loopback address; otherwise
+// any random visitor could spoof the header by hitting the origin directly.
+//
+// Falls back to req.ip (which Express resolves via the trust-proxy table)
+// so local dev and any non-CF deployment keep working unchanged.
+function getClientIp(req) {
+  if (!req) return null;
+  const cf = req.headers && req.headers['cf-connecting-ip'];
+  if (typeof cf === 'string' && cf.length > 0) {
+    const peer = req.socket && req.socket.remoteAddress;
+    if (peer && isTrustedPeer(peer, 0)) return cf;
+  }
+  return req.ip || null;
+}
 
 function logActivity(userId, action, details = null, deviceId = null, ipAddress = null) {
   try {
@@ -40,7 +67,7 @@ function activityLogger(req, res, next) {
       const userId = req.user?.id;
       const deviceId = req.params?.id || req.params?.deviceId || req.body?.device_id;
       const details = summarizeAction(req);
-      logActivity(userId, action, details, deviceId, req.ip);
+      logActivity(userId, action, details, deviceId, getClientIp(req));
     }
     return originalJson(data);
   };
@@ -57,4 +84,4 @@ function summarizeAction(req) {
   return parts.join(', ') || null;
 }
 
-module.exports = { logActivity, getActivity, pruneActivityLog, activityLogger };
+module.exports = { logActivity, getActivity, pruneActivityLog, activityLogger, getClientIp };

@@ -13,7 +13,13 @@ const config = require('./config');
 });
 
 const app = express();
-app.set('trust proxy', 1);
+const { trustedProxies } = require('./config/cloudflareIps');
+const { getClientIp } = require('./services/activity');
+// Trust loopback / link-local / unique-local (local dev, LAN reverse proxies)
+// and Cloudflare's published edge ranges. With this list, req.ip resolves to
+// the original client when fronted by Cloudflare; X-Forwarded-For from any
+// non-trusted source is ignored, so the value can't be spoofed.
+app.set('trust proxy', trustedProxies);
 
 // Determine if SSL certs are available
 const hasSsl = fs.existsSync(config.sslCert) && fs.existsSync(config.sslKey);
@@ -186,7 +192,7 @@ app.use('/socket.io-client', express.static(
 const rateLimits = new Map();
 function rateLimit(windowMs, maxRequests) {
   return (req, res, next) => {
-    const key = req.ip + req.path;
+    const key = getClientIp(req) + req.path;
     const now = Date.now();
     const windowStart = now - windowMs;
     let hits = rateLimits.get(key) || [];
