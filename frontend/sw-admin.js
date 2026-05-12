@@ -1,4 +1,8 @@
-const CACHE = 'rd-admin-v1';
+// Service worker for the admin SPA. Bumped to v2 to invalidate the cache-first
+// caches that were shipping stale JS to existing clients (the server already
+// sends Cache-Control: no-cache + ETag, but the previous SW intercepted before
+// any of that mattered). Strategy is now network-first with offline fallback.
+const CACHE = 'rd-admin-v2';
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll([
@@ -15,7 +19,18 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  // Network first for API, cache first for static
+  // Don't intercept API or socket.io traffic - those need to hit the network unmediated.
   if (e.request.url.includes('/api/') || e.request.url.includes('/socket.io/')) return;
-  e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+  // Network-first: respect the server's Cache-Control: no-cache + ETag (304s
+  // stay fast); fall back to cache only when offline. Re-populate the cache
+  // on every successful fetch so the offline fallback stays current.
+  e.respondWith(
+    fetch(e.request)
+      .then(resp => {
+        const copy = resp.clone();
+        caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
+        return resp;
+      })
+      .catch(() => caches.match(e.request))
+  );
 });

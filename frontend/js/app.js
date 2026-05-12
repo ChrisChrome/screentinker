@@ -21,6 +21,7 @@ import * as playlists from './views/playlists.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
 import { isPlatformAdmin } from './utils.js';
+import { renderWorkspaceSwitcher } from './components/workspace-switcher.js';
 
 const app = document.getElementById('app');
 const sidebar = document.querySelector('.sidebar');
@@ -94,6 +95,9 @@ async function refreshCurrentUser() {
     if (!res.ok) return;
     const fresh = await res.json();
     localStorage.setItem('user', JSON.stringify(fresh));
+    // Re-render the workspace switcher on every /me refresh - cheap, and keeps
+    // the dropdown in sync if a workspace was added/removed in another tab.
+    renderWorkspaceSwitcher(fresh);
     window.dispatchEvent(new CustomEvent('user-refreshed', { detail: fresh }));
   } catch {}
 }

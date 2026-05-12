@@ -293,14 +293,32 @@ function getMicrosoftProfile(accessToken) {
 // roles, and the list of accessible workspaces. Legacy fields (user object at
 // the top level) are preserved so existing frontend code continues to work.
 router.get('/me', requireAuth, resolveTenancy, (req, res) => {
-  const accessible = db.prepare(`
-    SELECT w.id, w.name, w.organization_id, o.name AS organization_name, wm.role AS workspace_role
-    FROM workspace_members wm
-    JOIN workspaces w ON w.id = wm.workspace_id
-    JOIN organizations o ON o.id = w.organization_id
-    WHERE wm.user_id = ?
-    ORDER BY o.name, w.name
-  `).all(req.user.id);
+  // Platform admins see every workspace in the system (via the LEFT JOIN they
+  // still get their own workspace_role for direct memberships; NULL elsewhere,
+  // matching accessContext's actingAs semantics). Regular users see only
+  // workspaces they have a direct workspace_members row in. Role is read from
+  // the signed JWT (not user-supplied), so non-admins cannot reach the admin
+  // branch. No cap on the admin list yet - revisit at 50+ workspaces when
+  // dropdown UX without search starts to degrade.
+  const isPlatformAdmin = req.user.role === 'platform_admin' || req.user.role === 'superadmin';
+  const accessible = isPlatformAdmin
+    ? db.prepare(`
+        SELECT w.id, w.name, w.organization_id, o.name AS organization_name,
+               wm.role AS workspace_role
+        FROM workspaces w
+        JOIN organizations o ON o.id = w.organization_id
+        LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?
+        ORDER BY o.name, w.name
+      `).all(req.user.id)
+    : db.prepare(`
+        SELECT w.id, w.name, w.organization_id, o.name AS organization_name,
+               wm.role AS workspace_role
+        FROM workspace_members wm
+        JOIN workspaces w ON w.id = wm.workspace_id
+        JOIN organizations o ON o.id = w.organization_id
+        WHERE wm.user_id = ?
+        ORDER BY o.name, w.name
+      `).all(req.user.id);
 
   const currentOrg = req.organizationId
     ? db.prepare('SELECT id, name FROM organizations WHERE id = ?').get(req.organizationId)

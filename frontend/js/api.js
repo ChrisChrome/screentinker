@@ -156,6 +156,7 @@ export const api = {
   // Current user
   getMe: () => request('/auth/me'),
   updateMe: (data) => request('/auth/me', { method: 'PUT', body: JSON.stringify(data) }),
+  switchWorkspace: (workspaceId) => request('/auth/switch-workspace', { method: 'POST', body: JSON.stringify({ workspace_id: workspaceId }) }),
 
   // Admin - Users
   getUsers: () => request('/auth/users'),

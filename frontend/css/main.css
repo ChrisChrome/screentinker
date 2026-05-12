@@ -32,6 +32,65 @@ body {
   font-size: 16px;
 }
 
+/* Workspace switcher (Phase 3 MVP). Sits in sidebar-header below the logo.
+   Three render modes via JS: dropdown (>1 ws), static text (1 ws),
+   muted empty state (0 ws). */
+.workspace-switcher { position: relative; margin-top: 12px; }
+.workspace-switcher-button {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; padding: 8px 10px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-primary);
+  font-size: 13px; cursor: pointer; transition: all var(--transition);
+}
+.workspace-switcher-button:hover { border-color: var(--accent); }
+.workspace-switcher-static {
+  display: block; padding: 4px 2px;
+  color: var(--text-primary); font-size: 13px; font-weight: 500;
+}
+.workspace-switcher-static::before {
+  content: 'Workspace';
+  display: block;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text-muted); margin-bottom: 2px;
+}
+.workspace-switcher-empty {
+  display: block; padding: 8px 10px;
+  color: var(--text-muted); font-size: 12px; font-style: italic;
+}
+.workspace-switcher-button .chev {
+  flex-shrink: 0; margin-left: 8px; color: var(--text-muted);
+  transition: transform var(--transition);
+}
+.workspace-switcher.open .chev { transform: rotate(180deg); }
+.workspace-switcher-menu {
+  display: none;
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  max-height: 320px; overflow-y: auto; z-index: 100;
+}
+.workspace-switcher.open .workspace-switcher-menu { display: block; }
+.workspace-switcher-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary); font-size: 13px;
+}
+.workspace-switcher-item:last-child { border-bottom: none; }
+.workspace-switcher-item:hover { background: var(--bg-input); }
+.workspace-switcher-item.current { font-weight: 600; }
+.workspace-switcher-item .check {
+  flex-shrink: 0; color: var(--accent); width: 14px;
+}
+.workspace-switcher-item .ws-meta { flex: 1; min-width: 0; }
+.workspace-switcher-item .ws-name {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.workspace-switcher-item .ws-org {
+  font-size: 11px; color: var(--text-muted); margin-top: 2px;
+}
+
 .nav-links {
   flex: 1;
   padding: 12px 8px;
