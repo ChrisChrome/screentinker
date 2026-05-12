@@ -400,7 +400,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       const newId = uuid.v4();
       idMap.kiosk[k.id] = newId;
       const config = typeof k.config === 'string' ? k.config : JSON.stringify(k.config || {});
-      db.prepare(`INSERT INTO kiosk_pages (id, user_id, name, config, created_at) VALUES (?, ?, ?, ?, ?)`).run(newId, userId, k.name, config, k.created_at || Math.floor(Date.now() / 1000));
+      db.prepare(`INSERT INTO kiosk_pages (id, user_id, workspace_id, name, config, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(newId, userId, workspaceId, k.name, config, k.created_at || Math.floor(Date.now() / 1000));
       stats.kiosk_pages++;
     }
 
