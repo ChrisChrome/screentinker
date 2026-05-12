@@ -65,15 +65,20 @@ body {
 .workspace-switcher.open .chev { transform: rotate(180deg); }
 .workspace-switcher-menu {
   display: none;
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+  /* Width: detach from the narrow sidebar-header (188px content width). The
+     sidebar is z-indexed and the dropdown is free to extend beyond the
+     sidebar into the main content area. min/max bounds keep it readable
+     for normal-length names without sprawling on extreme cases. */
+  position: absolute; top: calc(100% + 4px); left: 0;
+  min-width: 280px; max-width: 360px;
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-  max-height: 320px; overflow-y: auto; z-index: 100;
+  max-height: 360px; padding: 4px 0; overflow-y: auto; z-index: 100;
 }
 .workspace-switcher.open .workspace-switcher-menu { display: block; }
 .workspace-switcher-item {
   display: flex; align-items: center; gap: 8px;
-  padding: 10px 12px; cursor: pointer;
+  padding: 8px 12px; cursor: pointer;
   border-bottom: 1px solid var(--border);
   color: var(--text-primary); font-size: 13px;
 }
@@ -88,7 +93,10 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .workspace-switcher-item .ws-org {
-  font-size: 11px; color: var(--text-muted); margin-top: 2px;
+  font-size: 11px; color: var(--text-muted); margin-top: 1px;
+  /* nowrap + ellipsis: long "Org Name . N devices" lines truncate cleanly
+     instead of wrapping onto a second line that doubles row height. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .workspace-switcher-pencil {
   flex-shrink: 0; visibility: hidden;
