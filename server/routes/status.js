@@ -360,7 +360,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       for (const p of (data.playlists || [])) {
         const newId = uuid.v4();
         idMap.playlists[p.id] = newId;
-        db.prepare('INSERT INTO playlists (id, user_id, name, description, is_auto_generated, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(newId, userId, p.name, p.description || '', p.is_auto_generated || 0, p.created_at || Math.floor(Date.now() / 1000), p.updated_at || Math.floor(Date.now() / 1000));
+        db.prepare('INSERT INTO playlists (id, user_id, workspace_id, name, description, is_auto_generated, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(newId, userId, workspaceId, p.name, p.description || '', p.is_auto_generated || 0, p.created_at || Math.floor(Date.now() / 1000), p.updated_at || Math.floor(Date.now() / 1000));
         stats.playlists++;
       }
       for (const pi of (data.playlist_items || [])) {
@@ -502,8 +502,8 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
           items.push({ contentId, widgetId, sort_order: a.sort_order || 0, duration });
         }
 
-        db.prepare('INSERT INTO playlists (id, user_id, name, description, is_auto_generated) VALUES (?, ?, ?, ?, 1)')
-          .run(playlistId, userId, `${devName} (imported)`, 'Converted from v1 assignments');
+        db.prepare('INSERT INTO playlists (id, user_id, workspace_id, name, description, is_auto_generated) VALUES (?, ?, ?, ?, ?, 1)')
+          .run(playlistId, userId, workspaceId, `${devName} (imported)`, 'Converted from v1 assignments');
         for (const item of items) {
           db.prepare('INSERT INTO playlist_items (playlist_id, content_id, widget_id, sort_order, duration_sec) VALUES (?, ?, ?, ?, ?)')
             .run(playlistId, item.contentId, item.widgetId, item.sort_order, item.duration);
