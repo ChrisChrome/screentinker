@@ -1,5 +1,18 @@
 import { api } from '../api.js';
 import { showToast } from './toast.js';
+import { t, tn } from '../i18n.js';
+
+// Reusable resource-count formatter. Returns localized "1 device" / "N devices"
+// / "No devices" based on n. Generic so the same shape can wire users /
+// playlists / schedules counts later without refactor - caller supplies the
+// i18n key bases.
+//   keyBase: e.g. 'switcher.devices_count' (looks up _one / _other variants via tn)
+//   zeroKey: e.g. 'switcher.no_devices' (direct lookup for n === 0)
+function formatResourceCount(n, keyBase, zeroKey) {
+  if (n === undefined || n === null) return '';
+  if (n === 0) return t(zeroKey);
+  return tn(keyBase, n);
+}
 
 // Render the workspace switcher inside #workspaceSwitcher based on the
 // /api/auth/me response. Three modes:
@@ -37,14 +50,21 @@ export function renderWorkspaceSwitcher(me) {
       </svg>
     </button>
     <div class="workspace-switcher-menu" role="listbox">
-      ${sorted.map(w => `
+      ${sorted.map(w => {
+        const countStr = formatResourceCount(w.device_count, 'switcher.devices_count', 'switcher.no_devices');
+        const orgName = w.organization_name || '';
+        const subtitle = orgName && countStr ? esc(orgName) + ' · ' + esc(countStr)
+                       : orgName            ? esc(orgName)
+                       : countStr           ? esc(countStr)
+                                            : '';
+        return `
         <div class="workspace-switcher-item ${w.id === currentId ? 'current' : ''}" data-workspace-id="${esc(w.id)}" role="option">
           <svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="${w.id === currentId ? '' : 'visibility:hidden'}">
             <polyline points="20 6 9 17 4 12"/>
           </svg>
           <div class="ws-meta">
             <div class="ws-name">${esc(w.name)}</div>
-            <div class="ws-org">${esc(w.organization_name || '')}</div>
+            <div class="ws-org">${subtitle}</div>
           </div>
           ${w.can_admin ? `
             <button class="workspace-switcher-pencil" type="button" data-rename-id="${esc(w.id)}" aria-label="Rename workspace" title="Rename">
@@ -54,7 +74,8 @@ export function renderWorkspaceSwitcher(me) {
             </button>
           ` : ''}
         </div>
-      `).join('')}
+      `;
+      }).join('')}
     </div>
   `;
 

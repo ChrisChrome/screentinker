@@ -305,11 +305,16 @@ router.get('/me', requireAuth, resolveTenancy, (req, res) => {
   // UI can render admin affordances (rename pencil etc.) only where the
   // caller has permission. The server still enforces permission on the
   // actual mutation routes regardless of this advisory flag.
+  // device_count: correlated subquery on workspaces.id. Equality fails on NULL
+  // so unclaimed pair-pool devices (workspace_id IS NULL) are correctly excluded.
+  // Microseconds per row at current scale (~37 rows worst case for platform_admin);
+  // not optimizing - revisit if the admin list grows past a few hundred workspaces.
   const isPlatformAdmin = req.user.role === 'platform_admin' || req.user.role === 'superadmin';
   const accessible = isPlatformAdmin
     ? db.prepare(`
         SELECT w.id, w.name, w.organization_id, o.name AS organization_name,
-               wm.role AS workspace_role, om.role AS org_role
+               wm.role AS workspace_role, om.role AS org_role,
+               (SELECT COUNT(*) FROM devices WHERE workspace_id = w.id) AS device_count
         FROM workspaces w
         JOIN organizations o ON o.id = w.organization_id
         LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?
@@ -318,7 +323,8 @@ router.get('/me', requireAuth, resolveTenancy, (req, res) => {
       `).all(req.user.id, req.user.id)
     : db.prepare(`
         SELECT w.id, w.name, w.organization_id, o.name AS organization_name,
-               wm.role AS workspace_role, om.role AS org_role
+               wm.role AS workspace_role, om.role AS org_role,
+               (SELECT COUNT(*) FROM devices WHERE workspace_id = w.id) AS device_count
         FROM workspace_members wm
         JOIN workspaces w ON w.id = wm.workspace_id
         JOIN organizations o ON o.id = w.organization_id

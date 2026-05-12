@@ -1105,4 +1105,10 @@ export default {
   'add_display.windows': 'Windows',
   'add_display.smart_tv_note': 'Smart TVs (LG/Samsung): open the built-in browser and navigate to <code style="background:var(--bg-input,#0f172a);padding:1px 4px;border-radius:3px">/player</code>',
   'add_display.pair_btn': 'Pair Display',
+
+  // Workspace switcher (Phase 3 MVP). devices_count is the only count exposed
+  // today; matching pattern for users/playlists/etc. when those land later.
+  'switcher.devices_count_one': '1 device',
+  'switcher.devices_count_other': '{n} devices',
+  'switcher.no_devices': 'No devices',
 };
