@@ -1,18 +1,25 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db/database');
-const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 
-// Helper: scope reports to user's devices
-function getUserDeviceFilter(user) {
-  if (PLATFORM_ROLES.includes(user.role)) return { sql: '', params: [] };
-  return { sql: ' AND d.user_id = ?', params: [user.id] };
+// Phase 2.2g: scope reports to the caller's current workspace.
+// No platform_admin bypass - cross-workspace reporting comes from
+// switch-workspace, not a magic role-based "see all" path. This matches
+// the precedent set in devices.js.
+function getWorkspaceDeviceFilter(req) {
+  if (!req.workspaceId) return { sql: ' AND 1=0', params: [] }; // no workspace -> empty result
+  return { sql: ' AND d.workspace_id = ?', params: [req.workspaceId] };
+}
+
+function getWorkspaceDeviceSubquery(req) {
+  if (!req.workspaceId) return { sql: ' AND device_id IN (SELECT id FROM devices WHERE 1=0)', params: [] };
+  return { sql: ' AND device_id IN (SELECT id FROM devices WHERE workspace_id = ?)', params: [req.workspaceId] };
 }
 
 // Query play logs
 router.get('/plays', (req, res) => {
   const { device_id, content_id, start, end, limit: lim } = req.query;
-  const scope = getUserDeviceFilter(req.user);
+  const scope = getWorkspaceDeviceFilter(req);
   let sql = `SELECT pl.*, d.name as device_name
     FROM play_logs pl
     JOIN devices d ON pl.device_id = d.id
@@ -36,13 +43,10 @@ router.get('/summary', (req, res) => {
   const startEpoch = start ? Math.floor(new Date(start).getTime() / 1000) : Math.floor(Date.now() / 1000) - 30 * 86400;
   const endEpoch = end ? Math.floor(new Date(end + 'T23:59:59').getTime() / 1000) : Math.floor(Date.now() / 1000);
 
-  let deviceFilter = '';
-  const params = [startEpoch, endEpoch];
-  // Scope to user's devices (non-admin)
-  if (!ELEVATED_ROLES.includes(req.user.role)) {
-    deviceFilter += ' AND device_id IN (SELECT id FROM devices WHERE user_id = ?)';
-    params.push(req.user.id);
-  }
+  // Phase 2.2g: workspace-scope all summary queries, no admin bypass.
+  const wsScope = getWorkspaceDeviceSubquery(req);
+  let deviceFilter = wsScope.sql;
+  const params = [startEpoch, endEpoch, ...wsScope.params];
   if (device_id) { deviceFilter += ' AND device_id = ?'; params.push(device_id); }
 
   // Overall stats
@@ -112,14 +116,17 @@ router.get('/summary', (req, res) => {
   });
 });
 
-// Export CSV
+// Export CSV. Phase 2.2g: workspace-scoped. Previously this route had no scope
+// filter at all - any authenticated user could export the entire platform's
+// play_logs. The added WHERE clause closes that pre-existing cross-tenant leak.
 router.get('/export', (req, res) => {
   const { device_id, start, end } = req.query;
   const startEpoch = start ? Math.floor(new Date(start).getTime() / 1000) : 0;
   const endEpoch = end ? Math.floor(new Date(end + 'T23:59:59').getTime() / 1000) : Math.floor(Date.now() / 1000);
 
-  let sql = `SELECT pl.*, d.name as device_name FROM play_logs pl JOIN devices d ON pl.device_id = d.id WHERE pl.started_at >= ? AND pl.started_at <= ?`;
-  const params = [startEpoch, endEpoch];
+  const scope = getWorkspaceDeviceFilter(req);
+  let sql = `SELECT pl.*, d.name as device_name FROM play_logs pl JOIN devices d ON pl.device_id = d.id WHERE pl.started_at >= ? AND pl.started_at <= ?${scope.sql}`;
+  const params = [startEpoch, endEpoch, ...scope.params];
   if (device_id) { sql += ' AND pl.device_id = ?'; params.push(device_id); }
   sql += ' ORDER BY pl.started_at ASC';
 
@@ -137,20 +144,24 @@ router.get('/export', (req, res) => {
   res.send(csv);
 });
 
-// Device uptime report
+// Device uptime report. Phase 2.2g: workspace-scoped. Previously this route
+// had no scope filter at all - any authenticated user could see telemetry
+// summaries for every device on the platform. The added WHERE clause closes
+// that pre-existing cross-tenant leak.
 router.get('/uptime', (req, res) => {
   const { device_id, start, end } = req.query;
   const startEpoch = start ? Math.floor(new Date(start).getTime() / 1000) : Math.floor(Date.now() / 1000) - 30 * 86400;
   const endEpoch = end ? Math.floor(new Date(end + 'T23:59:59').getTime() / 1000) : Math.floor(Date.now() / 1000);
 
+  const scope = getWorkspaceDeviceFilter(req);
   let sql = `SELECT dt.device_id, d.name as device_name,
     COUNT(*) as heartbeat_count,
     MIN(dt.reported_at) as first_seen,
     MAX(dt.reported_at) as last_seen
     FROM device_telemetry dt
     JOIN devices d ON dt.device_id = d.id
-    WHERE dt.reported_at >= ? AND dt.reported_at <= ?`;
-  const params = [startEpoch, endEpoch];
+    WHERE dt.reported_at >= ? AND dt.reported_at <= ?${scope.sql}`;
+  const params = [startEpoch, endEpoch, ...scope.params];
   if (device_id) { sql += ' AND dt.device_id = ?'; params.push(device_id); }
   sql += ' GROUP BY dt.device_id ORDER BY d.name';
 
