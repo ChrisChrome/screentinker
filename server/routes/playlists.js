@@ -175,10 +175,27 @@ router.put('/:id', requirePlaylistWrite, (req, res) => {
 
 // Publish playlist — snapshot current items and push to devices
 router.post('/:id/publish', requirePlaylistWrite, (req, res) => {
-  const items = buildSnapshotItems(req.params.id);
+  // Snapshot shape (no pi.id) is intentional — published_snapshot is consumed
+  // by devices and stored as JSON; row IDs there would be misleading.
+  const snapshotItems = buildSnapshotItems(req.params.id);
   db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
-    .run(JSON.stringify(items), req.params.id);
+    .run(JSON.stringify(snapshotItems), req.params.id);
   pushToDevices(req.params.id, req);
+  // UI response shape must include pi.id so the post-publish render can wire
+  // per-row delete/duration listeners. TODO: refactor to share this SELECT
+  // with GET /:id (also duplicated in /discard and POST /:id/items/reorder).
+  const items = db.prepare(`
+    SELECT pi.*,
+           COALESCE(c.filename, w.name) as filename,
+           c.mime_type, c.filepath, c.thumbnail_path,
+           c.duration_sec as content_duration, c.file_size, c.remote_url,
+           w.name as widget_name, w.widget_type, w.config as widget_config
+    FROM playlist_items pi
+    LEFT JOIN content c ON pi.content_id = c.id
+    LEFT JOIN widgets w ON pi.widget_id = w.id
+    WHERE pi.playlist_id = ?
+    ORDER BY pi.sort_order ASC
+  `).all(req.params.id);
   res.json({ ...db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id), items });
 });
 
