@@ -61,11 +61,13 @@ router.get('/export', (req, res) => {
   if (!token) return res.status(401).json({ error: 'Token required' });
 
   let userId;
+  let workspaceId;
   try {
     const jwt = require('jsonwebtoken');
     const config = require('../config');
     const decoded = jwt.verify(token, config.jwtSecret);
     userId = decoded.id;
+    workspaceId = decoded.current_workspace_id || null;
     if (!userId) return res.status(401).json({ error: 'Invalid token' });
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
@@ -73,6 +75,17 @@ router.get('/export', (req, res) => {
 
   const user = db.prepare('SELECT id, email, name, role, auth_provider, plan_id, created_at FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
+
+  // Phase 2.2f: export workspace-scoped branding. Fall back to first-accessible
+  // workspace if the JWT didn't carry one.
+  if (!workspaceId) {
+    const w = db.prepare(`
+      SELECT w.id FROM workspaces w
+      JOIN workspace_members wm ON wm.workspace_id = w.id
+      WHERE wm.user_id = ? ORDER BY wm.joined_at ASC LIMIT 1
+    `).get(userId);
+    workspaceId = w?.id || null;
+  }
 
   const devices = db.prepare('SELECT id, name, status, ip_address, android_version, app_version, screen_width, screen_height, created_at FROM devices WHERE user_id = ?').all(userId);
   const deviceIds = devices.map(d => d.id);
@@ -102,7 +115,7 @@ router.get('/export', (req, res) => {
   const groupPlaceholders = groupIds.map(() => '?').join(',') || "'__none__'";
   const groupMembers = groupIds.length ? db.prepare(`SELECT * FROM device_group_members WHERE group_id IN (${groupPlaceholders})`).all(...groupIds) : [];
   const alertConfigs = db.prepare('SELECT id, alert_type, enabled, config, created_at FROM alert_configs WHERE user_id = ?').all(userId);
-  const whiteLabel = db.prepare('SELECT * FROM white_labels WHERE user_id = ?').get(userId);
+  const whiteLabel = workspaceId ? db.prepare('SELECT * FROM white_labels WHERE workspace_id = ?').get(workspaceId) : null;
 
   const exportData = {
     format: 'screentinker-export-v2',
@@ -425,14 +438,14 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       db.prepare(`INSERT INTO alert_configs (id, user_id, alert_type, enabled, config, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(newId, userId, a.alert_type, a.enabled !== undefined ? a.enabled : 1, config, a.created_at || Math.floor(Date.now() / 1000));
     }
 
-    // Import white label
-    if (data.white_label) {
+    // Import white label - UPSERT into the importer's current workspace.
+    if (data.white_label && workspaceId) {
       const wl = data.white_label;
-      const existing = db.prepare('SELECT id FROM white_labels WHERE user_id = ?').get(userId);
+      const existing = db.prepare('SELECT id FROM white_labels WHERE workspace_id = ?').get(workspaceId);
       if (existing) {
-        db.prepare(`UPDATE white_labels SET brand_name=?, logo_url=?, favicon_url=?, primary_color=?, bg_color=?, custom_domain=?, custom_css=?, hide_branding=?, updated_at=strftime('%s','now') WHERE user_id=?`).run(wl.brand_name || 'ScreenTinker', wl.logo_url || null, wl.favicon_url || null, wl.primary_color || '#3B82F6', wl.bg_color || '#111827', wl.custom_domain || null, wl.custom_css || null, wl.hide_branding || 0, userId);
+        db.prepare(`UPDATE white_labels SET brand_name=?, logo_url=?, favicon_url=?, primary_color=?, bg_color=?, custom_domain=?, custom_css=?, hide_branding=?, updated_at=strftime('%s','now') WHERE workspace_id=?`).run(wl.brand_name || 'ScreenTinker', wl.logo_url || null, wl.favicon_url || null, wl.primary_color || '#3B82F6', wl.bg_color || '#111827', wl.custom_domain || null, wl.custom_css || null, wl.hide_branding || 0, workspaceId);
       } else {
-        db.prepare(`INSERT INTO white_labels (id, user_id, brand_name, logo_url, favicon_url, primary_color, bg_color, custom_domain, custom_css, hide_branding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(uuid.v4(), userId, wl.brand_name || 'ScreenTinker', wl.logo_url || null, wl.favicon_url || null, wl.primary_color || '#3B82F6', wl.bg_color || '#111827', wl.custom_domain || null, wl.custom_css || null, wl.hide_branding || 0);
+        db.prepare(`INSERT INTO white_labels (id, user_id, workspace_id, brand_name, logo_url, favicon_url, primary_color, bg_color, custom_domain, custom_css, hide_branding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(uuid.v4(), userId, workspaceId, wl.brand_name || 'ScreenTinker', wl.logo_url || null, wl.favicon_url || null, wl.primary_color || '#3B82F6', wl.bg_color || '#111827', wl.custom_domain || null, wl.custom_css || null, wl.hide_branding || 0);
       }
     }
   });

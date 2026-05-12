@@ -2,30 +2,40 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
+// Phase 2.2f: workspace-scoped branding. POST gated by requireWorkspaceAdmin
+// per the design doc (branding is a workspace_admin power, not editor).
+const { requireWorkspaceAdmin } = require('../lib/permissions');
 
-// Get current user's white-label config
+// Get current workspace's white-label config.
 router.get('/', (req, res) => {
-  let wl = db.prepare('SELECT * FROM white_labels WHERE user_id = ?').get(req.user.id);
+  if (!req.workspaceId) {
+    return res.json({ brand_name: 'ScreenTinker', primary_color: '#3B82F6', secondary_color: '#1E293B', bg_color: '#111827', hide_branding: 0 });
+  }
+  let wl = db.prepare('SELECT * FROM white_labels WHERE workspace_id = ?').get(req.workspaceId);
   if (!wl) {
-    // Return default branding
     wl = { brand_name: 'ScreenTinker', primary_color: '#3B82F6', secondary_color: '#1E293B', bg_color: '#111827', hide_branding: 0 };
   }
   res.json(wl);
 });
 
-// Get branding by domain (public, for white-label domains)
+// Get branding by custom domain (public, unauthenticated - used pre-login by
+// white-label frontends to resolve their hostname's branding). Keyed by the
+// globally-unique custom_domain column; no scope check.
 router.get('/domain/:domain', (req, res) => {
   const wl = db.prepare('SELECT * FROM white_labels WHERE custom_domain = ?').get(req.params.domain);
   if (!wl) return res.json({ brand_name: 'ScreenTinker', primary_color: '#3B82F6' });
   res.json(wl);
 });
 
-// Create or update white-label config
-router.post('/', (req, res) => {
+// Create or update the current workspace's white-label config. Restricted to
+// workspace_admin / org_owner / org_admin / platform_admin.
+router.post('/', requireWorkspaceAdmin, (req, res) => {
+  if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before configuring branding.' });
+
   const { brand_name, logo_url, favicon_url, primary_color, secondary_color, bg_color,
           custom_domain, custom_css, hide_branding } = req.body;
 
-  let wl = db.prepare('SELECT * FROM white_labels WHERE user_id = ?').get(req.user.id);
+  let wl = db.prepare('SELECT * FROM white_labels WHERE workspace_id = ?').get(req.workspaceId);
 
   if (wl) {
     const fields = { brand_name, logo_url, favicon_url, primary_color, secondary_color, bg_color, custom_domain, custom_css, hide_branding };
@@ -36,19 +46,19 @@ router.post('/', (req, res) => {
     });
     if (updates.length) {
       updates.push("updated_at = strftime('%s','now')");
-      values.push(req.user.id);
-      db.prepare(`UPDATE white_labels SET ${updates.join(', ')} WHERE user_id = ?`).run(...values);
+      values.push(req.workspaceId);
+      db.prepare(`UPDATE white_labels SET ${updates.join(', ')} WHERE workspace_id = ?`).run(...values);
     }
   } else {
     const id = uuidv4();
-    db.prepare(`INSERT INTO white_labels (id, user_id, brand_name, logo_url, favicon_url, primary_color, secondary_color, bg_color, custom_domain, custom_css, hide_branding)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      id, req.user.id, brand_name || 'ScreenTinker', logo_url || null, favicon_url || null,
+    db.prepare(`INSERT INTO white_labels (id, user_id, workspace_id, brand_name, logo_url, favicon_url, primary_color, secondary_color, bg_color, custom_domain, custom_css, hide_branding)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id, req.user.id, req.workspaceId, brand_name || 'ScreenTinker', logo_url || null, favicon_url || null,
       primary_color || '#3B82F6', secondary_color || '#1E293B', bg_color || '#111827',
       custom_domain || null, custom_css || null, hide_branding ? 1 : 0);
   }
 
-  res.json(db.prepare('SELECT * FROM white_labels WHERE user_id = ?').get(req.user.id));
+  res.json(db.prepare('SELECT * FROM white_labels WHERE workspace_id = ?').get(req.workspaceId));
 });
 
 module.exports = router;
