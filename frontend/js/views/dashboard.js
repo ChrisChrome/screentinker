@@ -420,9 +420,14 @@ function refreshSelectionBar() {
   const n = selectedDeviceIds.size;
   if (n === 0) { bar.style.display = 'none'; return; }
   bar.style.display = 'flex';
-  count.textContent = `${n} display${n === 1 ? '' : 's'} selected`;
-  // Need at least 2 to make a wall
-  document.getElementById('createWallBtn').disabled = n < 2;
+  // Need at least 2 to make a wall - surface the constraint inline so the
+  // greyed-out button isn't just silently unresponsive.
+  count.textContent = n < 2
+    ? `${n} display selected - pick 1 more to create a wall`
+    : `${n} displays selected`;
+  const btn = document.getElementById('createWallBtn');
+  btn.disabled = n < 2;
+  btn.title = n < 2 ? 'Select at least 2 displays to create a video wall' : '';
 }
 
 // Pick a sensible default grid for n devices: prefer near-square layouts,
