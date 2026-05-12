@@ -302,6 +302,16 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
 // yet (they still filter by user_id); 2.2 will migrate them one route at a time.
 const { requireAuth } = require('./middleware/auth');
 const { resolveTenancy } = require('./lib/tenancy');
+
+// activityLogger wraps res.json on every subsequent route to auto-log
+// successful POST/PUT/DELETE mutations. Mount it BEFORE the workspace routes
+// (this fix corrects a pre-existing bug where it was mounted after them and
+// silently never fired). Auth / subscription / stripe routes are already
+// mounted above and stay opt-out from the auto-logger (login has its own
+// inline writers; payment webhooks don't belong in activity_log).
+const { activityLogger } = require('./services/activity');
+app.use(activityLogger);
+
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
 app.use('/api/folders', requireAuth, resolveTenancy, require('./routes/folders'));
@@ -363,9 +373,8 @@ app.get('/api/version', (req, res) => {
 // Public status page
 app.use('/api/status', require('./routes/status'));
 
-// Activity logging middleware (after auth, before routes respond)
-const { activityLogger } = require('./services/activity');
-app.use(activityLogger);
+// Activity logging middleware now mounted earlier (just before the workspace
+// route block) - leaving this comment here as a breadcrumb for the move.
 
 // APK version check endpoint (public, used by devices to check for updates)
 app.get('/api/update/check', (req, res) => {
