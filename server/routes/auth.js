@@ -300,25 +300,41 @@ router.get('/me', requireAuth, resolveTenancy, (req, res) => {
   // the signed JWT (not user-supplied), so non-admins cannot reach the admin
   // branch. No cap on the admin list yet - revisit at 50+ workspaces when
   // dropdown UX without search starts to degrade.
+  //
+  // Each accessible_workspaces entry also carries `can_admin: bool` so the
+  // UI can render admin affordances (rename pencil etc.) only where the
+  // caller has permission. The server still enforces permission on the
+  // actual mutation routes regardless of this advisory flag.
   const isPlatformAdmin = req.user.role === 'platform_admin' || req.user.role === 'superadmin';
   const accessible = isPlatformAdmin
     ? db.prepare(`
         SELECT w.id, w.name, w.organization_id, o.name AS organization_name,
-               wm.role AS workspace_role
+               wm.role AS workspace_role, om.role AS org_role
         FROM workspaces w
         JOIN organizations o ON o.id = w.organization_id
         LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?
+        LEFT JOIN organization_members om ON om.organization_id = w.organization_id AND om.user_id = ?
         ORDER BY o.name, w.name
-      `).all(req.user.id)
+      `).all(req.user.id, req.user.id)
     : db.prepare(`
         SELECT w.id, w.name, w.organization_id, o.name AS organization_name,
-               wm.role AS workspace_role
+               wm.role AS workspace_role, om.role AS org_role
         FROM workspace_members wm
         JOIN workspaces w ON w.id = wm.workspace_id
         JOIN organizations o ON o.id = w.organization_id
+        LEFT JOIN organization_members om ON om.organization_id = w.organization_id AND om.user_id = ?
         WHERE wm.user_id = ?
         ORDER BY o.name, w.name
-      `).all(req.user.id);
+      `).all(req.user.id, req.user.id);
+
+  // Compute can_admin per workspace. Mirrors canAdminWorkspace() in lib/permissions.js
+  // but uses already-joined org_role to avoid another N+1 query per workspace.
+  for (const w of accessible) {
+    w.can_admin = isPlatformAdmin
+      || w.org_role === 'org_owner' || w.org_role === 'org_admin'
+      || w.workspace_role === 'workspace_admin';
+    delete w.org_role; // internal-only; don't leak to client
+  }
 
   const currentOrg = req.organizationId
     ? db.prepare('SELECT id, name FROM organizations WHERE id = ?').get(req.organizationId)

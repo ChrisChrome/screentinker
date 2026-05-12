@@ -93,9 +93,25 @@ function requirePlatformAdmin(req, res, next) {
   next();
 }
 
+// Decoupled "can admin this workspace" predicate. Unlike canAdmin(req) above,
+// this takes an explicit (user, workspace) pair instead of reading from req,
+// so it works for routes that operate on a target workspace specified by URL
+// param (rename, future settings/delete) rather than the caller's currently
+// active one. Does its own DB lookups against workspace_members + organization_members.
+function canAdminWorkspace(db, user, workspace) {
+  if (!user || !workspace) return false;
+  if (user.role === 'platform_admin' || user.role === 'superadmin') return true;
+  const om = db.prepare('SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?')
+    .get(workspace.organization_id, user.id);
+  if (om && (om.role === 'org_owner' || om.role === 'org_admin')) return true;
+  const wm = db.prepare('SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+    .get(workspace.id, user.id);
+  return wm && wm.role === 'workspace_admin';
+}
+
 module.exports = {
   // boolean predicates
-  canRead, canWrite, canAdmin, isOrgAdmin, isOrgOwner,
+  canRead, canWrite, canAdmin, canAdminWorkspace, isOrgAdmin, isOrgOwner,
   // express middleware
   requireWorkspace,
   requireWorkspaceRead,

@@ -312,6 +312,11 @@ const { resolveTenancy } = require('./lib/tenancy');
 const { activityLogger } = require('./services/activity');
 app.use(activityLogger);
 
+// /api/workspaces: management endpoints that operate on a target workspace
+// (URL param), not the caller's currently active one. Hence requireAuth only,
+// no resolveTenancy. Permission gated per-handler via canAdminWorkspace().
+app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
+
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
 app.use('/api/folders', requireAuth, resolveTenancy, require('./routes/folders'));

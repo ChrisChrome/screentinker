@@ -46,6 +46,13 @@ export function renderWorkspaceSwitcher(me) {
             <div class="ws-name">${esc(w.name)}</div>
             <div class="ws-org">${esc(w.organization_name || '')}</div>
           </div>
+          ${w.can_admin ? `
+            <button class="workspace-switcher-pencil" type="button" data-rename-id="${esc(w.id)}" aria-label="Rename workspace" title="Rename">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+              </svg>
+            </button>
+          ` : ''}
         </div>
       `).join('')}
     </div>
@@ -59,8 +66,24 @@ export function renderWorkspaceSwitcher(me) {
     button.setAttribute('aria-expanded', String(opening));
   });
 
+  // Pencil click opens the rename modal. Must stopPropagation so the click
+  // doesn't bubble up to the switcher-item's switch handler.
+  container.querySelectorAll('.workspace-switcher-pencil').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const wsId = btn.dataset.renameId;
+      const ws = sorted.find(w => w.id === wsId);
+      if (!ws) return;
+      container.classList.remove('open');
+      const { openWorkspaceRenameModal } = await import('./workspace-rename-modal.js');
+      openWorkspaceRenameModal(ws);
+    });
+  });
+
   container.querySelectorAll('.workspace-switcher-item').forEach(item => {
-    item.addEventListener('click', async () => {
+    item.addEventListener('click', async (e) => {
+      // Ignore clicks that originated on the pencil (it has its own handler).
+      if (e.target.closest('.workspace-switcher-pencil')) return;
       const wsId = item.dataset.workspaceId;
       if (wsId === currentId) { container.classList.remove('open'); return; }
       try {

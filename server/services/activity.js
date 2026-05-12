@@ -72,7 +72,7 @@ function activityLogger(req, res, next) {
   const originalJson = res.json.bind(res);
   res.json = function(data) {
     // Only log successful mutations
-    if (['POST', 'PUT', 'DELETE'].includes(req.method) && res.statusCode < 400) {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && res.statusCode < 400) {
       const action = `${req.method} ${req.baseUrl || ''}${req.route?.path || req.path}`;
       const userId = req.user?.id;
       const deviceId = req.params?.id || req.params?.deviceId || req.body?.device_id;

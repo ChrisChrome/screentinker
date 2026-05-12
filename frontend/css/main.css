@@ -90,6 +90,14 @@ body {
 .workspace-switcher-item .ws-org {
   font-size: 11px; color: var(--text-muted); margin-top: 2px;
 }
+.workspace-switcher-pencil {
+  flex-shrink: 0; visibility: hidden;
+  background: none; border: none; padding: 4px;
+  color: var(--text-muted); cursor: pointer;
+  border-radius: 4px; transition: all var(--transition);
+}
+.workspace-switcher-item:hover .workspace-switcher-pencil { visibility: visible; }
+.workspace-switcher-pencil:hover { color: var(--accent); background: var(--bg-input); }
 
 .nav-links {
   flex: 1;
