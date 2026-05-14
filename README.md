@@ -3,7 +3,7 @@
 ScreenTinker is self-hosted digital signage software. Manage screens across multiple locations from one dashboard — built for retail, offices, lobbies, and any environment where you need centralized control over what's displayed on remote screens. Open source, multi-tenant, single-developer maintained with direct contact access.
 
 **Hosted version:** [screentinker.com](https://screentinker.com) — free tier available, no credit card required.
-**Community:** [Discord](https://discord.gg/JHWQRPaG)
+**Community:** [Discord](https://discord.gg/utTdsrqq4Z)
 
 ## Features
 
@@ -414,7 +414,7 @@ APP_URL=https://localhost:3443
 
 **Running against a fresh prod DB clone?** Set `GRAPH_DEV_RESTRICT_TO=your-email@example.com` to keep accidental sends from reaching real users in the cloned database. Sends to anyone outside the list are logged but never posted to Graph.
 
-**Reporting issues:** [GitHub Issues](https://github.com/screentinker/screentinker/issues) for bugs and feature requests, or drop into [Discord](https://discord.gg/JHWQRPaG) for quick questions and feedback.
+**Reporting issues:** [GitHub Issues](https://github.com/screentinker/screentinker/issues) for bugs and feature requests, or drop into [Discord](https://discord.gg/utTdsrqq4Z) for quick questions and feedback.
 
 **Contributions welcome.** Fork → branch → PR. There are no formal style guides yet beyond what you can pick up from reading the existing code. Tests aren't required but smoke-test against your local server before opening a PR.
 
@@ -455,7 +455,7 @@ ScreenTinker is built and maintained by one developer. If the project is useful 
 
 - Star the repo on GitHub
 - Open [issues](https://github.com/screentinker/screentinker/issues) with feedback or bug reports
-- Drop into the [Discord](https://discord.gg/JHWQRPaG) and say hi
+- Drop into the [Discord](https://discord.gg/utTdsrqq4Z) and say hi
 - Contribute back if you've extended something useful
 
 GitHub Sponsors integration is planned. Direct contact: [dan@bytetinker.net](mailto:dan@bytetinker.net) or via Discord.
