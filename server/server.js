@@ -139,8 +139,12 @@ app.use(express.json());
 const { sanitizeBody } = require('./middleware/sanitize');
 app.use(sanitizeBody);
 
-// Landing page BEFORE static middleware (so / doesn't serve index.html)
+// Landing page BEFORE static middleware (so / doesn't serve index.html).
+// When DISABLE_HOMEPAGE is set, redirect to the app instead - for self-hosted
+// internal deployments that don't want the public marketing page. 302 (not
+// 301) so flipping the var back later isn't hard-cached by browsers.
 app.get('/', (req, res) => {
+  if (config.disableHomepage) return res.redirect(302, '/app');
   res.sendFile(path.join(config.frontendDir, 'landing.html'));
 });
 

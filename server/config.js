@@ -52,4 +52,7 @@ module.exports = {
   // Disable public registration (OAuth auto-signup is also blocked when set).
   // First-user setup is still allowed so a fresh install can be initialized.
   disableRegistration: ['true', '1'].includes(String(process.env.DISABLE_REGISTRATION || '').toLowerCase()),
+  // Redirect / -> /app instead of serving the marketing landing page.
+  // For self-hosted internal deployments that don't want the public homepage.
+  disableHomepage: ['true', '1'].includes(String(process.env.DISABLE_HOMEPAGE || '').toLowerCase()),
 };
