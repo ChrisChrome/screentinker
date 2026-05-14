@@ -366,17 +366,23 @@
     // ==================== Boot ====================
 
     // Function used by connect button and auto-connect
+    let autoContinueTimer;
     function connectBtnFunc() {
-    unlockAudio();
-      const url = document.getElementById('serverUrl').value.trim().replace(/\/$/, '');
-      if (!url) return;
-      config.serverUrl = url;
-      saveConfig(config);
-      document.getElementById('connectBtn').disabled = true;
-      document.getElementById('setupSpinner').style.display = 'block';
-      document.getElementById('setupStatus').textContent = 'Connecting...';
-      connect(url);
-    };
+        if (autoContinueTimer) {
+          clearInterval(autoContinueTimer);
+          autoContinueTimer = null;
+          document.getElementById('connectBtn').textContent = _t('connect');
+        }
+        unlockAudio();
+        const url = document.getElementById('serverUrl').value.trim().replace(/\/$/, '');
+        if (!url) return;
+        config.serverUrl = url;
+        saveConfig(config);
+        document.getElementById('connectBtn').disabled = true;
+        document.getElementById('setupSpinner').style.display = 'block';
+        document.getElementById('setupStatus').textContent = 'Connecting...';
+        connect(url);
+      };
 
     // Auto-detect server URL from origin since player is served from the same server
     if (!config.serverUrl) {
@@ -433,7 +439,7 @@
 
       connectBtn.textContent = `${_t('connect')} (${countdown})`;
 
-      const autoContinueTimer = setInterval(() => {
+      autoContinueTimer = setInterval(() => {
         countdown--;
         if (countdown > 0) {
           connectBtn.textContent = `${_t('connect')} (${countdown})`;
