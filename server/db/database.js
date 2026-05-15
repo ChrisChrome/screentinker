@@ -137,6 +137,11 @@ const migrations = [
   // Phase 2.2c: content_folders gets workspace_id. Phase 1 missed this table.
   "ALTER TABLE content_folders ADD COLUMN workspace_id TEXT REFERENCES workspaces(id)",
   "CREATE INDEX IF NOT EXISTS idx_content_folders_workspace ON content_folders(workspace_id)",
+  // Phase 2 zone_id regression fix: playlist_items needs zone_id so the
+  // multi-zone-layout assignment feature works. The Phase 2 assignments->
+  // playlist_items conversion (migrateAssignmentsToPlaylists) dropped this
+  // column. Column ADD is idempotent via the surrounding try/catch loop.
+  "ALTER TABLE playlist_items ADD COLUMN zone_id TEXT REFERENCES layout_zones(id) ON DELETE SET NULL",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }
@@ -484,6 +489,109 @@ function backfillActivityLogWorkspace() {
 }
 
 backfillActivityLogWorkspace();
+
+// Phase 2 zone_id backfill. Companion to the ADD COLUMN above. Attempts to
+// recover zone_id values for playlist_items rows by joining back to the
+// (legacy) assignments table on device+content/widget. On installs where
+// assignments is empty or never had zone_id populated this is a no-op; the
+// migration row is stamped regardless so it doesn't re-run.
+//
+// Also regenerates published_snapshot JSON for every published playlist so
+// the snapshot the player consumes carries zone_id going forward (the
+// player resolves a.zone_id === zone.id in renderZones). Even with zero
+// rows backfilled, this republish closes the snapshot-staleness gap.
+//
+// Pre-migration snapshot is a one-off for this migration only - the general
+// "every migration backs up first" framework is tracked as a separate
+// concern, not built here.
+const PHASE2_ZONE_ID_BACKFILL_ID = 'phase2_zone_id_backfill';
+function backfillPlaylistItemsZoneId() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(PHASE2_ZONE_ID_BACKFILL_ID);
+  if (already) return;
+
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const snapshotPath = path.join(dbDir, `remote_display.pre-zone-id-backfill-${ts}.db`);
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    fs.copyFileSync(config.dbPath, snapshotPath);
+    console.warn(`[zone-id backfill] Pre-migration snapshot: ${snapshotPath}`);
+  } catch (e) {
+    console.error(`[zone-id backfill] Snapshot failed: ${e.message}`);
+    process.exit(1);
+  }
+
+  try {
+    const tx = db.transaction(() => {
+      // Backfill: best-effort match playlist_items back to assignments via
+      // device.playlist_id and content/widget identity. LIMIT 1 covers the
+      // unlikely "same content assigned twice in different zones on one
+      // device" edge case. Items with no matching legacy assignment, or
+      // matches that themselves had zone_id NULL, are left as NULL.
+      const backfilled = db.prepare(`
+        UPDATE playlist_items
+        SET zone_id = (
+          SELECT a.zone_id FROM assignments a
+          JOIN devices d ON d.id = a.device_id
+          WHERE d.playlist_id = playlist_items.playlist_id
+            AND a.zone_id IS NOT NULL
+            AND (
+              (a.content_id IS NOT NULL AND a.content_id = playlist_items.content_id)
+              OR
+              (a.widget_id IS NOT NULL AND a.widget_id = playlist_items.widget_id)
+            )
+          LIMIT 1
+        )
+        WHERE zone_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM assignments a
+            JOIN devices d ON d.id = a.device_id
+            WHERE d.playlist_id = playlist_items.playlist_id
+              AND a.zone_id IS NOT NULL
+              AND (
+                (a.content_id IS NOT NULL AND a.content_id = playlist_items.content_id)
+                OR
+                (a.widget_id IS NOT NULL AND a.widget_id = playlist_items.widget_id)
+              )
+          )
+      `).run().changes;
+
+      // Republish: regenerate published_snapshot for every published playlist
+      // so the snapshot JSON carries zone_id. Mirrors buildSnapshotItems in
+      // routes/playlists.js - kept inline here to avoid pulling routes/* in
+      // at migration time (circular require).
+      const publishedPlaylists = db.prepare("SELECT id FROM playlists WHERE status = 'published'").all();
+      const buildSnapshot = db.prepare(`
+        SELECT pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
+               COALESCE(c.filename, w.name) as filename, c.mime_type, c.filepath, c.file_size,
+               c.duration_sec as content_duration, c.remote_url,
+               w.name as widget_name, w.widget_type, w.config as widget_config
+        FROM playlist_items pi
+        LEFT JOIN content c ON pi.content_id = c.id
+        LEFT JOIN widgets w ON pi.widget_id = w.id
+        WHERE pi.playlist_id = ?
+        ORDER BY pi.sort_order ASC
+      `);
+      const updateSnap = db.prepare("UPDATE playlists SET published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?");
+      let republished = 0;
+      for (const pl of publishedPlaylists) {
+        const items = buildSnapshot.all(pl.id);
+        updateSnap.run(JSON.stringify(items), pl.id);
+        republished++;
+      }
+
+      db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(PHASE2_ZONE_ID_BACKFILL_ID);
+      return { backfilled, republished };
+    });
+    const { backfilled, republished } = tx();
+    console.log(`[zone-id backfill] ${backfilled} playlist_items recovered zone_id, ${republished} published_snapshots regenerated`);
+  } catch (e) {
+    console.error(`[zone-id backfill] Migration FAILED: ${e.message}`);
+    console.error(`[zone-id backfill] Restore with: cp ${snapshotPath} ${config.dbPath}`);
+    process.exit(1);
+  }
+}
+
+backfillPlaylistItemsZoneId();
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {

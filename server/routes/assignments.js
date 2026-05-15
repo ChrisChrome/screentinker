@@ -44,7 +44,7 @@ function ensureDevicePlaylist(deviceId, userId) {
 
 // Standard item query with joined content/widget info
 const ITEM_SELECT = `
-  SELECT pi.id, pi.playlist_id, pi.content_id, pi.widget_id, pi.sort_order, pi.duration_sec,
+  SELECT pi.id, pi.playlist_id, pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
          pi.created_at, pi.updated_at,
          COALESCE(c.filename, w.name) as filename,
          c.mime_type, c.filepath, c.thumbnail_path,
@@ -108,9 +108,9 @@ router.post('/device/:deviceId', (req, res) => {
 
   try {
     const result = db.prepare(`
-      INSERT INTO playlist_items (playlist_id, content_id, widget_id, sort_order, duration_sec)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(playlistId, content_id || null, widget_id || null, order, duration_sec);
+      INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(playlistId, content_id || null, widget_id || null, zone_id || null, order, duration_sec);
 
     markDraft(playlistId);
 
@@ -150,6 +150,9 @@ router.put('/:id', (req, res) => {
 
   if (sort_order !== undefined) { updates.push('sort_order = ?'); values.push(sort_order); }
   if (duration_sec !== undefined) { updates.push('duration_sec = ?'); values.push(duration_sec); }
+  // zone_id can be null (clear the zone) - treat undefined as "no change",
+  // any other value (including null) as "write this".
+  if (zone_id !== undefined) { updates.push('zone_id = ?'); values.push(zone_id || null); }
 
   if (updates.length > 0) {
     updates.push("updated_at = strftime('%s','now')");
@@ -230,11 +233,11 @@ router.post('/device/:deviceId/copy-to/:targetDeviceId', (req, res) => {
 
   const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM playlist_items WHERE playlist_id = ?')
     .get(targetPlaylistId).m || 0;
-  const stmt = db.prepare('INSERT INTO playlist_items (playlist_id, content_id, widget_id, sort_order, duration_sec) VALUES (?, ?, ?, ?, ?)');
+  const stmt = db.prepare('INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec) VALUES (?, ?, ?, ?, ?, ?)');
 
   const transaction = db.transaction(() => {
     sourceItems.forEach((a, i) => {
-      stmt.run(targetPlaylistId, a.content_id, a.widget_id, maxOrder + i + 1, a.duration_sec);
+      stmt.run(targetPlaylistId, a.content_id, a.widget_id, a.zone_id || null, maxOrder + i + 1, a.duration_sec);
     });
   });
   transaction();

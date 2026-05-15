@@ -347,6 +347,7 @@ CREATE TABLE IF NOT EXISTS playlist_items (
     playlist_id     TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
     content_id      TEXT REFERENCES content(id) ON DELETE CASCADE,
     widget_id       TEXT REFERENCES widgets(id) ON DELETE CASCADE,
+    zone_id         TEXT REFERENCES layout_zones(id) ON DELETE SET NULL,
     sort_order      INTEGER NOT NULL DEFAULT 0,
     duration_sec    INTEGER NOT NULL DEFAULT 10,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),

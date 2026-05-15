@@ -66,7 +66,7 @@ function requirePlaylistWrite(req, res, next) {
 // Build the snapshot item list for a playlist (denormalized for device payload)
 function buildSnapshotItems(playlistId) {
   return db.prepare(`
-    SELECT pi.content_id, pi.widget_id, pi.sort_order, pi.duration_sec,
+    SELECT pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
            COALESCE(c.filename, w.name) as filename, c.mime_type, c.filepath, c.file_size,
            c.duration_sec as content_duration, c.remote_url,
            w.name as widget_name, w.widget_type, w.config as widget_config
@@ -220,10 +220,10 @@ router.post('/:id/discard', requirePlaylistWrite, (req, res) => {
     // Clear current draft items
     db.prepare('DELETE FROM playlist_items WHERE playlist_id = ?').run(req.params.id);
     // Re-insert from snapshot, skipping items whose content/widget was deleted
-    const insert = db.prepare('INSERT INTO playlist_items (playlist_id, content_id, widget_id, sort_order, duration_sec) VALUES (?, ?, ?, ?, ?)');
+    const insert = db.prepare('INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec) VALUES (?, ?, ?, ?, ?, ?)');
     for (const item of publishedItems) {
       try {
-        insert.run(req.params.id, item.content_id || null, item.widget_id || null, item.sort_order, item.duration_sec);
+        insert.run(req.params.id, item.content_id || null, item.widget_id || null, item.zone_id || null, item.sort_order, item.duration_sec);
       } catch (e) {
         if (e.message.includes('FOREIGN KEY')) {
           console.warn(`Discard: skipping snapshot item (content_id=${item.content_id}, widget_id=${item.widget_id}) — referenced entity was deleted`);
