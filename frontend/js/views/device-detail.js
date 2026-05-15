@@ -504,7 +504,7 @@ function renderPlaylist(assignments) {
         </div>
       </div>
       <div class="playlist-item-actions" style="display:flex;align-items:center;gap:4px">
-        <select class="input zone-select" data-assignment-id="${a.id}" style="width:100px;font-size:11px;padding:2px 4px;background:var(--bg-input);display:none">
+        <select class="input zone-select" data-assignment-id="${a.id}" data-current-zone-id="${a.zone_id || ''}" style="width:100px;font-size:11px;padding:2px 4px;background:var(--bg-input);display:none">
           <option value="">${t('device.pl_item.no_zone')}</option>
         </select>
         <button class="btn-icon mute-toggle" data-mute-assignment="${a.id}" data-muted="${a.muted ? '1' : '0'}" title="${a.muted ? t('device.pl_item.unmute') : t('device.pl_item.mute')}" style="color:${a.muted ? 'var(--danger)' : 'var(--text-muted)'}">
@@ -884,13 +884,25 @@ async function setupPlaylistActions(device) {
         fetch('/api/kiosk', { headers }).then(r => r.json()),
       ]);
 
-      // Get layout zones if device has a layout assigned
+      // Get layout zones if device has a layout assigned. We track
+      // zonesFetchFailed separately so the modal can distinguish "fetch
+      // broke" from "fetch succeeded, layout genuinely has no zones" -
+      // both end with zones=[] but the user message differs.
+      // The !res.ok throw is required because fetch only rejects on network
+      // errors; an HTTP 403/404 would otherwise json-parse into {error: ...}
+      // and zones would silently be [].
       let zones = [];
+      let zonesFetchFailed = false;
       if (device.layout_id) {
         try {
-          const layout = await fetch(`/api/layouts/${device.layout_id}`, { headers }).then(r => r.json());
+          const res = await fetch(`/api/layouts/${device.layout_id}`, { headers });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const layout = await res.json();
           zones = layout.zones || [];
-        } catch {}
+        } catch (e) {
+          console.warn('Failed to load layout for zone picker:', e.message);
+          zonesFetchFailed = true;
+        }
       }
 
       if (!content.length && !widgets.length && !kioskPages.length) {
@@ -911,15 +923,21 @@ async function setupPlaylistActions(device) {
             </button>
           </div>
           <div class="modal-body">
-            ${zones.length > 0 ? `
             <div class="form-group">
               <label>${t('device.assign.zone_label')}</label>
-              <select id="assignZone" class="input" style="background:var(--bg-input)">
-                <option value="">${t('device.assign.zone_default')}</option>
-                ${zones.map(z => `<option value="${z.id}">${z.name} (${Math.round(z.width_percent)}% x ${Math.round(z.height_percent)}%)</option>`).join('')}
-              </select>
+              ${zones.length > 0 ? `
+                <select id="assignZone" class="input" style="background:var(--bg-input)">
+                  <option value="">${t('device.assign.zone_default')}</option>
+                  ${zones.map(z => `<option value="${z.id}">${z.name} (${Math.round(z.width_percent)}% x ${Math.round(z.height_percent)}%)</option>`).join('')}
+                </select>
+              ` : !device.layout_id ? `
+                <div style="font-size:12px;color:var(--text-muted);padding:6px 0;line-height:1.5">${t('device.assign.zone_no_layout')}</div>
+              ` : zonesFetchFailed ? `
+                <div style="font-size:12px;color:var(--danger);padding:6px 0;line-height:1.5">${t('device.assign.zone_load_failed')}</div>
+              ` : `
+                <div style="font-size:12px;color:var(--text-muted);padding:6px 0;line-height:1.5">${t('device.assign.zone_empty_layout')}</div>
+              `}
             </div>
-            ` : ''}
             <div class="form-group">
               <label>${t('device.assign.duration_label')}</label>
               <input type="number" id="assignDuration" class="input" value="10" min="1" max="3600">
@@ -1042,31 +1060,32 @@ async function setupPlaylistActions(device) {
 }
 
 function attachRemoveHandlers(device) {
-  // Populate zone selectors if device has a layout
+  // Populate zone selectors if device has a layout. The current zone_id for
+  // each assignment is read from data-current-zone-id on the .zone-select
+  // element (stashed at render time from a.zone_id); no DOM-scraping.
+  // Fetch errors are logged - the dropdowns simply stay hidden (display:none
+  // is the default from the render), same end-state as before but no longer
+  // silent.
   if (device.layout_id) {
     const token = localStorage.getItem('token');
     fetch(`/api/layouts/${device.layout_id}`, { headers: { Authorization: `Bearer ${token}` }})
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(layout => {
         const zones = layout.zones || [];
         document.querySelectorAll('.zone-select').forEach(select => {
           select.style.display = '';
           const assignmentId = select.dataset.assignmentId;
-          // Find current zone_id from the playlist item's data
-          const zoneText = select.closest('.playlist-item')?.querySelector('[style*="color:var(--accent)"]')?.textContent || '';
+          const currentZoneId = select.dataset.currentZoneId || '';
           zones.forEach(z => {
             const opt = document.createElement('option');
             opt.value = z.id;
             opt.textContent = z.name;
             select.appendChild(opt);
           });
-          // Set current value by matching zone_id from the meta text
-          const currentAssignment = document.querySelector(`.playlist-item[data-assignment-id="${assignmentId}"]`);
-          if (currentAssignment) {
-            const meta = currentAssignment.querySelector('.playlist-item-meta')?.innerHTML || '';
-            const zoneMatch = zones.find(z => meta.includes(z.id.slice(0, 8)));
-            if (zoneMatch) select.value = zoneMatch.id;
-          }
+          if (currentZoneId) select.value = currentZoneId;
           select.onchange = async () => {
             try {
               await api.updateAssignment(assignmentId, { zone_id: select.value || null });
@@ -1075,7 +1094,12 @@ function attachRemoveHandlers(device) {
             } catch (err) { showToast(err.message, 'error'); }
           };
         });
-      }).catch(() => {});
+      })
+      .catch(e => {
+        // No toast - fires once per device-detail load, would be annoying for
+        // a layout misconfig that's already surfaced via the modal info row.
+        console.warn('Failed to load layout for edit-zone dropdowns:', e.message);
+      });
   }
 
   // Mute toggle buttons

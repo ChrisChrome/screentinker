@@ -84,7 +84,7 @@ router.get('/:id', (req, res) => {
   let playlist_has_published = false;
   if (device.playlist_id) {
     assignments = db.prepare(`
-      SELECT pi.id, pi.content_id, pi.widget_id, pi.sort_order, pi.duration_sec,
+      SELECT pi.id, pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
              pi.created_at, pi.updated_at,
              COALESCE(c.filename, w.name) as filename, c.mime_type, c.filepath, c.thumbnail_path,
              c.duration_sec as content_duration, c.remote_url,
