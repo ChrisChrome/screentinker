@@ -26,7 +26,7 @@
   <div class="container">
     <a href="/" class="back">&larr; Back to ScreenTinker</a>
     <h1>Privacy Policy</h1>
-    <p class="updated">Last updated: March 24, 2026</p>
+    <p class="updated">Last updated: May 15, 2026</p>
 
     <h2>1. Overview</h2>
     <p>ScreenTinker ("we", "us", "our") respects your privacy. This policy explains what data we collect, how we use it, and your rights regarding your information.</p>
@@ -63,6 +63,18 @@
     <h3>2.4 Content</h3>
     <p>Media files (images, videos) you upload are stored on our servers solely to deliver them to your devices. We do not analyze, sell, or share your content.</p>
 
+    <h3>2.5 Error and Diagnostic Telemetry</h3>
+    <p>Player clients submit error reports automatically so we can fix issues on devices we cannot directly access (smart TVs, embedded signage browsers). Reports may be submitted before a device has paired; in that case only the network IP and user-agent are present, with no device ID.</p>
+    <table>
+      <tr><th>Data</th><th>Purpose</th><th>Retention</th></tr>
+      <tr><td>Browser user-agent string</td><td>Identifying which player platforms encounter errors</td><td>Rolling buffer (10,000 entries)</td></tr>
+      <tr><td>Error messages, stack traces, and source-file references</td><td>Diagnosing player issues we cannot reproduce in development</td><td>Rolling buffer (10,000 entries)</td></tr>
+      <tr><td>Recent player log entries (up to 50, including filenames of content being played)</td><td>Context for the error so we understand what the player was doing</td><td>Rolling buffer (10,000 entries)</td></tr>
+      <tr><td>Screen and viewport dimensions</td><td>Diagnosing layout and rendering issues at the device's actual size</td><td>Rolling buffer (10,000 entries)</td></tr>
+      <tr><td>Coarse player state (idle, playing, waiting)</td><td>Distinguishing errors during playback vs setup</td><td>Rolling buffer (10,000 entries)</td></tr>
+    </table>
+    <p>This telemetry can be disabled by self-hosters via the <code>PLAYER_DEBUG_REPORTING=off</code> environment variable. On screentinker.com it is on by default.</p>
+
     <h2>3. How We Use Your Information</h2>
     <ul>
       <li><strong>Provide the Service:</strong> Deliver content to devices, enable remote management, process subscriptions</li>
@@ -85,7 +97,7 @@
     <ul>
       <li>All data stays on your servers. We have no access to it.</li>
       <li>You are the data controller and responsible for compliance with applicable privacy laws.</li>
-      <li>No telemetry or usage data is sent to us from self-hosted instances.</li>
+      <li>No telemetry or usage data is sent to us from self-hosted instances. The error and diagnostic telemetry described in Section 2.5 is collected by the self-hosted server itself, not transmitted externally, and can be disabled entirely with <code>PLAYER_DEBUG_REPORTING=off</code>.</li>
     </ul>
 
     <h2>6. Data Security</h2>
@@ -128,6 +140,7 @@
       <li>Device telemetry: 90 days (automatically pruned)</li>
       <li>Play logs: 90 days (automatically pruned)</li>
       <li>Activity logs: 90 days (automatically pruned)</li>
+      <li>Error and diagnostic telemetry: rolling buffer of the 10,000 most recent entries (oldest pruned on insert)</li>
       <li>Content: retained until you delete it or your account</li>
       <li>After account deletion: all data removed within 30 days</li>
     </ul>
