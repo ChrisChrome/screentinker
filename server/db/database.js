@@ -142,6 +142,17 @@ const migrations = [
   // playlist_items conversion (migrateAssignmentsToPlaylists) dropped this
   // column. Column ADD is idempotent via the surrounding try/catch loop.
   "ALTER TABLE playlist_items ADD COLUMN zone_id TEXT REFERENCES layout_zones(id) ON DELETE SET NULL",
+  // Slice 1: idempotency guard for the one-time signup welcome/admin emails.
+  // Non-null = this user has already been handled, so we never double-send.
+  // New signups are stamped with the real unix-seconds time the send block ran
+  // (see services/signupEmails.js). The paired backfill below stamps every
+  // pre-existing user with the sentinel value 1, so that a future "IS NULL"
+  // sweep/nudge can't mistake the legacy user base for un-welcomed accounts and
+  // blast all of them. Sentinel 1 (vs a real timestamp) also lets a later
+  // deliberate campaign tell "backfilled, never emailed" apart from "genuinely
+  // sent at <time>". The backfill is idempotent: re-runs match nothing.
+  "ALTER TABLE users ADD COLUMN welcome_email_sent_at INTEGER",
+  "UPDATE users SET welcome_email_sent_at = 1 WHERE welcome_email_sent_at IS NULL",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

@@ -8,6 +8,7 @@ const { db } = require('../db/database');
 const { generateToken, requireAuth, requireAdmin, requireSuperAdmin, PLATFORM_ROLES } = require('../middleware/auth');
 const { resolveTenancy } = require('../lib/tenancy');
 const { logActivity, getClientIp } = require('../services/activity');
+const { sendSignupEmails } = require('../services/signupEmails');
 const config = require('../config');
 
 // Phase 2.1: find or create the user's default org+workspace. Returns the
@@ -112,6 +113,9 @@ router.post('/register', (req, res) => {
   const token = generateToken(user, workspaceId);
 
   res.status(201).json({ token, user, current_workspace_id: workspaceId });
+
+  // Welcome + admin-notify emails (hosted instance only, idempotent, async).
+  sendSignupEmails(user, req);
 });
 
 // Login
@@ -152,6 +156,7 @@ router.post('/google', async (req, res) => {
 
     // Find or create user
     let user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase());
+    const isNewUser = !user;
 
     if (!user) {
       if (!canRegister()) {
@@ -186,6 +191,9 @@ router.post('/google', async (req, res) => {
     const token = generateToken(user, workspaceId);
     const { password_hash, ...safeUser } = user;
     res.json({ token, user: safeUser, current_workspace_id: workspaceId });
+
+    // Welcome + admin-notify only when this Google login created a new account.
+    if (isNewUser) sendSignupEmails(user, req);
   } catch (err) {
     console.error('Google auth error:', err);
     res.status(401).json({ error: 'Google authentication failed' });
@@ -231,6 +239,7 @@ router.post('/microsoft', async (req, res) => {
 
     // Find or create user
     let user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const isNewUser = !user;
 
     if (!user) {
       if (!canRegister()) {
@@ -263,6 +272,9 @@ router.post('/microsoft', async (req, res) => {
     const token = generateToken(user, workspaceId);
     const { password_hash, ...safeUser } = user;
     res.json({ token, user: safeUser, current_workspace_id: workspaceId });
+
+    // Welcome + admin-notify only when this Microsoft login created a new account.
+    if (isNewUser) sendSignupEmails(user, req);
   } catch (err) {
     console.error('Microsoft auth error:', err);
     res.status(401).json({ error: 'Microsoft authentication failed' });
