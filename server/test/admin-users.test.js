@@ -112,6 +112,9 @@ const orgAdminA = seedUser({ id: 'u-orgadmin-a', email: 'orgadmin-a@test.local',
 db.prepare("INSERT INTO organization_members (organization_id, user_id, role) VALUES ('org-a','u-orgadmin-a','org_admin')").run();
 const operator = seedUser({ id: 'u-operator', email: 'operator@test.local', role: 'platform_operator' });
 const regular = seedUser({ id: 'u-regular', email: 'regular@test.local', role: 'user' });
+// Dedicated target for the role-assignment regression test (kept separate so it
+// can't perturb the non-admin/operator tokens used by the deny tests above).
+seedUser({ id: 'u-role-target', email: 'role-target@test.local', role: 'user' });
 
 const tokens = {
   admin: generateToken(adminUser, null),
@@ -223,4 +226,15 @@ test('must_change_password lifecycle: set on create, surfaced on login, cleared 
   assert.equal(meBody.must_change_password, 0, '/me response shows the flag cleared');
   const row = db.prepare('SELECT must_change_password FROM users WHERE email=?').get('created@test.local');
   assert.equal(row.must_change_password, 0, 'flag cleared in the DB');
+});
+
+test('platform_operator is assignable via PUT /users/:id/role (regression for #13/#14 whitelist gap)', async () => {
+  const res = await fetch(base + '/api/auth/users/u-role-target/role', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens.admin}` },
+    body: JSON.stringify({ role: 'platform_operator' }),
+  });
+  assert.equal(res.status, 200);
+  const dbRole = db.prepare('SELECT role FROM users WHERE id = ?').get('u-role-target').role;
+  assert.equal(dbRole, 'platform_operator', 'role actually persisted as platform_operator');
 });

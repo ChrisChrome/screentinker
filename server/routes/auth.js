@@ -480,7 +480,7 @@ router.delete('/users/:id', requireAuth, requireSuperAdmin, (req, res) => {
 // org roles are managed in the members views. Whitelist is the current model:
 // 'user' and 'platform_admin' (the legacy 'admin'/'superadmin' strings are gone
 // after normalization and are no longer accepted here).
-const ASSIGNABLE_PLATFORM_ROLES = ['user', 'platform_admin'];
+const ASSIGNABLE_PLATFORM_ROLES = ['user', 'platform_operator', 'platform_admin'];
 router.put('/users/:id/role', requireAuth, requireSuperAdmin, (req, res) => {
   const { role } = req.body;
   if (!ASSIGNABLE_PLATFORM_ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role' });
