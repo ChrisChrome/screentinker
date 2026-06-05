@@ -783,6 +783,7 @@ export default {
   // Admin (platform admin panel)
   'admin.title': 'Platform Admin',
   'admin.subtitle': 'Superadmin controls - only you can see this',
+  'admin.add_user': 'Add user',
   'admin.access_denied': 'Access Denied',
   'admin.access_denied_desc': 'Platform admin access required.',
   'admin.all_users': 'All Users',
@@ -1161,6 +1162,15 @@ export default {
 
   // Modal — Add User form (#10, admin-provisioned account)
   'members.modal.add_user_title': 'Add user to {workspace}',
+  'members.modal.add_user_title_generic': 'Add user',
+  // Add User picker mode (platform Users admin page): choose the target workspace.
+  'members.modal.workspace_label': 'Organization / Workspace',
+  'members.modal.workspace_filter_placeholder': 'Filter workspaces…',
+  'members.modal.workspace_placeholder': 'Select a workspace…',
+  'members.modal.workspace_loading': 'Loading workspaces…',
+  'members.modal.workspace_none': 'No workspaces available',
+  'members.modal.workspace_load_error': 'Failed to load workspaces',
+  'members.modal.workspace_required': 'Please select a workspace.',
   'members.modal.name_label': 'Name',
   'members.modal.name_placeholder': 'Full name (optional)',
   'members.modal.password_label': 'Password',

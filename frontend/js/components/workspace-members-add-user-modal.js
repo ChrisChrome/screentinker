@@ -1,16 +1,26 @@
-// Add-User modal (#10). Sits next to the invite modal in the members view, but
-// instead of emailing an invite it creates a user account directly with an
-// admin-set password and assigns them to this workspace + role. For
-// admin-provisioning on instances with no outbound email (where invites never
-// deliver). Mirrors workspace-members-invite-modal.js's structure.
+// Add-User modal (#10). Creates a user account directly with an admin-set
+// password and assigns them to a workspace + role (admin-provisioning for
+// instances with no outbound email). Two open modes, ONE shared form:
 //
-//   workspace: { id, name }
+//   openAddUserModal({ id, name }, opts)  -> fixed-workspace mode (members view).
+//                                            No picker; assigns into that workspace.
+//   openAddUserModal(null, opts)          -> picker mode (platform Users admin page).
+//                                            Shows an Org/Workspace picker; the admin
+//                                            chooses the target workspace.
+//
 //   opts.onSuccess: (result) => void  - fires on 201 (server response body)
 //   opts.mapError:  (err) => string   - translates server error to display text
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Roles the picker offers. This is the SET POST /api/admin/users accepts
+// (server: routes/admin.js WORKSPACE_ROLES) - keep them in sync so we never
+// offer a value the endpoint 400s (the platform_operator dropdown/endpoint
+// mismatch we already hit). Order here is display order (least-privilege first
+// = the default selection); the server validates set membership, not order.
+const WORKSPACE_ROLES = ['workspace_viewer', 'workspace_editor', 'workspace_admin'];
 
 // Crockford-ish readable random password: avoids ambiguous chars (0/O, 1/l/I).
 function generatePassword(len = 16) {
@@ -22,14 +32,40 @@ function generatePassword(len = 16) {
   return out;
 }
 
+function wsLabel(w) {
+  return `${w.organization_name || '—'} / ${w.name}`;
+}
+
 export function openAddUserModal(workspace, opts = {}) {
   const { onSuccess, mapError } = opts;
+  // Picker mode whenever no concrete target workspace was supplied.
+  const pickerMode = !(workspace && workspace.id);
+
+  const title = pickerMode
+    ? t('members.modal.add_user_title_generic')
+    : t('members.modal.add_user_title', { workspace: esc(workspace.name) });
+
+  const roleOptions = WORKSPACE_ROLES
+    .map(r => `<option value="${r}">${esc(t('members.role.' + r))}</option>`)
+    .join('');
+
+  // Workspace picker block — only rendered in picker mode. A filter input above
+  // a <select> gives type-to-filter for the 70+ workspaces without a dependency.
+  const workspaceGroup = pickerMode ? `
+        <div class="form-group">
+          <label for="addUserWs">${t('members.modal.workspace_label')}</label>
+          <input id="addUserWsFilter" type="text" class="input" placeholder="${t('members.modal.workspace_filter_placeholder')}" style="width:100%;margin-bottom:6px" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <select id="addUserWs" class="input" style="width:100%">
+            <option value="">${t('members.modal.workspace_loading')}</option>
+          </select>
+        </div>` : '';
+
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <div class="modal">
       <div class="modal-header">
-        <h3>${t('members.modal.add_user_title', { workspace: esc(workspace.name) })}</h3>
+        <h3>${title}</h3>
         <button class="btn-icon" type="button" data-add-close aria-label="Close">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -52,12 +88,11 @@ export function openAddUserModal(workspace, opts = {}) {
             <button class="btn btn-secondary" type="button" id="addUserGenerate" style="white-space:nowrap">${t('members.modal.generate')}</button>
           </div>
         </div>
+        ${workspaceGroup}
         <div class="form-group">
           <label for="addUserRole">${t('members.modal.role_label')}</label>
           <select id="addUserRole" class="input" style="width:100%">
-            <option value="workspace_viewer">${t('members.role.workspace_viewer')}</option>
-            <option value="workspace_editor">${t('members.role.workspace_editor')}</option>
-            <option value="workspace_admin">${t('members.role.workspace_admin')}</option>
+            ${roleOptions}
           </select>
         </div>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
@@ -82,7 +117,30 @@ export function openAddUserModal(workspace, opts = {}) {
   const mustChange = overlay.querySelector('#addUserMustChange');
   const errorEl = overlay.querySelector('#addUserError');
   const submitBtn = overlay.querySelector('#addUserSubmit');
+  const wsSelect = overlay.querySelector('#addUserWs');     // null in fixed mode
+  const wsFilter = overlay.querySelector('#addUserWsFilter');
   emailInput.focus();
+
+  // Picker mode: load the workspaces this platform_admin can assign into from
+  // /me's accessible_workspaces (already org+name shaped, all workspaces for a
+  // platform_admin). Filter input rebuilds the option list live.
+  let allWs = [];
+  function renderWsOptions(filter) {
+    const f = (filter || '').trim().toLowerCase();
+    const matches = f ? allWs.filter(w => wsLabel(w).toLowerCase().includes(f)) : allWs;
+    wsSelect.innerHTML = `<option value="">${esc(t('members.modal.workspace_placeholder'))}</option>`
+      + matches.map(w => `<option value="${esc(w.id)}">${esc(wsLabel(w))}</option>`).join('');
+  }
+  if (pickerMode) {
+    api.getMe()
+      .then(me => {
+        allWs = Array.isArray(me?.accessible_workspaces) ? me.accessible_workspaces.slice() : [];
+        if (!allWs.length) { wsSelect.innerHTML = `<option value="">${esc(t('members.modal.workspace_none'))}</option>`; return; }
+        renderWsOptions('');
+      })
+      .catch(() => { wsSelect.innerHTML = `<option value="">${esc(t('members.modal.workspace_load_error'))}</option>`; });
+    wsFilter.addEventListener('input', () => renderWsOptions(wsFilter.value));
+  }
 
   function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
   function onKey(e) { if (e.key === 'Escape') close(); }
@@ -97,15 +155,17 @@ export function openAddUserModal(workspace, opts = {}) {
     const name = nameInput.value.trim();
     const password = pwInput.value;
     const role = roleSelect.value;
+    const workspaceId = pickerMode ? (wsSelect.value || '') : workspace.id;
     if (!email || !EMAIL_RE.test(email)) { showError(t('members.error.invalid_email')); emailInput.focus(); return; }
     if (!password || password.length < 8) { showError(t('members.error.password_min_8')); pwInput.focus(); return; }
+    if (pickerMode && !workspaceId) { showError(t('members.modal.workspace_required')); (wsFilter || wsSelect).focus(); return; }
 
     submitBtn.disabled = true;
     submitBtn.textContent = t('members.modal.creating');
     try {
       const result = await api.adminCreateUser({
         email, name, password, role,
-        workspaceId: workspace.id,
+        workspaceId,
         mustChangePassword: mustChange.checked,
       });
       close();

@@ -2,6 +2,11 @@ import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { esc, isPlatformAdmin } from '../utils.js';
 import { t } from '../i18n.js';
+import { openAddUserModal } from '../components/workspace-members-add-user-modal.js';
+// Reuse the members view's server-error -> friendly-string mapper (handles the
+// 409 duplicate-email / weak-password / invalid-email cases) so we don't fork a
+// second mapper.
+import { mapMutationError } from './workspace-members.js';
 
 const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('token')}`, 'Content-Type': 'application/json' });
 const API = (url, opts = {}) => fetch('/api' + url, { headers: headers(), ...opts }).then(r => r.json());
@@ -22,6 +27,7 @@ export async function render(container) {
   container.innerHTML = `
     <div class="page-header">
       <div><h1>${t('admin.title')}</h1><div class="subtitle">${t('admin.subtitle')}</div></div>
+      <button class="btn btn-primary" id="adminAddUserBtn">${t('admin.add_user')}</button>
     </div>
 
     <div class="settings-section">
@@ -39,6 +45,20 @@ export async function render(container) {
       <div id="systemInfo"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
     </div>
   `;
+
+  // Add User (#10): platform admin provisions a user into ANY workspace. The
+  // page is platform_admin-gated; the modal opens in picker mode (no fixed
+  // workspace) so the admin chooses the target org/workspace. The endpoint
+  // additionally enforces canAdminWorkspace (platform_admin passes everywhere).
+  document.getElementById('adminAddUserBtn')?.addEventListener('click', () => {
+    openAddUserModal(null, {
+      onSuccess: (result) => {
+        showToast(t('members.success.user_created', { email: result.email }), 'success');
+        loadUsers();
+      },
+      mapError: mapMutationError,
+    });
+  });
 
   loadUsers();
   loadPlans();
