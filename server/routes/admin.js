@@ -147,4 +147,81 @@ router.put('/users/:id/workspace', requirePlatformAdmin, (req, res) => {
   res.json({ user_id: target.id, workspace_id: ws.id, workspace_name: ws.name, organization_name: org?.name || null, role: 'workspace_viewer' });
 });
 
+// ===================== Per-user workspace membership management =====================
+// Platform-admin only (cross-org, platform-level). Unlike the single-workspace
+// "move" above, these manage a user's FULL set of memberships - a user can
+// belong to several workspaces, each with its own role - from the platform Users
+// page "Manage workspaces" modal. requirePlatformAdmin excludes platform_operator
+// (no user/role management, #13).
+
+function userMembershipList(userId) {
+  return db.prepare(`
+    SELECT wm.workspace_id, w.name AS workspace_name, o.name AS organization_name, wm.role
+    FROM workspace_members wm
+    JOIN workspaces w ON w.id = wm.workspace_id
+    JOIN organizations o ON o.id = w.organization_id
+    WHERE wm.user_id = ?
+    ORDER BY o.name, w.name
+  `).all(userId);
+}
+
+// GET - list every workspace the user belongs to (with role + org/workspace name).
+router.get('/users/:id/workspaces', requirePlatformAdmin, (req, res) => {
+  const target = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  res.json(userMembershipList(req.params.id));
+});
+
+// POST - add the user to a workspace (or update their role if already a member).
+router.post('/users/:id/workspaces', requirePlatformAdmin, (req, res) => {
+  const role = String(req.body?.role || '').trim();
+  const workspaceId = String(req.body?.workspaceId || '').trim();
+  if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
+  if (!WORKSPACE_ROLES.includes(role)) {
+    return res.status(400).json({ error: 'Role must be workspace_admin, workspace_editor, or workspace_viewer' });
+  }
+  const target = db.prepare('SELECT id, email FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  const ws = db.prepare('SELECT id, name, organization_id FROM workspaces WHERE id = ?').get(workspaceId);
+  if (!ws) return res.status(404).json({ error: 'Workspace not found' });
+  req.workspaceId = ws.id;
+
+  const existing = db.prepare('SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(ws.id, target.id);
+  if (existing) {
+    db.prepare('UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?').run(role, ws.id, target.id);
+  } else {
+    db.prepare('INSERT INTO workspace_members (workspace_id, user_id, role, invited_by) VALUES (?, ?, ?, ?)').run(ws.id, target.id, role, req.user.id);
+  }
+  logActivity(req.user.id, 'admin_add_user_workspace', `target: ${target.email}, workspace: ${ws.id}, role: ${role}`, null, getClientIp(req), ws.id);
+  const org = db.prepare('SELECT name FROM organizations WHERE id = ?').get(ws.organization_id);
+  res.status(existing ? 200 : 201).json({ workspace_id: ws.id, workspace_name: ws.name, organization_name: org?.name || null, role });
+});
+
+// PUT - change the user's role in a specific workspace.
+router.put('/users/:id/workspaces/:workspaceId', requirePlatformAdmin, (req, res) => {
+  const role = String(req.body?.role || '').trim();
+  if (!WORKSPACE_ROLES.includes(role)) {
+    return res.status(400).json({ error: 'Role must be workspace_admin, workspace_editor, or workspace_viewer' });
+  }
+  const member = db.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(req.params.workspaceId, req.params.id);
+  if (!member) return res.status(404).json({ error: 'Membership not found' });
+  db.prepare('UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?').run(role, req.params.workspaceId, req.params.id);
+  req.workspaceId = req.params.workspaceId;
+  const target = db.prepare('SELECT email FROM users WHERE id = ?').get(req.params.id);
+  logActivity(req.user.id, 'admin_set_user_workspace_role', `target: ${target?.email}, workspace: ${req.params.workspaceId}, role: ${role}`, null, getClientIp(req), req.params.workspaceId);
+  res.json({ workspace_id: req.params.workspaceId, role });
+});
+
+// DELETE - remove the user from a workspace. Allowed even if it's their last one
+// (they become Unassigned - the no-workspace state from #12).
+router.delete('/users/:id/workspaces/:workspaceId', requirePlatformAdmin, (req, res) => {
+  const member = db.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(req.params.workspaceId, req.params.id);
+  if (!member) return res.status(404).json({ error: 'Membership not found' });
+  db.prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?').run(req.params.workspaceId, req.params.id);
+  req.workspaceId = req.params.workspaceId;
+  const target = db.prepare('SELECT email FROM users WHERE id = ?').get(req.params.id);
+  logActivity(req.user.id, 'admin_remove_user_workspace', `target: ${target?.email}, workspace: ${req.params.workspaceId}`, null, getClientIp(req), req.params.workspaceId);
+  res.json({ success: true });
+});
+
 module.exports = router;

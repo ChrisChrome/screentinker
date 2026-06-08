@@ -3,6 +3,7 @@ import { showToast } from '../components/toast.js';
 import { esc, isPlatformAdmin } from '../utils.js';
 import { t } from '../i18n.js';
 import { openAddUserModal } from '../components/workspace-members-add-user-modal.js';
+import { openManageWorkspacesModal } from '../components/admin-user-workspaces-modal.js';
 // Reuse the members view's server-error -> friendly-string mapper (handles the
 // 409 duplicate-email / weak-password / invalid-email cases) so we don't fork a
 // second mapper.
@@ -24,37 +25,26 @@ function isPlatformStaffRole(role) {
   return role === 'platform_admin' || role === 'superadmin' || role === 'platform_operator';
 }
 
-// Build the org-grouped workspace <option> list ONCE (reused for every editable
-// row). Source is /me's accessible_workspaces (already ORDER BY org, name), same
-// as the Add User picker. Leading blank = "Unassigned"; selecting it is a no-op.
-function buildWorkspaceOptions(list) {
-  let html = `<option value="">${esc(t('admin.workspace.unassigned'))}</option>`;
-  let currentOrg = null;
-  for (const w of list) {
-    const org = w.organization_name || '—';
-    if (org !== currentOrg) {
-      if (currentOrg !== null) html += '</optgroup>';
-      html += `<optgroup label="${esc(org)}">`;
-      currentOrg = org;
-    }
-    html += `<option value="${esc(w.id)}">${esc(w.name)}</option>`;
-  }
-  if (currentOrg !== null) html += '</optgroup>';
-  return html;
+// Short summary of a user's workspace membership for the Users-table cell.
+// Platform staff have cross-org access (not per-workspace membership) -> "Platform
+// (all)". Otherwise: Unassigned (0), the workspace name (1), or "N workspaces".
+function workspaceSummary(u) {
+  if (isPlatformStaffRole(u.role)) return t('admin.workspace.platform_all');
+  const count = u.workspace_count || 0;
+  if (count === 0) return t('admin.workspace.unassigned');
+  if (count === 1) return esc(u.workspace_name || '');
+  return t('admin.workspace.multi', { n: count });
 }
 
-// Workspace cell for one user row. Editable <select> only for a 'user' with 0 or
-// 1 membership; multi-membership users and platform staff render read-only.
-function workspaceCell(u, optionsHtml) {
-  if (isPlatformStaffRole(u.role)) {
-    return `<td style="padding:8px"><span style="color:var(--text-muted);font-size:12px">${t('admin.workspace.platform_all')}</span></td>`;
-  }
-  const count = u.workspace_count || 0;
-  if (count > 1) {
-    return `<td style="padding:8px"><span style="color:var(--text-muted);font-size:12px" title="${esc(t('admin.workspace.multi_hint'))}">${t('admin.workspace.multi', { n: count })}</span></td>`;
-  }
+// Workspace cell: a summary + a "Manage" button that opens the full membership
+// modal (add/remove workspaces, set per-workspace role). Manage is offered for
+// everyone, including staff (you can grant them explicit memberships too).
+function workspaceCell(u) {
   return `<td style="padding:8px">
-    <select class="input" style="max-width:180px;width:100%;background:var(--bg-input);font-size:12px;padding:4px" data-ws-user="${esc(u.id)}" data-current="${esc(u.workspace_id || '')}">${optionsHtml}</select>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="color:var(--text-muted);font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${workspaceSummary(u)}</span>
+      <button class="btn btn-secondary btn-sm" type="button" data-ws-manage="${esc(u.id)}">${t('admin.workspace.manage')}</button>
+    </div>
   </td>`;
 }
 
@@ -110,14 +100,11 @@ export async function render(container) {
 async function loadUsers() {
   const el = document.getElementById('allUsersTable');
   try {
-    const [users, plans, me] = await Promise.all([
+    const [users, plans] = await Promise.all([
       API('/auth/users'),
       fetch('/api/subscription/plans').then(r => r.json()),
-      api.getMe().catch(() => ({})), // workspace-picker source (same as Add User modal)
     ]);
     const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-    // Build the org-grouped <optgroup> workspace options ONCE, reuse per row.
-    const wsOptionsHtml = buildWorkspaceOptions(Array.isArray(me?.accessible_workspaces) ? me.accessible_workspaces : []);
 
     el.innerHTML = `
       <div class="table-wrap">
@@ -147,7 +134,7 @@ async function loadUsers() {
                   ${plans.map(p => `<option value="${p.id}" ${u.plan_id === p.id ? 'selected' : ''}>${p.display_name}</option>`).join('')}
                 </select>
               </td>
-              ${workspaceCell(u, wsOptionsHtml)}
+              ${workspaceCell(u)}
               <td style="padding:8px;white-space:nowrap">
                 ${u.auth_provider === 'local' && u.id !== currentUser.id ? `<button class="btn btn-secondary btn-sm" data-reset-pw-user="${u.id}" data-user-email="${u.email}" style="margin-right:4px">${t('admin.reset_password')}</button>` : ''}
                 ${!isPlatformAdmin(u) ? `<button class="btn btn-danger btn-sm" data-delete-user="${u.id}">${t('admin.remove')}</button>` : `<span style="color:var(--text-muted);font-size:11px">${t('admin.owner')}</span>`}
@@ -178,22 +165,14 @@ async function loadUsers() {
       };
     });
 
-    // Workspace move/assign (editable rows only: a 'user' with 0 or 1 membership).
-    // Set the current selection per row (the shared options string carries no
-    // per-row `selected`), then move/assign on change. Picking "Unassigned" or
-    // the same workspace is a no-op so a stray pick can't strip a membership.
-    el.querySelectorAll('[data-ws-user]').forEach(select => {
-      select.value = select.dataset.current || '';
-      select.onchange = async () => {
-        const wsId = select.value;
-        const current = select.dataset.current || '';
-        if (!wsId || wsId === current) { select.value = current; return; }
-        try {
-          const r = await API(`/admin/users/${select.dataset.wsUser}/workspace`, { method: 'PUT', body: JSON.stringify({ workspaceId: wsId }) });
-          if (r && r.error) { showToast(r.error, 'error'); loadUsers(); return; }
-          showToast(t('admin.toast.workspace_updated'), 'success');
-          loadUsers();
-        } catch (err) { showToast(err.message, 'error'); loadUsers(); }
+    // Manage workspaces: open the per-user membership modal (add/remove
+    // workspaces, set per-workspace role). Refresh the table on close only if
+    // something changed (the modal calls onClose then).
+    el.querySelectorAll('[data-ws-manage]').forEach(btn => {
+      btn.onclick = () => {
+        const u = users.find(x => x.id === btn.dataset.wsManage);
+        if (!u) return;
+        openManageWorkspacesModal(u, { onClose: () => loadUsers() });
       };
     });
 

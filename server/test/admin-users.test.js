@@ -293,3 +293,56 @@ test('workspace move denied for a non-platform-admin (403)', async () => {
   assert.equal(op.status, 403);
   assert.equal(wsRows('u-ws-zero')[0].workspace_id, 'ws-a', 'unchanged by denied calls');
 });
+
+// ---- Per-user multi-workspace membership management (Manage workspaces modal) ----
+function ws(method, userId, token, { workspaceId, role, suffix = '' } = {}) {
+  return fetch(base + `/api/admin/users/${userId}/workspaces${suffix}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(workspaceId || role ? { body: JSON.stringify({ workspaceId, role }) } : {}),
+  });
+}
+seedUser({ id: 'u-mgmt', email: 'mgmt@test.local', role: 'user' });
+
+test('membership mgmt: add a user to multiple workspaces with per-workspace roles', async () => {
+  const a = await ws('POST', 'u-mgmt', tokens.admin, { workspaceId: 'ws-a', role: 'workspace_editor' });
+  assert.equal(a.status, 201);
+  const b = await ws('POST', 'u-mgmt', tokens.admin, { workspaceId: 'ws-b', role: 'workspace_viewer' });
+  assert.equal(b.status, 201);
+  const list = await (await ws('GET', 'u-mgmt', tokens.admin)).json();
+  assert.equal(list.length, 2, 'user is now in two workspaces');
+  assert.deepEqual(
+    list.map(m => [m.workspace_id, m.role]).sort(),
+    [['ws-a', 'workspace_editor'], ['ws-b', 'workspace_viewer']].sort()
+  );
+  assert.ok(list[0].workspace_name && list[0].organization_name, 'list carries names for the picker/summary');
+});
+
+test('membership mgmt: change role in one workspace', async () => {
+  const r = await ws('PUT', 'u-mgmt', tokens.admin, { role: 'workspace_admin', suffix: '/ws-a' });
+  assert.equal(r.status, 200);
+  assert.equal(db.prepare("SELECT role FROM workspace_members WHERE user_id='u-mgmt' AND workspace_id='ws-a'").get().role, 'workspace_admin');
+});
+
+test('membership mgmt: re-adding an existing workspace updates the role (upsert, 200)', async () => {
+  const r = await ws('POST', 'u-mgmt', tokens.admin, { workspaceId: 'ws-a', role: 'workspace_viewer' });
+  assert.equal(r.status, 200);
+  assert.equal(db.prepare("SELECT role FROM workspace_members WHERE user_id='u-mgmt' AND workspace_id='ws-a'").get().role, 'workspace_viewer');
+});
+
+test('membership mgmt: remove memberships, including the last one (-> unassigned)', async () => {
+  assert.equal((await ws('DELETE', 'u-mgmt', tokens.admin, { suffix: '/ws-a' })).status, 200);
+  assert.equal((await ws('DELETE', 'u-mgmt', tokens.admin, { suffix: '/ws-b' })).status, 200); // last one allowed
+  assert.equal((await (await ws('GET', 'u-mgmt', tokens.admin)).json()).length, 0, 'user now unassigned');
+});
+
+test('membership mgmt: bad role 400, missing workspace 404, unknown user 404', async () => {
+  assert.equal((await ws('POST', 'u-mgmt', tokens.admin, { workspaceId: 'ws-a', role: 'org_admin' })).status, 400);
+  assert.equal((await ws('POST', 'u-mgmt', tokens.admin, { workspaceId: 'ws-missing', role: 'workspace_viewer' })).status, 404);
+  assert.equal((await ws('GET', 'nobody', tokens.admin)).status, 404);
+});
+
+test('membership mgmt: non-platform-admin denied (403)', async () => {
+  assert.equal((await ws('GET', 'u-mgmt', tokens.regular)).status, 403);
+  assert.equal((await ws('POST', 'u-mgmt', tokens.operator, { workspaceId: 'ws-a', role: 'workspace_viewer' })).status, 403);
+});
