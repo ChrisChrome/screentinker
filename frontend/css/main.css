@@ -58,6 +58,11 @@ body {
   display: block; padding: 8px 10px;
   color: var(--text-muted); font-size: 12px; font-style: italic;
 }
+/* #19: single-workspace view - name + always-visible manage icons (no dropdown). */
+.workspace-switcher-single { display: flex; align-items: center; gap: 4px; }
+.workspace-switcher-single .workspace-switcher-static { flex: 1; min-width: 0; }
+.workspace-switcher-single .workspace-switcher-members,
+.workspace-switcher-single .workspace-switcher-pencil { visibility: visible; align-self: end; }
 .workspace-switcher-button .chev {
   flex-shrink: 0; margin-left: 8px; color: var(--text-muted);
   transition: transform var(--transition);

@@ -14,6 +14,51 @@ function formatResourceCount(n, keyBase, zeroKey) {
   return tn(keyBase, n);
 }
 
+// Admin affordances shown beside a workspace: manage members + rename. Returns
+// '' for non-admins. Shared by the single-workspace view and the multi-workspace
+// dropdown items so the two never drift - #19: the single view was missing these,
+// locking single-workspace users out of org settings (invite users, perms, slug).
+function adminIconsHtml(w) {
+  if (!w.can_admin) return '';
+  return `
+    <button class="workspace-switcher-members" type="button" data-members-id="${esc(w.id)}" aria-label="Manage members" title="Manage members">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+        <circle cx="9" cy="7" r="4"/>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+      </svg>
+    </button>
+    <button class="workspace-switcher-pencil" type="button" data-rename-id="${esc(w.id)}" aria-label="Rename workspace" title="Rename">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+      </svg>
+    </button>`;
+}
+
+// Wire the manage-members + rename buttons within `scope`. `list` resolves a
+// workspace id to its object (for the rename modal). stopPropagation so a click
+// on an icon never triggers the row's switch handler.
+function wireAdminIcons(scope, list) {
+  scope.querySelectorAll('.workspace-switcher-pencil').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const ws = list.find(w => w.id === btn.dataset.renameId);
+      if (!ws) return;
+      scope.classList.remove('open');
+      const { openWorkspaceRenameModal } = await import('./workspace-rename-modal.js');
+      openWorkspaceRenameModal(ws);
+    });
+  });
+  scope.querySelectorAll('.workspace-switcher-members').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      scope.classList.remove('open');
+      window.location.hash = `#/workspace/${btn.dataset.membersId}/members`;
+    });
+  });
+}
+
 // Render the workspace switcher inside #workspaceSwitcher based on the
 // /api/auth/me response. Three modes:
 //   - 0 accessible workspaces: muted "No workspace" placeholder
@@ -33,8 +78,17 @@ export function renderWorkspaceSwitcher(me) {
   }
 
   if (list.length === 1) {
+    // #19: a single workspace still needs its admin affordances (manage members /
+    // rename + slug). Render the name as before, plus the inline manage icons
+    // when the user can administer it - no dropdown for one item.
     container.classList.remove('open');
-    container.innerHTML = `<span class="workspace-switcher-static">${esc(list[0].name)}</span>`;
+    const only = list[0];
+    container.innerHTML = `
+      <div class="workspace-switcher-single">
+        <span class="workspace-switcher-static">${esc(only.name)}</span>
+        ${adminIconsHtml(only)}
+      </div>`;
+    wireAdminIcons(container, [only]);
     return;
   }
 
@@ -79,21 +133,7 @@ export function renderWorkspaceSwitcher(me) {
             <div class="ws-name">${esc(w.name)}</div>
             <div class="ws-org">${subtitle}</div>
           </div>
-          ${w.can_admin ? `
-            <button class="workspace-switcher-members" type="button" data-members-id="${esc(w.id)}" aria-label="Manage members" title="Manage members">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                <circle cx="9" cy="7" r="4"/>
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-              </svg>
-            </button>
-            <button class="workspace-switcher-pencil" type="button" data-rename-id="${esc(w.id)}" aria-label="Rename workspace" title="Rename">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
-              </svg>
-            </button>
-          ` : ''}
+          ${adminIconsHtml(w)}
         </div>
       `;
       }).join('')}
@@ -179,30 +219,8 @@ export function renderWorkspaceSwitcher(me) {
     }
   });
 
-  // Pencil click opens the rename modal. Must stopPropagation so the click
-  // doesn't bubble up to the switcher-item's switch handler.
-  container.querySelectorAll('.workspace-switcher-pencil').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const wsId = btn.dataset.renameId;
-      const ws = sorted.find(w => w.id === wsId);
-      if (!ws) return;
-      container.classList.remove('open');
-      const { openWorkspaceRenameModal } = await import('./workspace-rename-modal.js');
-      openWorkspaceRenameModal(ws);
-    });
-  });
-
-  // Members icon navigates to the workspace members page. Same stopPropagation
-  // pattern as the pencil so the click doesn't trigger workspace-switch.
-  container.querySelectorAll('.workspace-switcher-members').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const wsId = btn.dataset.membersId;
-      container.classList.remove('open');
-      window.location.hash = `#/workspace/${wsId}/members`;
-    });
-  });
+  // Manage-members + rename icons (shared with the single-workspace view).
+  wireAdminIcons(container, sorted);
 
   container.querySelectorAll('.workspace-switcher-item').forEach(item => {
     item.addEventListener('click', (e) => {
