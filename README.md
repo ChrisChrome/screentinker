@@ -243,6 +243,13 @@ Restart=always
 Environment=PORT=3001
 Environment=NODE_ENV=production
 Environment=SELF_HOSTED=true
+# Lock down an internal / provisioned-only instance (all accounts created by your
+# team). DISABLE_REGISTRATION closes self-service signup — first-user setup on an
+# empty DB is still allowed, and the login page hides its "Create account" button
+# to match. DISABLE_HOMEPAGE sends `/` straight to the app instead of the
+# marketing landing page.
+# Environment=DISABLE_REGISTRATION=true
+# Environment=DISABLE_HOMEPAGE=true
 # Environment=APP_URL=https://signage.yourcompany.com
 # Environment=STRIPE_SECRET_KEY=sk_live_...
 # Environment=STRIPE_WEBHOOK_SECRET=whsec_...
