@@ -9,6 +9,7 @@ const { generateToken, requireAuth, requireAdmin, requireSuperAdmin, isPlatformR
 const { resolveTenancy } = require('../lib/tenancy');
 const { logActivity, getClientIp } = require('../services/activity');
 const { sendSignupEmails } = require('../services/signupEmails');
+const { deleteUserCascade, OrgHasOtherMembersError } = require('../lib/user-deletion');
 const config = require('../config');
 
 // Phase 2.1: find or create the user's default org+workspace. Returns the
@@ -488,7 +489,19 @@ router.get('/users', requireAuth, requireAdmin, (req, res) => {
 // Delete user (superadmin only)
 router.delete('/users/:id', requireAuth, requireSuperAdmin, (req, res) => {
   if (req.params.id === req.user.id) return res.status(400).json({ error: 'Cannot delete yourself' });
-  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+  const target = db.prepare('SELECT id, email FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  // #18: a bare DELETE FROM users fails the FK constraints (23 uncascaded refs).
+  // deleteUserCascade resolves every reference in one transaction: hard-deletes
+  // orgs the user solely owns, preserves (unlinks/reassigns) resources in orgs
+  // they don't own, and refuses if they own a shared org.
+  try {
+    deleteUserCascade(db, { targetId: target.id, actingAdminId: req.user.id });
+  } catch (e) {
+    if (e instanceof OrgHasOtherMembersError) return res.status(409).json({ error: e.message });
+    throw e;
+  }
+  logActivity(req.user.id, 'delete_user', `target: ${target.email}`, null, getClientIp(req));
   res.json({ success: true });
 });
 
