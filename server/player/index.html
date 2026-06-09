@@ -1320,6 +1320,14 @@
       const container = document.getElementById('playerContainer');
       container.style.display = 'block';
 
+      // Multi-zone: each zone pulls its own content by zone_id, independent of the
+      // rotating "current item". Render zones here (before the single-item bail) so
+      // an empty/placeholder current item can't blank the whole multi-zone screen.
+      if (layout && layout.zones && layout.zones.length > 1 && !wallConfig) {
+        renderZones(container, item);
+        return;
+      }
+
       // Defense in depth: bail to waiting state on missing/malformed item rather
       // than fall through every branch and leave a blank container.
       const hasRenderableType = item && (

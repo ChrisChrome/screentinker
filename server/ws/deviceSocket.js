@@ -154,6 +154,16 @@ function buildPlaylistPayload(deviceId) {
     }
   }
 
+  // Zone reset: if the device isn't in a real multi-zone layout (single zone or
+  // no layout), strip any leftover zone_id from assignments. Otherwise, after
+  // switching a device from a multi-zone layout back to single/fullscreen, the
+  // content stays bound to a now-gone left/right zone_id and never plays. With
+  // zone_id nulled, both players fall back to the default fullscreen renderer.
+  const zoneCount = layout?.zones?.length || 0;
+  if (zoneCount < 2 && Array.isArray(assignments)) {
+    assignments = assignments.map(a => (a && a.zone_id != null ? { ...a, zone_id: null } : a));
+  }
+
   return { assignments, layout, orientation: device?.orientation || 'landscape', wall_config };
 }
 
