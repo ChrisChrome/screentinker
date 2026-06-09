@@ -185,9 +185,14 @@ const migrations = [
 // a swallowed failure left users.must_change_password absent -> total auth lockout).
 let _migApplied = 0;
 for (const sql of migrations) {
+  // Only a successful ADD COLUMN means a genuinely-new column (it would throw
+  // "duplicate column" if it already existed). UPDATE/index statements always
+  // succeed, so they must NOT count toward "new migrations applied" or the boot
+  // would falsely report work on every healthy start.
+  const isAddColumn = /alter\s+table\s+\S+\s+add\s+column/i.test(sql);
   try {
     db.exec(sql);
-    _migApplied++;
+    if (isAddColumn) _migApplied++;
   } catch (e) {
     if (!/duplicate column name|already exists/i.test(e.message)) {
       console.error(`[migrate] FAILED: ${sql}\n          -> ${e.message}`);
