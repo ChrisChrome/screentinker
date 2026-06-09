@@ -101,6 +101,38 @@ router.post('/users', (req, res) => {
   res.status(201).json({ ...created, workspace_id: ws.id, workspace_role: role });
 });
 
+// POST /api/admin/orgs - create a new organization + its first ("Default")
+// workspace (#35). Platform-admin only. The MSP use case: provision a customer
+// org without the signup/auto-org path (AUTO_CREATE_ORG_ON_SIGNUP=false).
+//
+// organizations.owner_user_id is NOT NULL, so a brand-new org can't be ownerless.
+// We make the creating platform admin the owner + workspace_admin (mirrors the
+// signup org-bootstrap in routes/auth.js), which also surfaces the org in their
+// switcher immediately. Customer users are then added via the Add User /
+// manage-memberships flow.
+router.post('/orgs', requirePlatformAdmin, (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Organization name required' });
+  if (name.length > 120) return res.status(400).json({ error: 'Organization name must be 120 characters or fewer' });
+
+  const orgId = uuidv4();
+  const wsId = uuidv4();
+  const ownerId = req.user.id;
+  const txn = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO organizations (id, name, owner_user_id, plan_id, subscription_status) VALUES (?, ?, ?, 'free', 'active')`
+    ).run(orgId, name, ownerId);
+    db.prepare(`INSERT INTO organization_members (organization_id, user_id, role) VALUES (?, ?, 'org_owner')`).run(orgId, ownerId);
+    db.prepare(`INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, 'Default', ?)`).run(wsId, orgId, ownerId);
+    db.prepare(`INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_admin')`).run(wsId, ownerId);
+  });
+  txn();
+
+  req.workspaceId = wsId; // attribute the audit row to the new tenant
+  logActivity(req.user.id, 'admin_create_org', `org: ${name}`, null, getClientIp(req), wsId);
+  res.status(201).json({ id: orgId, name, owner_user_id: ownerId, workspace_id: wsId, workspace_name: 'Default' });
+});
+
 // PUT /api/admin/users/:id/workspace - move/assign a SINGLE-workspace user to a
 // different workspace (platform Users admin page). Platform-admin only: this is
 // a cross-org, platform-level action (requirePlatformAdmin excludes

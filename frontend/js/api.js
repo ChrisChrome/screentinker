@@ -177,6 +177,7 @@ export const api = {
   // Admin-provisioned user creation (#10). data: { email, name, password,
   // workspaceId, role, mustChangePassword }
   adminCreateUser: (data) => request('/admin/users', { method: 'POST', body: JSON.stringify(data) }),
+  adminCreateOrg: (name) => request('/admin/orgs', { method: 'POST', body: JSON.stringify({ name }) }),
 
   // Instance-level default branding (#15, platform admin).
   adminGetBranding: () => request('/admin/branding'),

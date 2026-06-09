@@ -4,6 +4,7 @@ import { esc, isPlatformAdmin } from '../utils.js';
 import { t } from '../i18n.js';
 import { openAddUserModal } from '../components/workspace-members-add-user-modal.js';
 import { openManageWorkspacesModal } from '../components/admin-user-workspaces-modal.js';
+import { openCreateOrgModal } from '../components/admin-create-org-modal.js';
 // Reuse the members view's server-error -> friendly-string mapper (handles the
 // 409 duplicate-email / weak-password / invalid-email cases) so we don't fork a
 // second mapper.
@@ -58,7 +59,10 @@ export async function render(container) {
   container.innerHTML = `
     <div class="page-header">
       <div><h1>${t('admin.title')}</h1><div class="subtitle">${t('admin.subtitle')}</div></div>
-      <button class="btn btn-primary" id="adminAddUserBtn">${t('admin.add_user')}</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" id="adminCreateOrgBtn">${t('admin.create_org.button')}</button>
+        <button class="btn btn-primary" id="adminAddUserBtn">${t('admin.add_user')}</button>
+      </div>
     </div>
 
     <div class="settings-section">
@@ -94,6 +98,15 @@ export async function render(container) {
         loadUsers();
       },
       mapError: mapMutationError,
+    });
+  });
+
+  // Create Organization (#35): platform admin provisions a new customer org +
+  // its first workspace (owned by the admin). The modal reloads on success so
+  // the new org shows up in the switcher.
+  document.getElementById('adminCreateOrgBtn')?.addEventListener('click', () => {
+    openCreateOrgModal({
+      onSuccess: (result) => showToast(t('admin.create_org.success', { name: result.name }), 'success'),
     });
   });
 
