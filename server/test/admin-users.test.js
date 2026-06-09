@@ -82,6 +82,7 @@ db.exec(`
     details TEXT,
     ip_address TEXT,
     workspace_id TEXT,
+    organization_id TEXT,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
   );
 `);
@@ -380,4 +381,41 @@ test('create org: non-admin and operator denied (403)', async () => {
   assert.equal((await post('/api/admin/orgs', tokens.regular, { name: 'X' })).status, 403);
   assert.equal((await post('/api/admin/orgs', tokens.operator, { name: 'Y' })).status, 403);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM organizations').get().c, before, 'no org created by denied callers');
+});
+
+// --- #36: DELETE /api/admin/orgs/:id and /workspaces/:id ---
+const delReq = (pathname, token) => fetch(base + pathname, {
+  method: 'DELETE', headers: token ? { Authorization: `Bearer ${token}` } : {},
+});
+
+test('platform_admin deletes an org (200): org + workspace + members removed', async () => {
+  db.prepare("INSERT INTO organizations (id, name, owner_user_id) VALUES ('org-del','Del Org','u-admin')").run();
+  db.prepare("INSERT INTO organization_members (organization_id, user_id, role) VALUES ('org-del','u-admin','org_owner')").run();
+  db.prepare("INSERT INTO workspaces (id, organization_id, name) VALUES ('ws-del','org-del','Del WS')").run();
+  db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ('ws-del','u-admin','workspace_admin')").run();
+
+  const res = await delReq('/api/admin/orgs/org-del', tokens.admin);
+  assert.equal(res.status, 200);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM organizations WHERE id='org-del'").get().c, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM workspaces WHERE id='ws-del'").get().c, 0);
+  // member-table FK cascade is verified against the real cascaded FKs in
+  // user-deletion.test.js (this minimal harness models no FKs).
+  assert.ok(db.prepare("SELECT 1 FROM activity_log WHERE action='admin_delete_org'").get(), 'audited');
+});
+
+test('delete org: 404 unknown; 403 for non-admin + operator (no delete)', async () => {
+  assert.equal((await delReq('/api/admin/orgs/nope', tokens.admin)).status, 404);
+  db.prepare("INSERT INTO organizations (id, name, owner_user_id) VALUES ('org-keep','Keep','u-admin')").run();
+  assert.equal((await delReq('/api/admin/orgs/org-keep', tokens.regular)).status, 403);
+  assert.equal((await delReq('/api/admin/orgs/org-keep', tokens.operator)).status, 403);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM organizations WHERE id='org-keep'").get().c, 1, 'denied callers did not delete');
+});
+
+test('platform_admin deletes a workspace (200): ws gone, parent org intact', async () => {
+  db.prepare("INSERT INTO organizations (id, name, owner_user_id) VALUES ('org-wd','WD','u-admin')").run();
+  db.prepare("INSERT INTO workspaces (id, organization_id, name) VALUES ('ws-wd','org-wd','WD WS')").run();
+  const res = await delReq('/api/admin/workspaces/ws-wd', tokens.admin);
+  assert.equal(res.status, 200);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM workspaces WHERE id='ws-wd'").get().c, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM organizations WHERE id='org-wd'").get().c, 1, 'org intact');
 });

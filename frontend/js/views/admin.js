@@ -5,6 +5,7 @@ import { t } from '../i18n.js';
 import { openAddUserModal } from '../components/workspace-members-add-user-modal.js';
 import { openManageWorkspacesModal } from '../components/admin-user-workspaces-modal.js';
 import { openCreateOrgModal } from '../components/admin-create-org-modal.js';
+import { openTypeToConfirmModal } from '../components/type-to-confirm-modal.js';
 // Reuse the members view's server-error -> friendly-string mapper (handles the
 // 409 duplicate-email / weak-password / invalid-email cases) so we don't fork a
 // second mapper.
@@ -71,6 +72,12 @@ export async function render(container) {
     </div>
 
     <div class="settings-section">
+      <h3>${t('admin.orgs.title')}</h3>
+      <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px">${t('admin.orgs.desc')}</p>
+      <div id="orgsTable"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
+    </div>
+
+    <div class="settings-section">
       <h3>${t('admin.branding.title')}</h3>
       <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px">${t('admin.branding.desc')}</p>
       <div id="brandingForm"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
@@ -111,10 +118,81 @@ export async function render(container) {
   });
 
   loadUsers();
+  loadOrgs();
   loadBranding();
   loadPlans();
   loadSystem();
 
+}
+
+// #36: list organizations with owner + resource counts; platform admin can
+// cascade-delete an org or an individual workspace (type-the-name confirm).
+async function loadOrgs() {
+  const el = document.getElementById('orgsTable');
+  if (!el) return;
+  let orgs;
+  try {
+    orgs = await api.adminListOrgs();
+  } catch (err) {
+    el.innerHTML = `<p style="color:var(--danger)">${esc(err.message || 'Failed to load organizations')}</p>`;
+    return;
+  }
+  if (!orgs.length) {
+    el.innerHTML = `<p style="color:var(--text-muted)">${t('admin.orgs.empty')}</p>`;
+    return;
+  }
+  el.innerHTML = orgs.map(o => {
+    const wsRows = (o.workspaces || []).map(w => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-top:1px solid var(--border)">
+        <div style="font-size:13px">${esc(w.name)}
+          <span style="color:var(--text-muted);font-size:11px">· ${w.device_count} ${t('admin.orgs.devices')} · ${w.member_count} ${t('admin.orgs.members')}</span>
+        </div>
+        <button class="btn btn-danger btn-sm" data-del-ws="${esc(w.id)}" data-ws-name="${esc(w.name)}">${t('admin.orgs.delete_ws')}</button>
+      </div>`).join('');
+    return `
+      <div style="border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg-secondary)">
+          <div>
+            <div style="font-weight:600">${esc(o.name)}</div>
+            <div style="color:var(--text-muted);font-size:11px">
+              ${t('admin.orgs.owner')}: ${esc(o.owner_email || '—')} ·
+              ${o.workspace_count} ${t('admin.orgs.workspaces')} · ${o.device_count} ${t('admin.orgs.devices')} · ${o.member_count} ${t('admin.orgs.members')}
+            </div>
+          </div>
+          <button class="btn btn-danger btn-sm" data-del-org="${esc(o.id)}" data-org-name="${esc(o.name)}">${t('admin.orgs.delete_org')}</button>
+        </div>
+        ${wsRows}
+      </div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-del-org]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.delOrg, name = btn.dataset.orgName;
+    openTypeToConfirmModal({
+      title: t('admin.orgs.delete_org_title'),
+      body: t('admin.orgs.delete_org_body', { name: esc(name) }),
+      expected: name,
+      confirmLabel: t('admin.orgs.delete_org'),
+      onConfirm: async () => {
+        await api.adminDeleteOrg(id);
+        showToast(t('admin.orgs.org_deleted', { name }), 'success');
+        loadOrgs(); loadUsers();
+      },
+    });
+  }));
+  el.querySelectorAll('[data-del-ws]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.delWs, name = btn.dataset.wsName;
+    openTypeToConfirmModal({
+      title: t('admin.orgs.delete_ws_title'),
+      body: t('admin.orgs.delete_ws_body', { name: esc(name) }),
+      expected: name,
+      confirmLabel: t('admin.orgs.delete_ws'),
+      onConfirm: async () => {
+        await api.adminDeleteWorkspace(id);
+        showToast(t('admin.orgs.ws_deleted', { name }), 'success');
+        loadOrgs();
+      },
+    });
+  }));
 }
 
 // #15: instance-level default branding form (platform default; every workspace
