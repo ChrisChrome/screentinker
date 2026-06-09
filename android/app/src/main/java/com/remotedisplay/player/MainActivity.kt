@@ -294,9 +294,12 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Start or resume playback after downloads complete
+                // Start or resume playback after downloads complete — but ONLY in
+                // single-zone/fullscreen mode. In multi-zone, ZoneManager drives each
+                // zone; restarting the fullscreen controller here made it keep playing
+                // items behind the zones (wasted work + phantom audio for videos).
                 handler.post {
-                    playlistController.startIfNeeded()
+                    if (zoneManager?.hasZones() != true) playlistController.startIfNeeded()
                 }
             }
             } // end else (not suspended)
