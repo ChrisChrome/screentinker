@@ -282,9 +282,11 @@ app.use('/api/player-debug', require('./routes/player-debug'));
 // the request hostname (trust-proxy resolves the forwarded Host behind CF/Nginx).
 app.get('/api/branding', (req, res) => {
   const { db } = require('./db/database');
-  const { resolveBranding } = require('./lib/branding');
+  const { resolveBranding, publicBranding } = require('./lib/branding');
   const domain = (req.query.domain || req.hostname || '').toString();
-  res.json(resolveBranding(db, { domain }));
+  // publicBranding strips internal columns (id/user_id/workspace_id/custom_domain
+  // /timestamps) so this unauthenticated endpoint only exposes presentational fields.
+  res.json(publicBranding(resolveBranding(db, { domain })));
 });
 
 // Stripe billing routes (checkout, portal)
@@ -349,6 +351,13 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
   const { db } = require('./db/database');
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
   if (!content || !content.thumbnail_path) return res.status(404).json({ error: 'Thumbnail not found' });
+  // Security: gate the same way as /file - only serve when the content is
+  // referenced by a playlist or by a widget IN THE CONTENT'S WORKSPACE. Without
+  // this, any anonymous caller holding a content UUID could pull any tenant's
+  // thumbnail (the /file route already had this check; the thumbnail route did not).
+  const inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(req.params.id);
+  const inWidget = inPlaylist ? null : db.prepare('SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1').get(content.workspace_id, `%/api/content/${req.params.id}/%`);
+  if (!inPlaylist && !inWidget) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.thumbnail_path));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
   res.sendFile(safePath);
@@ -541,6 +550,7 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (
   deviceNs.to(device.id).emit('device:paired', { device_id: device.id, name: deviceName });
 
   const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(device.id);
+  require('./lib/device-sanitize').stripDeviceSecrets(updated); // never leak device_token to clients
   // Phase 2.3: scope to the workspace the device was just claimed into.
   const { workspaceRoom, emitToWorkspace } = require('./lib/socket-rooms');
   emitToWorkspace(dashboardNs, workspaceRoom(updated.workspace_id), 'dashboard:device-added', updated);

@@ -53,6 +53,16 @@ function requireAuth(req, res, next) {
     req.user = user;
     // Tenancy middleware reads this on the resolver step.
     req.jwtWorkspaceId = decoded.current_workspace_id || null;
+    // #7: enforce the forced first-login password change SERVER-SIDE (was a
+    // frontend-only redirect, so a provisioned temp password worked indefinitely
+    // via the API). While the flag is set, allow only reading/updating one's own
+    // profile (the password change is PUT /api/auth/me, which clears the flag)
+    // and logout; block everything else.
+    if (user.must_change_password) {
+      const url = (req.originalUrl || '').split('?')[0].replace(/\/$/, '');
+      const allowed = url === '/api/auth/me' || url === '/api/auth/logout';
+      if (!allowed) return res.status(403).json({ error: 'password_change_required' });
+    }
     next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid or expired token' });

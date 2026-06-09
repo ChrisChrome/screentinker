@@ -5,7 +5,7 @@ const { db } = require('../db/database');
 // Phase 2.2f: workspace-scoped branding. POST gated by requireWorkspaceAdmin
 // per the design doc (branding is a workspace_admin power, not editor).
 const { requireWorkspaceAdmin } = require('../lib/permissions');
-const { resolveBranding } = require('../lib/branding');
+const { resolveBranding, publicBranding } = require('../lib/branding');
 
 // Get the current workspace's effective branding. #15: when the workspace has no
 // row of its own, fall through to the platform default (workspace_id IS NULL)
@@ -19,7 +19,7 @@ router.get('/', (req, res) => {
 // hardcoded. (Mounted behind requireAuth like the rest of this router; the
 // public/pre-login path is GET /api/branding, registered before auth.)
 router.get('/domain/:domain', (req, res) => {
-  res.json(resolveBranding(db, { domain: req.params.domain }));
+  res.json(publicBranding(resolveBranding(db, { domain: req.params.domain })));
 });
 
 // Create or update the current workspace's white-label config. Restricted to
@@ -29,6 +29,17 @@ router.post('/', requireWorkspaceAdmin, (req, res) => {
 
   const { brand_name, logo_url, favicon_url, primary_color, secondary_color, bg_color,
           custom_domain, custom_css, hide_branding } = req.body;
+
+  // Security (#3): custom_domain drives the PUBLIC, pre-auth branding resolver
+  // (GET /api/branding) and custom_css is injected into the login page's <style>.
+  // A workspace_admin who set custom_domain to the platform's own host would
+  // hijack every visitor's login page (defacement / fake-login CSS). Both are
+  // powerful, cross-tenant-affecting fields - restrict them to platform admins.
+  const setsDomain = custom_domain !== undefined && custom_domain !== null && custom_domain !== '';
+  const setsCss = custom_css !== undefined && custom_css !== null && custom_css !== '';
+  if (!req.isPlatformAdmin && (setsDomain || setsCss)) {
+    return res.status(403).json({ error: 'custom_domain and custom_css can only be set by a platform administrator.' });
+  }
 
   let wl = db.prepare('SELECT * FROM white_labels WHERE workspace_id = ?').get(req.workspaceId);
 

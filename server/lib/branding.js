@@ -50,4 +50,14 @@ function resolveBranding(db, { workspaceId = null, domain = null } = {}) {
   return platformDefaultRow(db) || { ...HARDCODED_BRANDING };
 }
 
-module.exports = { resolveBranding, platformDefaultRow, HARDCODED_BRANDING, PLATFORM_DEFAULT_ID };
+// Presentational fields only. The PUBLIC resolver (GET /api/branding) and the
+// by-domain lookup must not leak internal columns (id, user_id, workspace_id,
+// custom_domain, timestamps) to unauthenticated / cross-tenant callers.
+const PUBLIC_BRANDING_FIELDS = ['brand_name', 'logo_url', 'favicon_url', 'primary_color', 'secondary_color', 'bg_color', 'custom_css', 'hide_branding'];
+function publicBranding(row) {
+  const out = {};
+  for (const f of PUBLIC_BRANDING_FIELDS) out[f] = row ? (row[f] ?? null) : null;
+  return out;
+}
+
+module.exports = { resolveBranding, platformDefaultRow, publicBranding, HARDCODED_BRANDING, PLATFORM_DEFAULT_ID };
