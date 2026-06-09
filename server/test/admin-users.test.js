@@ -71,7 +71,8 @@ db.exec(`
     UNIQUE(workspace_id, user_id)
   );
   CREATE TABLE organizations (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL
+    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+    owner_user_id TEXT, plan_id TEXT, subscription_status TEXT
   );
   CREATE TABLE activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,4 +346,38 @@ test('membership mgmt: bad role 400, missing workspace 404, unknown user 404', a
 test('membership mgmt: non-platform-admin denied (403)', async () => {
   assert.equal((await ws('GET', 'u-mgmt', tokens.regular)).status, 403);
   assert.equal((await ws('POST', 'u-mgmt', tokens.operator, { workspaceId: 'ws-a', role: 'workspace_viewer' })).status, 403);
+});
+
+// --- #35: POST /api/admin/orgs (create org + first workspace, owned by admin) ---
+test('platform_admin creates an org + Default workspace, owned by them (201)', async () => {
+  const res = await post('/api/admin/orgs', tokens.admin, { name: 'Bold Media Group' });
+  assert.equal(res.status, 201);
+  const body = await res.json();
+  assert.equal(body.name, 'Bold Media Group');
+  assert.ok(body.id && body.workspace_id, 'returns org id + workspace id');
+  assert.equal(body.owner_user_id, 'u-admin');
+
+  const org = db.prepare('SELECT * FROM organizations WHERE id=?').get(body.id);
+  assert.equal(org.owner_user_id, 'u-admin');
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id=?').get(body.workspace_id);
+  assert.equal(ws.organization_id, body.id);
+  assert.equal(ws.name, 'Default');
+  assert.equal(db.prepare("SELECT role FROM organization_members WHERE organization_id=? AND user_id='u-admin'").get(body.id).role, 'org_owner');
+  assert.equal(db.prepare("SELECT role FROM workspace_members WHERE workspace_id=? AND user_id='u-admin'").get(body.workspace_id).role, 'workspace_admin');
+  // audited
+  assert.ok(db.prepare("SELECT 1 FROM activity_log WHERE action='admin_create_org'").get(), 'org creation audited');
+});
+
+test('create org: empty name is rejected (400), nothing created', async () => {
+  const before = db.prepare('SELECT COUNT(*) c FROM organizations').get().c;
+  const res = await post('/api/admin/orgs', tokens.admin, { name: '   ' });
+  assert.equal(res.status, 400);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM organizations').get().c, before);
+});
+
+test('create org: non-admin and operator denied (403)', async () => {
+  const before = db.prepare('SELECT COUNT(*) c FROM organizations').get().c;
+  assert.equal((await post('/api/admin/orgs', tokens.regular, { name: 'X' })).status, 403);
+  assert.equal((await post('/api/admin/orgs', tokens.operator, { name: 'Y' })).status, 403);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM organizations').get().c, before, 'no org created by denied callers');
 });
