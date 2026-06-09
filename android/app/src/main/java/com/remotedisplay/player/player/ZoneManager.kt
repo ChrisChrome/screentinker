@@ -235,7 +235,11 @@ class ZoneManager(
 
     fun cleanup() {
         releaseExoPlayers()
-        container.removeAllViews()
+        // Remove ONLY the views we added for zones. `container` is the activity's
+        // root, which also holds the static playerView/imageView/youtubeWebView/
+        // statusOverlay - removeAllViews() would detach those, so single-zone /
+        // fullscreen playback (which reuses them) rendered black after using zones.
+        zoneViews.values.forEach { container.removeView(it) }
         zoneViews.clear()
         zones = listOf()
     }
