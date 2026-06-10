@@ -36,7 +36,7 @@ jobs:
 
   test:
     name: Tests
-    needs: verify
+    # needs: verify
     runs-on: ubuntu-latest
     defaults:
       run:
