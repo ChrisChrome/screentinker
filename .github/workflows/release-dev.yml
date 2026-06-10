@@ -158,7 +158,7 @@ jobs:
             echo "  Sign it with your own Samsung certificate (Tizen Studio + a profile that includes"
             echo "  your TV's DUID) to install, or - easiest - point a Tizen TV browser / URL Launcher"
             echo "  at \`https://<your-instance>/player\` (no signing needed)."
-            echo "- Docker image: \`ghcr.io/screentinker/screentinker:${{ steps.ver.outputs.version }}\` (also \`:latest\`)."
+            echo "- Docker image: \`ghcr.io/${{ github.repository_owner }}/screentinker:${{ steps.ver.outputs.version }}\` (also \`:latest\`)."
             echo "- \`ScreenTinker.apk\` - signed Android player (attached during release finalization)."
           } > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
@@ -195,5 +195,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/screentinker/screentinker:${{ steps.ver.outputs.version }}
-            ghcr.io/screentinker/screentinker:latest
+            ghcr.io/${{ github.repository_owner }}/screentinker:${{ steps.ver.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/screentinker:latest
