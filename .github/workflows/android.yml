@@ -41,9 +41,16 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
 
+      - name: Rename APK
+        run: |
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' android/app/build.gradle.kts)
+          mv android/app/build/outputs/apk/release/app-release.apk \
+             android/app/build/outputs/apk/release/com.remotedisplay.player-${VERSION}.apk
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-apk
-          path: android/app/build/outputs/apk/release/*.apk
+          name: com.remotedisplay.player
+          path: android/app/build/outputs/apk/release/com.remotedisplay.player-*.apk
           retention-days: 30
+          compression-level: 0
