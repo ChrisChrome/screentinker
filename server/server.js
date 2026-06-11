@@ -154,9 +154,25 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(config.frontendDir, 'landing.html'));
 });
 
-// Dashboard app
+// Dashboard app. Inject the resolved instance / custom-domain branding into the
+// shell as a <meta> (#76) so brand-prime can apply it before first paint when the
+// per-workspace brand is not cached yet - no ScreenTinker flash on a never-visited
+// org. CSP blocks inline <script>, so the brand rides in a <meta> that brand-prime
+// reads. Falls back to a plain send of the shell if anything goes wrong.
 app.get('/app', (req, res) => {
-  res.sendFile(path.join(config.frontendDir, 'index.html'));
+  const file = path.join(config.frontendDir, 'index.html');
+  try {
+    const { db } = require('./db/database');
+    const { resolveBranding, publicBranding } = require('./lib/branding');
+    const brand = publicBranding(resolveBranding(db, { domain: (req.hostname || '').toString() }));
+    const attr = JSON.stringify(brand)
+      .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const html = fs.readFileSync(file, 'utf8')
+      .replace('</head>', '  <meta name="ssr-brand" content="' + attr + '">\n</head>');
+    res.type('html').send(html);
+  } catch (e) {
+    res.sendFile(file);
+  }
 });
 
 // Sitemap and robots — served explicitly so the Content-Type is guaranteed
