@@ -364,6 +364,7 @@ export default {
   'apitoken.agency_no_playlists': 'Erstelle zuerst eine Playlist – ein Agentur-Token muss auf eine zielen.',
   'apitoken.targets_label': 'Zugewiesen:',
   'apitoken.edit_targets': 'Playlists bearbeiten',
+  'apitoken.zoned_playlist_reason': 'Einer Zone zugewiesen — Agenturen brauchen eine Vollbild-Playlist',
   'apitoken.targets_updated': 'Zuweisungen aktualisiert',
   'apitoken.auto_publish_label': 'Automatisch veröffentlichen (meine Freigabe überspringen)',
   'apitoken.auto_publish_hint': 'Aus (Standard): Hinzufügungen warten als Entwurf auf deine Veröffentlichung. An: sie gehen sofort live – nur für Agenturen, denen du voll vertraust.',

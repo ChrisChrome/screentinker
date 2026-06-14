@@ -400,6 +400,7 @@ export default {
   'apitoken.agency_no_playlists': 'Create a playlist first — an agency token must target one.',
   'apitoken.targets_label': 'Designated:',
   'apitoken.edit_targets': 'Edit playlists',
+  'apitoken.zoned_playlist_reason': 'Assigned to a zone — agencies need a full-screen playlist',
   'apitoken.targets_updated': 'Designations updated',
   'apitoken.auto_publish_label': 'Auto-publish (skip my approval)',
   'apitoken.auto_publish_hint': 'Off (default): additions wait as drafts for you to publish. On: they go live immediately — only for agencies you fully trust.',

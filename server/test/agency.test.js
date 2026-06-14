@@ -159,3 +159,35 @@ test('#73 edit-designations: PUT /:id/targets re-designates (add + remove); conf
   assert.equal((await jfetch(`/api/agency/playlists/${plB.id}/layout`, auth(atok))).status, 200, 'kept B -> 200');
   assert.equal((await jfetch(`/api/agency/playlists/${plC.id}/layout`, auth(atok))).status, 200, 'added C -> 200');
 });
+
+test('#73 full-screen guardrail holds at UPLOAD time too (auto-publish has no draft net)', async () => {
+  const auth = (tok) => ({ headers: { Authorization: 'Bearer ' + tok } });
+  const upload = async (tok) => {
+    const fd = new FormData();
+    fd.append('file', new Blob([Buffer.from('x')], { type: 'image/png' }), 't.png');
+    return (await fetch(BASE + '/api/agency/content', { method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd })).json();
+  };
+  const email = 'fs' + crypto.randomBytes(4).toString('hex') + '@x.local';
+  const jwt = (await jfetch('/api/auth/register', reg({ email, password: 'Passw0rd123' }))).body.token;
+  const plFS = (await jfetch('/api/playlists', jpost(jwt, { name: 'FullScreen' }))).body;
+
+  // (1) full-screen playlist -> AUTO-PUBLISH token designation SUCCEEDS (safe at designation)
+  const tokRes = await jfetch('/api/tokens', jpost(jwt, { name: 'AP', scope: 'agency', target_playlist_ids: [plFS.id], auto_publish: true }));
+  assert.equal(tokRes.status, 201, 'full-screen designation OK');
+  const atok = tokRes.body.token;
+
+  // (2) zone the playlist AFTER designation: a layout+zone, then a zone-targeted item via JWT
+  const lid = (await jfetch('/api/layouts', jpost(jwt, { name: 'Z', zones: [{ name: 'Main', x_percent: 0, y_percent: 0, width_percent: 70, height_percent: 100 }] }))).body.id;
+  const zoneId = (await jfetch(`/api/layouts/${lid}`, auth(jwt))).body.zones[0].id;
+  const c1 = await upload(atok);
+  assert.equal((await jfetch(`/api/playlists/${plFS.id}/items`, jpost(jwt, { content_id: c1.id, zone_id: zoneId }))).status, 201, 'playlist is now zoned');
+
+  // (3) THE BITE: agency upload to the now-zoned playlist is BLOCKED (409), NOT auto-published into the zone
+  const c2 = await upload(atok);
+  const add = await jfetch(`/api/agency/playlists/${plFS.id}/items`, jpost(atok, { content_id: c2.id }));
+  assert.equal(add.status, 409, 'upload to a now-zoned playlist blocked (auto-publish cannot slip it into the zone)');
+
+  // (4) and an already-zoned playlist is rejected at DESIGNATION too
+  const reDesig = await jfetch('/api/tokens', jpost(jwt, { name: 'AP2', scope: 'agency', target_playlist_ids: [plFS.id] }));
+  assert.equal(reDesig.status, 400, 'already-zoned playlist rejected at designation');
+});

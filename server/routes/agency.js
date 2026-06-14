@@ -13,7 +13,7 @@ const { db } = require('../db/database');
 const upload = require('../middleware/upload');
 const { checkStorageLimit } = require('../middleware/subscription');
 const { ingestUploadedFile } = require('../lib/content-ingest');
-const { listDesignatedPlaylists } = require('../lib/agency-targets');
+const { listDesignatedPlaylists, isZonedPlaylist } = require('../lib/agency-targets');
 const { listLayoutGeometry } = require('../lib/agency-layouts');
 const { publishPlaylist } = require('./playlists'); // #73: shared publish path for auto-publish
 const { isConfigured } = require('../services/email'); // #73: gate digest enqueue on SMTP being set
@@ -71,6 +71,14 @@ router.post('/content', checkStorageLimit, upload.single('file'), async (req, re
 router.post('/playlists/:playlistId/items', (req, res) => {
   const { content_id } = req.body;
   if (!content_id) return res.status(400).json({ error: 'content_id required' });
+
+  // #73 full-screen guardrail, upload-time (MANDATORY because auto-publish has no draft net):
+  // if the designated playlist has BECOME zoned since designation, block the add - a full-screen
+  // agency upload can't target a zone. 409 (not 401/403) so the portal shows the message, not its
+  // "key invalid" reset. This runs BEFORE the draft/publish branch, so auto-publish can't slip through.
+  if (isZonedPlaylist(db, req.params.playlistId)) {
+    return res.status(409).json({ error: "This playlist can't accept uploads right now — it's been assigned to a zone on a screen. Ask your contact." });
+  }
 
   const content = db.prepare('SELECT id, workspace_id, duration_sec FROM content WHERE id = ?').get(content_id);
   if (!content) return res.status(404).json({ error: 'Content not found' });

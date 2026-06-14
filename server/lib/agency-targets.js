@@ -17,4 +17,13 @@ function listDesignatedPlaylists(db, tokenId, workspaceId) {
   `).all(tokenId, workspaceId);
 }
 
-module.exports = { listDesignatedPlaylists };
+// #73 full-screen guardrail: a playlist is "zoned" if any item targets a layout zone. Agency
+// uploads are full-screen and can't safely target a zone, so a zoned playlist can't be shared
+// with an agency. Checked at BOTH designation (reject the grant) AND upload (block the add) -
+// the upload check is mandatory because auto-publish has no draft step to catch a playlist
+// that becomes zoned after designation.
+function isZonedPlaylist(db, playlistId) {
+  return !!db.prepare('SELECT 1 FROM playlist_items WHERE playlist_id = ? AND zone_id IS NOT NULL LIMIT 1').get(playlistId);
+}
+
+module.exports = { listDesignatedPlaylists, isZonedPlaylist };
