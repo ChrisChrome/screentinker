@@ -137,7 +137,6 @@ export const api = {
 
   // Playlists
   getPlaylists: () => request('/playlists'),
-  getPlaylistZones: (id) => request('/playlists/' + id + '/zones'), // #73: grantable zones for the agency designate UI
   createPlaylist: (name, description) => request('/playlists', { method: 'POST', body: JSON.stringify({ name, description }) }),
   getPlaylist: (id) => request(`/playlists/${id}`),
   updatePlaylist: (id, data) => request(`/playlists/${id}`, { method: 'PUT', body: JSON.stringify(data) }),

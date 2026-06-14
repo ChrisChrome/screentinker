@@ -366,8 +366,6 @@ export default {
   'apitoken.auto_publish_label': 'Publicação automática (ignorar minha aprovação)',
   'apitoken.auto_publish_hint': 'Desativado (padrão): as adições aguardam como rascunho para você publicar. Ativado: vão ao ar imediatamente, apenas para agências de total confiança.',
   'apitoken.auto_publish_on': 'publicação automática ativada',
-  'apitoken.zone_grant_hint': 'Conceda zonas específicas, ou deixe sem marcar para a lista inteira:',
-  'apitoken.zone_grant_fullscreen': 'Tela cheia — sem zonas para conceder.',
   'apitoken.create': 'Criar token',
   'apitoken.none': 'Ainda não há tokens.',
   'apitoken.col_token': 'Token',

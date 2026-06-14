@@ -13,7 +13,7 @@ const { db } = require('../db/database');
 const upload = require('../middleware/upload');
 const { checkStorageLimit } = require('../middleware/subscription');
 const { ingestUploadedFile } = require('../lib/content-ingest');
-const { listDesignatedPlaylists, resolveGrantedZone } = require('../lib/agency-targets');
+const { listDesignatedPlaylists } = require('../lib/agency-targets');
 const { listLayoutGeometry } = require('../lib/agency-layouts');
 const { publishPlaylist } = require('./playlists'); // #73: shared publish path for auto-publish
 const { isConfigured } = require('../services/email'); // #73: gate digest enqueue on SMTP being set
@@ -28,18 +28,13 @@ router.get('/playlists', (req, res) => {
   res.json(listDesignatedPlaylists(db, req.apiToken.id, req.jwtWorkspaceId));
 });
 
-// Layout GEOMETRY for ONE designated playlist (the per-playlist card): canvas size + zone
-// positions/sizes, with "your zone" = the GRANTED zones (placement = grant). Has :playlistId,
-// so router.param confines it to a granted playlist. DEVICE-FREE (lib/agency-layouts.js) - no
-// device names/locations/topology. Bite-tested in agency-layouts.test.js (the geometry) +
-// router.param (the confinement).
+// Layout GEOMETRY for ONE designated playlist (the per-playlist size-guidance card): canvas
+// size + zone positions/sizes, with feeds_zone_ids = the zones this playlist actually feeds
+// (so the agency sees where/what-size their content lands). Returns [] when the playlist has
+// no layout -> the card shows the full-screen message. Placement itself stays the admin's job
+// (device-side). Has :playlistId, so router.param confines it. DEVICE-FREE (lib/agency-layouts.js).
 router.get('/playlists/:playlistId/layout', (req, res) => {
-  const layouts = listLayoutGeometry(db, req.apiToken.id, req.jwtWorkspaceId, req.params.playlistId);
-  const granted = new Set(db.prepare('SELECT zone_id FROM api_token_target_zones WHERE token_id = ? AND playlist_id = ?')
-    .all(req.apiToken.id, req.params.playlistId).map(r => r.zone_id));
-  // "your zone" = the granted zones, not the item-feed zones (placement is the grant)
-  for (const l of layouts) l.feeds_zone_ids = l.zones.filter(z => granted.has(z.id)).map(z => z.id);
-  res.json(layouts);
+  res.json(listLayoutGeometry(db, req.apiToken.id, req.jwtWorkspaceId, req.params.playlistId));
 });
 
 // #73 THE target seam. router.param fires for EVERY route with :playlistId, WITH the param,
@@ -84,16 +79,6 @@ router.post('/playlists/:playlistId/items', (req, res) => {
     return res.status(403).json({ error: 'Content is not in this workspace' });
   }
 
-  // #73: zone placement IS the grant. If this token has zone grants for the playlist, the
-  // item MUST land in a granted zone (a body zone_id picks among grants, never escapes them);
-  // if none, whole-playlist/full-screen. Same FK-anchored api_token_targets seam.
-  const z = resolveGrantedZone(db, req.apiToken.id, req.params.playlistId, req.body.zone_id);
-  if (!z.ok) {
-    return z.reason === 'ambiguous'
-      ? res.status(400).json({ error: 'This playlist has multiple granted zones — specify zone_id.' })
-      : res.status(403).json({ error: 'That zone is not granted to this token for this playlist.' });
-  }
-
   let { duration_sec, days, start, end, start_date, end_date } = req.body;
   if (duration_sec != null && (typeof duration_sec !== 'number' || duration_sec < 1)) {
     return res.status(400).json({ error: 'duration_sec must be a positive integer' });
@@ -111,8 +96,8 @@ router.post('/playlists/:playlistId/items', (req, res) => {
   if (!(TIME_RE.test(en) || en === '24:00')) return res.status(400).json({ error: 'end must be HH:MM or 24:00' });
 
   const order = db.prepare('SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM playlist_items WHERE playlist_id = ?').get(req.params.playlistId).n;
-  const itemId = db.prepare('INSERT INTO playlist_items (playlist_id, content_id, zone_id, sort_order, duration_sec) VALUES (?, ?, ?, ?, ?)')
-    .run(req.params.playlistId, content_id, z.zoneId, order, duration_sec).lastInsertRowid;
+  const itemId = db.prepare('INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec) VALUES (?, ?, ?, ?)')
+    .run(req.params.playlistId, content_id, order, duration_sec).lastInsertRowid;
   db.prepare('INSERT INTO playlist_item_schedules (id, playlist_item_id, active_days, start_time, end_time, start_date, end_date, sort_order) VALUES (?,?,?,?,?,?,?,0)')
     .run(uuidv4(), itemId, dys.join(','), st, en, sd, ed);
   // #73: draft vs live is decided by the TOKEN's auto_publish (admin-set, read from
@@ -133,7 +118,7 @@ router.post('/playlists/:playlistId/items', (req, res) => {
       .run(req.workspaceId, req.apiToken.id, req.params.playlistId, published ? 'published' : 'draft', content_id);
   }
 
-  res.status(201).json({ id: itemId, playlist_id: req.params.playlistId, content_id, zone_id: z.zoneId, duration_sec, start_date: sd, end_date: ed, published });
+  res.status(201).json({ id: itemId, playlist_id: req.params.playlistId, content_id, duration_sec, start_date: sd, end_date: ed, published });
 });
 
 module.exports = router;

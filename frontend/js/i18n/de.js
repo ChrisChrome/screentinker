@@ -366,8 +366,6 @@ export default {
   'apitoken.auto_publish_label': 'Automatisch veröffentlichen (meine Freigabe überspringen)',
   'apitoken.auto_publish_hint': 'Aus (Standard): Hinzufügungen warten als Entwurf auf deine Veröffentlichung. An: sie gehen sofort live – nur für Agenturen, denen du voll vertraust.',
   'apitoken.auto_publish_on': 'Auto-Veröffentlichung an',
-  'apitoken.zone_grant_hint': 'Bestimmte Zonen freigeben, oder leer lassen für die ganze Playlist:',
-  'apitoken.zone_grant_fullscreen': 'Vollbild – keine Zonen freizugeben.',
   'apitoken.create': 'Token erstellen',
   'apitoken.none': 'Noch keine Tokens.',
   'apitoken.col_token': 'Token',

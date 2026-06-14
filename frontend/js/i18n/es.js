@@ -365,8 +365,6 @@ export default {
   'apitoken.auto_publish_label': 'Publicación automática (omitir mi aprobación)',
   'apitoken.auto_publish_hint': 'Desactivado (predeterminado): las adiciones esperan como borradores para que las publiques. Activado: se publican de inmediato, solo para agencias de plena confianza.',
   'apitoken.auto_publish_on': 'publicación automática activada',
-  'apitoken.zone_grant_hint': 'Concede zonas específicas, o deja sin marcar para toda la lista:',
-  'apitoken.zone_grant_fullscreen': 'Pantalla completa: no hay zonas que conceder.',
   'apitoken.create': 'Crear token',
   'apitoken.none': 'Aún no hay tokens.',
   'apitoken.col_token': 'Token',

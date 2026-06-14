@@ -413,31 +413,9 @@ export async function render(container) {
       agencyPlaylistsLoaded = true;
       const list = document.getElementById('agencyPlaylistList');
       const pls = await api.getPlaylists().catch(() => []);
-      if (!pls.length) {
-        list.innerHTML = `<p style="color:var(--text-muted);font-size:12px">${t('apitoken.agency_no_playlists')}</p>`;
-        return;
-      }
-      list.innerHTML = pls.map(p => `
-        <div data-pl="${esc(String(p.id))}">
-          <label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" class="agency-pl" value="${esc(String(p.id))}"> ${esc(p.name)}</label>
-          <div class="agency-zones" data-pl="${esc(String(p.id))}" style="margin-left:24px;margin-top:4px;display:none"></div>
-        </div>`).join('');
-      // #73: checking a playlist reveals its grantable zones (lazy-loaded). Leaving them all
-      // unchecked = whole-playlist (full-screen). Zones offered come from the playlist's layout.
-      list.querySelectorAll('.agency-pl').forEach(cb => cb.addEventListener('change', async () => {
-        const box = list.querySelector(`.agency-zones[data-pl="${cb.value}"]`);
-        if (!cb.checked) { box.style.display = 'none'; return; }
-        box.style.display = 'block';
-        if (box.dataset.loaded) return;
-        box.dataset.loaded = '1';
-        const zones = await api.getPlaylistZones(cb.value).catch(() => []);
-        box.innerHTML = zones.length
-          ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">${t('apitoken.zone_grant_hint')}</div>` + zones.map(z => {
-              const wpx = Math.round(z.layout_width * z.width_percent / 100), hpx = Math.round(z.layout_height * z.height_percent / 100);
-              return `<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" class="agency-zone" data-pl="${esc(String(cb.value))}" value="${esc(String(z.id))}"> ${esc(z.name)} <span style="color:var(--text-muted)">${wpx}×${hpx}</span></label>`;
-            }).join('')
-          : `<div style="font-size:11px;color:var(--text-muted)">${t('apitoken.zone_grant_fullscreen')}</div>`;
-      }));
+      list.innerHTML = pls.length
+        ? pls.map(p => `<label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" class="agency-pl" value="${esc(String(p.id))}"> ${esc(p.name)}</label>`).join('')
+        : `<p style="color:var(--text-muted);font-size:12px">${t('apitoken.agency_no_playlists')}</p>`;
     }
   });
 
@@ -449,13 +427,6 @@ export async function render(container) {
       const ids = [...document.querySelectorAll('#agencyPlaylistList .agency-pl:checked')].map(c => c.value);
       if (!ids.length) return showToast(t('apitoken.agency_needs_playlists'), 'error');
       payload.target_playlist_ids = ids;
-      // #73: per-playlist zone grants (a playlist with no checked zones = whole-playlist)
-      const target_zones = {};
-      for (const pid of ids) {
-        const zoneIds = [...document.querySelectorAll(`.agency-zone[data-pl="${pid}"]:checked`)].map(c => c.value);
-        if (zoneIds.length) target_zones[pid] = zoneIds;
-      }
-      if (Object.keys(target_zones).length) payload.target_zones = target_zones;
       payload.auto_publish = !!document.getElementById('tokAutoPublish')?.checked;
     }
     const btn = document.getElementById('createTokenBtn');

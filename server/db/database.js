@@ -200,9 +200,9 @@ const migrations = [
   // #73: agency-upload notification queue (batched digest).
   "CREATE TABLE IF NOT EXISTS agency_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL, token_id TEXT NOT NULL, playlist_id TEXT NOT NULL, action TEXT NOT NULL, content_id TEXT, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), sent_at INTEGER)",
   "CREATE INDEX IF NOT EXISTS idx_agency_notifications_unsent ON agency_notifications(sent_at)",
-  // #73: zone refinement of a playlist grant - FK-anchored to api_token_targets (orphan-
-  // impossible + cascades on playlist-grant revoke). Additive; does NOT touch api_token_targets.
-  "CREATE TABLE IF NOT EXISTS api_token_target_zones (token_id TEXT NOT NULL, playlist_id TEXT NOT NULL, zone_id TEXT NOT NULL REFERENCES layout_zones(id) ON DELETE CASCADE, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), PRIMARY KEY (token_id, playlist_id, zone_id), FOREIGN KEY (token_id, playlist_id) REFERENCES api_token_targets(token_id, playlist_id) ON DELETE CASCADE)",
+  // #73: zone-binding was reverted (placement belongs to the device, not the playlist - see
+  // the agency-tokens history). Drop the table on DBs where the short-lived migration ran.
+  "DROP TABLE IF EXISTS api_token_target_zones",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.

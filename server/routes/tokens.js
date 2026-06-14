@@ -7,26 +7,6 @@ const crypto = require('crypto');
 const { db } = require('../db/database');
 const { generateToken, hashToken, displayPrefix } = require('../middleware/apiToken');
 const { accessContext } = require('../lib/tenancy');
-const { grantableZoneIds } = require('../lib/agency-targets');
-
-// #73: validate per-playlist zone grants and return the (playlist_id, zone_id) rows to insert.
-// target_zones is { playlist_id: [zone_id,...] }. Each playlist must be a granted target, and
-// each zone must be one the playlist's layout actually feeds (grantableZoneIds) - the issuance-
-// side mirror of the runtime confinement. Returns { error } on the first violation, else { rows }.
-function buildZoneGrantRows(target_zones, targetIdSet) {
-  const rows = [];
-  if (!target_zones || typeof target_zones !== 'object') return { rows };
-  for (const [playlistId, zoneIds] of Object.entries(target_zones)) {
-    if (!targetIdSet.has(playlistId)) return { error: `zone grant references playlist ${playlistId} which is not a designated target` };
-    if (!Array.isArray(zoneIds)) return { error: `zones for ${playlistId} must be an array` };
-    const grantable = grantableZoneIds(db, playlistId);
-    for (const zid of zoneIds) {
-      if (!grantable.has(zid)) return { error: `zone ${zid} is not in playlist ${playlistId}'s layout` };
-      rows.push({ playlistId, zoneId: zid });
-    }
-  }
-  return { rows };
-}
 
 // #73: 'agency' is OFF the read/write/full ladder (not in apiToken.js SCOPE_RANK), so a
 // tokenScopeGate-mounted router rejects it; it reaches only the AGENCY_ROUTER via agencyGate.
@@ -67,7 +47,6 @@ router.post('/', (req, res) => {
   // auto_publish is meaningful ONLY for agency scope and is the admin's explicit opt-OUT of
   // approval. Anything but agency-scope + literal true -> 0 (draft, the fail-safe default).
   const autoPublish = (scope === 'agency' && req.body.auto_publish === true) ? 1 : 0;
-  let zoneRows = [];
   if (scope === 'agency') {
     targetIds = Array.isArray(req.body.target_playlist_ids) ? req.body.target_playlist_ids : [];
     if (!targetIds.length) return res.status(400).json({ error: 'an agency token requires target_playlist_ids' });
@@ -75,10 +54,6 @@ router.post('/', (req, res) => {
     for (const pid of targetIds) {
       if (!inWs.get(pid, req.workspaceId)) return res.status(400).json({ error: `playlist ${pid} is not in this workspace` });
     }
-    // #73: optional zone grants - validated against each playlist's layout zones up front.
-    const zg = buildZoneGrantRows(req.body.target_zones, new Set(targetIds));
-    if (zg.error) return res.status(400).json({ error: zg.error });
-    zoneRows = zg.rows;
   }
   const secret = generateToken();
   const id = crypto.randomUUID();
@@ -90,8 +65,6 @@ router.post('/', (req, res) => {
     if (scope === 'agency') {
       const ins = db.prepare('INSERT INTO api_token_targets (token_id, playlist_id) VALUES (?, ?)');
       for (const pid of targetIds) ins.run(id, pid);
-      const insZ = db.prepare('INSERT INTO api_token_target_zones (token_id, playlist_id, zone_id) VALUES (?, ?, ?)');
-      for (const r of zoneRows) insZ.run(id, r.playlistId, r.zoneId); // FK requires the playlist grant above
     }
   })();
   // `token` is returned only here, never again.
@@ -120,18 +93,12 @@ router.put('/:id/targets', (req, res) => {
   for (const pid of ids) {
     if (!inWs.get(pid, tok.workspace_id)) return res.status(400).json({ error: `playlist ${pid} is not in this token's workspace` });
   }
-  // #73: optional zone grants, validated against each playlist's layout zones.
-  const zg = buildZoneGrantRows(req.body.target_zones, new Set(ids));
-  if (zg.error) return res.status(400).json({ error: zg.error });
   const ins = db.prepare('INSERT OR IGNORE INTO api_token_targets (token_id, playlist_id) VALUES (?, ?)');
-  const insZ = db.prepare('INSERT INTO api_token_target_zones (token_id, playlist_id, zone_id) VALUES (?, ?, ?)');
   db.transaction(() => {
-    // delete the PARENT rows; the FK cascade clears the old zone grants (no manual child delete)
     db.prepare('DELETE FROM api_token_targets WHERE token_id = ?').run(tok.id);
     for (const pid of ids) ins.run(tok.id, pid);
-    for (const r of zg.rows) insZ.run(tok.id, r.playlistId, r.zoneId);
   })();
-  res.json({ id: tok.id, target_playlist_ids: ids, zone_grants: zg.rows.length });
+  res.json({ id: tok.id, target_playlist_ids: ids });
 });
 
 module.exports = router;

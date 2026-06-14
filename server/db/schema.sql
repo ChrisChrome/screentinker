@@ -551,22 +551,6 @@ CREATE TABLE IF NOT EXISTS api_token_targets (
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
 
--- #73: OPTIONAL zone refinement of a playlist grant. A row here narrows the agency to a
--- specific zone WITHIN an already-granted playlist. STRUCTURALLY anchored: the composite FK
--- to api_token_targets(token_id, playlist_id) means a zone grant CANNOT exist without its
--- playlist grant (orphan-impossible) and CASCADES away when the playlist grant is revoked -
--- that's what makes "narrow" structural, not conventional. zone_id FK -> layout_zones so a
--- deleted zone/layout drops the grant too. No rows for a (token,playlist) = whole-playlist
--- (full-screen), as before. (Requires PRAGMA foreign_keys=ON, set in db/database.js.)
-CREATE TABLE IF NOT EXISTS api_token_target_zones (
-    token_id    TEXT NOT NULL,
-    playlist_id TEXT NOT NULL,
-    zone_id     TEXT NOT NULL REFERENCES layout_zones(id) ON DELETE CASCADE,
-    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-    PRIMARY KEY (token_id, playlist_id, zone_id),
-    FOREIGN KEY (token_id, playlist_id) REFERENCES api_token_targets(token_id, playlist_id) ON DELETE CASCADE
-);
-
 -- #73: agency-upload notification queue. The agency endpoint enqueues one row per item added
 -- (only when email is configured); a 15-min flush job groups per token+playlist+action and
 -- sends one digest per group, stamping sent_at ONLY after a successful send (failed -> retry).
