@@ -472,6 +472,11 @@ export async function render(container) {
       const r = await api.createToken(payload);
       const box = document.getElementById('tokenSecretBox');
       box.style.display = 'block';
+      // #73: for agency tokens, surface the handoff (portal URL + a copyable invite). The key
+      // is in the invite TEXT, never in a URL (Cloudflare logs query strings + chat apps unfurl
+      // links). window.location.origin is the real public host the admin is on (correct behind CF).
+      const portalUrl = window.location.origin + '/agency';
+      const inviteText = t('apitoken.invite_text', { url: portalUrl, key: r.token });
       box.innerHTML = `
         <div style="background:var(--bg-secondary);border:1px solid var(--accent);border-radius:var(--radius);padding:16px;margin-bottom:16px">
           <h4 style="font-size:14px;margin-bottom:8px">${t('apitoken.secret_title')}</h4>
@@ -480,6 +485,14 @@ export async function render(container) {
             <input type="text" class="input" readonly value="${esc(r.token)}" style="font-family:monospace;flex:1" onclick="this.select()">
             <button class="btn btn-secondary btn-sm" id="copyTokenBtn">${t('apitoken.copy')}</button>
           </div>
+          ${scope === 'agency' ? `
+          <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+            <label style="font-size:12px;color:var(--text-muted)">${t('apitoken.portal_url_label')}</label>
+            <input type="text" class="input" readonly value="${esc(portalUrl)}" style="width:100%;margin-top:4px" onclick="this.select()">
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-top:10px">${t('apitoken.invite_label')}</label>
+            <textarea class="input" readonly rows="2" style="width:100%;margin-top:4px;font-size:13px;font-family:inherit" onclick="this.select()">${esc(inviteText)}</textarea>
+            <button class="btn btn-secondary btn-sm" id="copyInviteBtn" style="margin-top:8px">${t('apitoken.copy_invite')}</button>
+          </div>` : ''}
         </div>
       `;
       document.getElementById('copyTokenBtn')?.addEventListener('click', async () => {
@@ -487,6 +500,12 @@ export async function render(container) {
           await navigator.clipboard.writeText(r.token);
           showToast(t('apitoken.copied'), 'success');
         } catch { /* clipboard may be unavailable; the field is selectable */ }
+      });
+      document.getElementById('copyInviteBtn')?.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(inviteText); // full "go here + paste key" text
+          showToast(t('apitoken.copied'), 'success');
+        } catch { /* field is selectable as a fallback */ }
       });
       document.getElementById('tokName').value = '';
       showToast(t('apitoken.created_toast'), 'success');
