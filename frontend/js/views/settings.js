@@ -83,6 +83,10 @@ export async function render(container) {
         <label style="display:block;font-weight:500;margin-bottom:4px">${t('apitoken.agency_playlists_label')}</label>
         <p style="color:var(--text-muted);font-size:12px;margin-bottom:8px">${t('apitoken.agency_playlists_hint')}</p>
         <div id="agencyPlaylistList" style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow:auto"></div>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-weight:500">
+          <input type="checkbox" id="tokAutoPublish"> ${t('apitoken.auto_publish_label')}
+        </label>
+        <p style="color:var(--text-muted);font-size:12px;margin:4px 0 0">${t('apitoken.auto_publish_hint')}</p>
       </div>
       <div id="tokenSecretBox" style="display:none"></div>
       <div id="tokenList"><p style="color:var(--text-muted);font-size:13px">${t('settings.loading_users')}</p></div>
@@ -366,7 +370,7 @@ export async function render(container) {
               <td style="padding:10px 12px">${esc(tok.name || '')}</td>
               <td style="padding:10px 12px">${esc(scopeLabel(tok.scope))}${
                 tok.scope === 'agency' && Array.isArray(tok.targets)
-                  ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${t('apitoken.targets_label')} ${tok.targets.length ? tok.targets.map(p => esc(p.name)).join(', ') : '—'}</div>`
+                  ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${t('apitoken.targets_label')} ${tok.targets.length ? tok.targets.map(p => esc(p.name)).join(', ') : '—'}${tok.auto_publish ? ' · ' + esc(t('apitoken.auto_publish_on')) : ''}</div>`
                   : ''}</td>
               <td style="padding:10px 12px">${esc(fmtTokenDate(tok.created_at))}</td>
               <td style="padding:10px 12px">${tok.last_used_at ? esc(fmtTokenDate(tok.last_used_at)) : t('apitoken.never')}</td>
@@ -423,6 +427,7 @@ export async function render(container) {
       const ids = [...document.querySelectorAll('#agencyPlaylistList .agency-pl:checked')].map(c => c.value);
       if (!ids.length) return showToast(t('apitoken.agency_needs_playlists'), 'error');
       payload.target_playlist_ids = ids;
+      payload.auto_publish = !!document.getElementById('tokAutoPublish')?.checked;
     }
     const btn = document.getElementById('createTokenBtn');
     btn.disabled = true;

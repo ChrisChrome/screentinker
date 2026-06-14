@@ -16,7 +16,7 @@ const SCOPES = ['read', 'write', 'full', 'agency'];
 router.get('/', (req, res) => {
   if (!req.workspaceId) return res.status(403).json({ error: 'No active workspace' });
   const rows = db.prepare(`
-    SELECT id, prefix, name, scope, workspace_id, created_at, last_used_at, revoked_at
+    SELECT id, prefix, name, scope, auto_publish, workspace_id, created_at, last_used_at, revoked_at
     FROM api_tokens WHERE user_id = ? AND workspace_id = ? ORDER BY created_at DESC
   `).all(req.user.id, req.workspaceId);
   // #73: attach designated playlists for agency tokens so the admin sees the binding persist.
@@ -44,6 +44,9 @@ router.post('/', (req, res) => {
   // #73: an agency token is bound to a NON-EMPTY allowlist of playlists in THIS workspace.
   // Validate up front so a bad target never leaves an orphan token behind.
   let targetIds = [];
+  // auto_publish is meaningful ONLY for agency scope and is the admin's explicit opt-OUT of
+  // approval. Anything but agency-scope + literal true -> 0 (draft, the fail-safe default).
+  const autoPublish = (scope === 'agency' && req.body.auto_publish === true) ? 1 : 0;
   if (scope === 'agency') {
     targetIds = Array.isArray(req.body.target_playlist_ids) ? req.body.target_playlist_ids : [];
     if (!targetIds.length) return res.status(400).json({ error: 'an agency token requires target_playlist_ids' });
@@ -56,16 +59,16 @@ router.post('/', (req, res) => {
   const id = crypto.randomUUID();
   db.transaction(() => {
     db.prepare(`
-      INSERT INTO api_tokens (id, token_hash, prefix, name, user_id, workspace_id, scope, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
-    `).run(id, hashToken(secret), displayPrefix(secret), name, req.user.id, req.workspaceId, scope);
+      INSERT INTO api_tokens (id, token_hash, prefix, name, user_id, workspace_id, scope, auto_publish, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+    `).run(id, hashToken(secret), displayPrefix(secret), name, req.user.id, req.workspaceId, scope, autoPublish);
     if (scope === 'agency') {
       const ins = db.prepare('INSERT INTO api_token_targets (token_id, playlist_id) VALUES (?, ?)');
       for (const pid of targetIds) ins.run(id, pid);
     }
   })();
   // `token` is returned only here, never again.
-  res.status(201).json({ id, token: secret, prefix: displayPrefix(secret), name, scope, workspace_id: req.workspaceId, target_playlist_ids: targetIds });
+  res.status(201).json({ id, token: secret, prefix: displayPrefix(secret), name, scope, workspace_id: req.workspaceId, target_playlist_ids: targetIds, auto_publish: !!autoPublish });
 });
 
 // Revoke one of the caller's own tokens (soft delete - takes effect on the next request).

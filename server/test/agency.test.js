@@ -88,3 +88,41 @@ test('#73 agency token: full bite-suite (happy path + 4 confinement assertions)'
   const bogus = await jfetch('/api/agency/playlists', { headers: { Authorization: 'Bearer st_bogus_invalid_key' } });
   assert.equal(bogus.status, 401, 'invalid agency key -> 401 (portal resets to the entry screen)');
 });
+
+test('#73 auto-publish: the TOKEN flag decides draft vs live; the body can never override it', async () => {
+  const jwtAuth = (tok) => ({ headers: { Authorization: 'Bearer ' + tok } });
+  const email = 'ap' + crypto.randomBytes(4).toString('hex') + '@x.local';
+  const jwt = (await jfetch('/api/auth/register', reg({ email, password: 'Passw0rd123' }))).body.token;
+  const plD = (await jfetch('/api/playlists', jpost(jwt, { name: 'DraftTarget' }))).body;
+  const plA = (await jfetch('/api/playlists', jpost(jwt, { name: 'AutoTarget' }))).body;
+
+  const draftTok = (await jfetch('/api/tokens', jpost(jwt, { name: 'DraftAgency', scope: 'agency', target_playlist_ids: [plD.id] }))).body;
+  assert.equal(draftTok.auto_publish, false, 'DEFAULT is draft (auto_publish false) - the fail-safe');
+  const autoTok = (await jfetch('/api/tokens', jpost(jwt, { name: 'AutoAgency', scope: 'agency', target_playlist_ids: [plA.id], auto_publish: true }))).body;
+  assert.equal(autoTok.auto_publish, true, 'admin explicitly opted into auto-publish');
+
+  async function upload(tok) {
+    const fd = new FormData();
+    fd.append('file', new Blob([Buffer.from('x')], { type: 'image/png' }), 't.png');
+    return (await fetch(BASE + '/api/agency/content', { method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd })).json();
+  }
+  const cD = await upload(draftTok.token);
+  const cA = await upload(autoTok.token);
+
+  // (a) DRAFT token + {auto_publish:true} IN THE BODY -> still draft (token flag wins, body ignored)
+  const addD = await jfetch(`/api/agency/playlists/${plD.id}/items`, jpost(draftTok.token, { content_id: cD.id, auto_publish: true }));
+  assert.equal(addD.status, 201);
+  assert.equal(addD.body.published, false, 'draft token does NOT publish even with auto_publish:true in the body');
+  assert.equal((await jfetch(`/api/playlists/${plD.id}`, jwtAuth(jwt))).body.status, 'draft', 'playlist stays draft');
+
+  // (b) AUTO-PUBLISH token -> item goes live via the shared publishPlaylist path
+  const addA = await jfetch(`/api/agency/playlists/${plA.id}/items`, jpost(autoTok.token, { content_id: cA.id }));
+  assert.equal(addA.status, 201);
+  assert.equal(addA.body.published, true, 'auto-publish token publishes');
+  assert.equal((await jfetch(`/api/playlists/${plA.id}`, jwtAuth(jwt))).body.status, 'published', 'playlist is published');
+
+  // (c) REGRESSION: the manual publish endpoint still works after the publishPlaylist extraction
+  const pub = await jfetch(`/api/playlists/${plD.id}/publish`, jpost(jwt, {}));
+  assert.equal(pub.status, 200, 'manual publish works post-extraction');
+  assert.equal((await jfetch(`/api/playlists/${plD.id}`, jwtAuth(jwt))).body.status, 'published', 'manual publish sets status=published');
+});

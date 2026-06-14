@@ -14,6 +14,7 @@ const upload = require('../middleware/upload');
 const { checkStorageLimit } = require('../middleware/subscription');
 const { ingestUploadedFile } = require('../lib/content-ingest');
 const { listDesignatedPlaylists } = require('../lib/agency-targets');
+const { publishPlaylist } = require('./playlists'); // #73: shared publish path for auto-publish
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -88,10 +89,18 @@ router.post('/playlists/:playlistId/items', (req, res) => {
     .run(req.params.playlistId, content_id, order, duration_sec).lastInsertRowid;
   db.prepare('INSERT INTO playlist_item_schedules (id, playlist_item_id, active_days, start_time, end_time, start_date, end_date, sort_order) VALUES (?,?,?,?,?,?,?,0)')
     .run(uuidv4(), itemId, dys.join(','), st, en, sd, ed);
-  // items changed since last publish -> draft; admin re-publish approves it.
-  db.prepare("UPDATE playlists SET status = 'draft', updated_at = strftime('%s','now') WHERE id = ?").run(req.params.playlistId);
+  // #73: draft vs live is decided by the TOKEN's auto_publish (admin-set, read from
+  // req.apiToken - NEVER req.body, so the agency can't opt itself out of approval). Default
+  // 0 -> draft for admin re-publish. 1 -> the SHARED publishPlaylist path (snapshot + push).
+  let published = false;
+  if (req.apiToken.auto_publish) {
+    publishPlaylist(req.params.playlistId, req);
+    published = true;
+  } else {
+    db.prepare("UPDATE playlists SET status = 'draft', updated_at = strftime('%s','now') WHERE id = ?").run(req.params.playlistId);
+  }
 
-  res.status(201).json({ id: itemId, playlist_id: req.params.playlistId, content_id, duration_sec, start_date: sd, end_date: ed });
+  res.status(201).json({ id: itemId, playlist_id: req.params.playlistId, content_id, duration_sec, start_date: sd, end_date: ed, published });
 });
 
 module.exports = router;

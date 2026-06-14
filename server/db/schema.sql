@@ -531,6 +531,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     scope           TEXT NOT NULL DEFAULT 'read',             -- 'read' | 'write' | 'full' | 'agency'
+    auto_publish    INTEGER NOT NULL DEFAULT 0,                -- #73: agency only. 0 = items land DRAFT (default, fail-safe); 1 = admin opted this agency out of approval
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     last_used_at    INTEGER,
     revoked_at      INTEGER

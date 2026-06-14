@@ -69,7 +69,9 @@ function apiTokenAuth(req, res, next) {
   req.jwtWorkspaceId = row.workspace_id;   // resolveTenancy scopes to the bound workspace
   req.viaToken = true;
   req.tokenScope = row.scope;
-  req.apiToken = { id: row.id, prefix: row.prefix, name: row.name, workspace_id: row.workspace_id };
+  // #73: auto_publish read from the TOKEN ROW (admin-set), so the agency endpoint can
+  // never take it from the request body. `|| 0` keeps it fail-safe for any row predating it.
+  req.apiToken = { id: row.id, prefix: row.prefix, name: row.name, workspace_id: row.workspace_id, auto_publish: row.auto_publish || 0 };
   touchLastUsed(row.id);
   next();
 }
