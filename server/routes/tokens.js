@@ -19,6 +19,11 @@ router.get('/', (req, res) => {
     SELECT id, prefix, name, scope, workspace_id, created_at, last_used_at, revoked_at
     FROM api_tokens WHERE user_id = ? AND workspace_id = ? ORDER BY created_at DESC
   `).all(req.user.id, req.workspaceId);
+  // #73: attach designated playlists for agency tokens so the admin sees the binding persist.
+  const targetsStmt = db.prepare('SELECT p.id, p.name FROM api_token_targets t JOIN playlists p ON p.id = t.playlist_id WHERE t.token_id = ? ORDER BY p.name');
+  for (const r of rows) {
+    if (r.scope === 'agency') r.targets = targetsStmt.all(r.id);
+  }
   res.json(rows);
 });
 

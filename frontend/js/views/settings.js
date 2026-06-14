@@ -74,9 +74,15 @@ export async function render(container) {
             <option value="read">${esc(t('apitoken.scope_read'))}</option>
             <option value="write">${esc(t('apitoken.scope_write'))}</option>
             <option value="full">${esc(t('apitoken.scope_full'))}</option>
+            <option value="agency">${esc(t('apitoken.scope_agency'))}</option>
           </select>
         </div>
         <button class="btn btn-primary btn-sm" id="createTokenBtn">${t('apitoken.create')}</button>
+      </div>
+      <div id="agencyPlaylistPicker" style="display:none;margin-bottom:16px;padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-secondary)">
+        <label style="display:block;font-weight:500;margin-bottom:4px">${t('apitoken.agency_playlists_label')}</label>
+        <p style="color:var(--text-muted);font-size:12px;margin-bottom:8px">${t('apitoken.agency_playlists_hint')}</p>
+        <div id="agencyPlaylistList" style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow:auto"></div>
       </div>
       <div id="tokenSecretBox" style="display:none"></div>
       <div id="tokenList"><p style="color:var(--text-muted);font-size:13px">${t('settings.loading_users')}</p></div>
@@ -329,6 +335,7 @@ export async function render(container) {
     read: t('apitoken.scope_read'),
     write: t('apitoken.scope_write'),
     full: t('apitoken.scope_full'),
+    agency: t('apitoken.scope_agency'),
   }[s] || s);
 
   async function loadTokens() {
@@ -357,7 +364,10 @@ export async function render(container) {
             <tr style="border-bottom:1px solid var(--border)${tok.revoked_at ? ';opacity:0.55' : ''}">
               <td style="padding:10px 12px;font-family:monospace">${esc(tok.prefix)}&hellip;</td>
               <td style="padding:10px 12px">${esc(tok.name || '')}</td>
-              <td style="padding:10px 12px">${esc(scopeLabel(tok.scope))}</td>
+              <td style="padding:10px 12px">${esc(scopeLabel(tok.scope))}${
+                tok.scope === 'agency' && Array.isArray(tok.targets)
+                  ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${t('apitoken.targets_label')} ${tok.targets.length ? tok.targets.map(p => esc(p.name)).join(', ') : '—'}</div>`
+                  : ''}</td>
               <td style="padding:10px 12px">${esc(fmtTokenDate(tok.created_at))}</td>
               <td style="padding:10px 12px">${tok.last_used_at ? esc(fmtTokenDate(tok.last_used_at)) : t('apitoken.never')}</td>
               <td style="padding:10px 12px;white-space:nowrap;text-align:right">
@@ -388,13 +398,36 @@ export async function render(container) {
 
   loadTokens();
 
+  // #73: agency scope reveals a playlist picker (the token's allowlist). Loaded lazily once.
+  const tokScopeSel = document.getElementById('tokScope');
+  let agencyPlaylistsLoaded = false;
+  tokScopeSel?.addEventListener('change', async () => {
+    const picker = document.getElementById('agencyPlaylistPicker');
+    const isAgency = tokScopeSel.value === 'agency';
+    picker.style.display = isAgency ? 'block' : 'none';
+    if (isAgency && !agencyPlaylistsLoaded) {
+      agencyPlaylistsLoaded = true;
+      const list = document.getElementById('agencyPlaylistList');
+      const pls = await api.getPlaylists().catch(() => []);
+      list.innerHTML = pls.length
+        ? pls.map(p => `<label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" class="agency-pl" value="${esc(String(p.id))}"> ${esc(p.name)}</label>`).join('')
+        : `<p style="color:var(--text-muted);font-size:12px">${t('apitoken.agency_no_playlists')}</p>`;
+    }
+  });
+
   document.getElementById('createTokenBtn')?.addEventListener('click', async () => {
     const name = document.getElementById('tokName').value.trim();
     const scope = document.getElementById('tokScope').value;
+    const payload = { name, scope };
+    if (scope === 'agency') {
+      const ids = [...document.querySelectorAll('#agencyPlaylistList .agency-pl:checked')].map(c => c.value);
+      if (!ids.length) return showToast(t('apitoken.agency_needs_playlists'), 'error');
+      payload.target_playlist_ids = ids;
+    }
     const btn = document.getElementById('createTokenBtn');
     btn.disabled = true;
     try {
-      const r = await api.createToken({ name, scope });
+      const r = await api.createToken(payload);
       const box = document.getElementById('tokenSecretBox');
       box.style.display = 'block';
       box.innerHTML = `
