@@ -112,26 +112,17 @@ function requireScope(need) {
   };
 }
 
-// #73: THE single seam for capability-restricted ('agency') tokens. Mounted on the
-// AGENCY_ROUTER (config/api-surface.js) in place of tokenScopeGate. Two checks, no more:
-//   (1) only an agency token passes (a JWT or read/write/full token is rejected);
-//   (2) if the request targets a playlist, that playlist must be in THIS token's
-//       allowlist AND in the token's bound workspace - one query enforces both the
-//       target restriction and cross-workspace isolation.
-// Every agency capability route passes through here, so the whole primitive is proven
-// at one place. Removing the api_token_targets condition makes the bite-test go red.
+// #73: mount seam for capability-restricted ('agency') tokens. SCOPE/off-ladder check ONLY:
+// only an agency token reaches the agency router (a read/write/full token or a JWT is
+// rejected). The PER-TARGET check CANNOT live here - Express doesn't populate req.params at
+// app.use-level middleware (params land at route match, inside the router), so a mount-level
+// target check is silently bypassed (the integration bite-suite caught exactly this). The
+// target check is router.param('playlistId') in routes/agency.js - it fires WITH the param
+// before the handler and can't be skipped by any :playlistId route. Two single-registration,
+// drift-proof seams: scope (here) + target (router.param).
 function agencyGate(req, res, next) {
   if (!req.viaToken || req.tokenScope !== 'agency') {
     return res.status(403).json({ error: 'agency token required' });
-  }
-  const playlistId = req.params.playlistId || (req.body && req.body.playlist_id);
-  if (playlistId) {
-    const ok = db.prepare(`
-      SELECT 1 FROM api_token_targets t
-      JOIN playlists p ON p.id = t.playlist_id
-      WHERE t.token_id = ? AND t.playlist_id = ? AND p.workspace_id = ?
-    `).get(req.apiToken.id, playlistId, req.jwtWorkspaceId);
-    if (!ok) return res.status(403).json({ error: 'playlist not in this agency token\'s allowlist' });
   }
   next();
 }
