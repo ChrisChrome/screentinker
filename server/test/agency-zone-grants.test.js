@@ -8,7 +8,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
-const { resolveGrantedZone } = require('../lib/agency-targets');
+const { resolveGrantedZone, grantableZoneIds } = require('../lib/agency-targets');
 
 function freshDb() {
   const db = new Database(':memory:');
@@ -32,6 +32,8 @@ function freshDb() {
     INSERT INTO playlists VALUES ('plA','wsA'), ('plB','wsA');
     INSERT INTO layouts VALUES ('L1'), ('L2');
     INSERT INTO layout_zones VALUES ('zA1','L1'), ('zA2','L1'), ('zB1','L2');
+    CREATE TABLE playlist_items (id INTEGER PRIMARY KEY, playlist_id TEXT, zone_id TEXT);
+    INSERT INTO playlist_items VALUES (1,'plA','zA1'), (2,'plB','zB1'); -- plA feeds L1, plB feeds L2
     INSERT INTO api_token_targets VALUES ('tok1','plA'), ('tok1','plB');
     INSERT INTO api_token_target_zones VALUES ('tok1','plA','zA1', 0); -- plA narrowed to zA1; plB has none
   `);
@@ -88,4 +90,13 @@ test('#73 cascade: deleting a zone (or its layout) drops the grant referencing i
   const db = freshDb();
   db.prepare("DELETE FROM layouts WHERE id='L1'").run(); // -> layout_zones zA1/zA2 cascade -> zone grants cascade
   assert.equal(db.prepare("SELECT COUNT(*) c FROM api_token_target_zones WHERE zone_id='zA1'").get().c, 0);
+});
+
+test('#73 ISSUANCE validation: can only grant a zone the playlist\'s layout feeds', () => {
+  const db = freshDb();
+  // plA feeds L1, so its layout's zones (zA1, zA2) are grantable - and nothing else
+  assert.deepEqual([...grantableZoneIds(db, 'plA')].sort(), ['zA1', 'zA2']);
+  // zB1 belongs to L2 (plB's layout) - NOT grantable for plA (no cross-playlist-layout grant)
+  assert.equal(grantableZoneIds(db, 'plA').has('zB1'), false);
+  assert.deepEqual([...grantableZoneIds(db, 'plB')], ['zB1']);
 });

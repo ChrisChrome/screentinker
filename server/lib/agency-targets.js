@@ -39,4 +39,19 @@ function resolveGrantedZone(db, tokenId, playlistId, requestedZoneId) {
   return { ok: false, reason: 'ambiguous' };
 }
 
-module.exports = { listDesignatedPlaylists, resolveGrantedZone };
+// #73 issuance-side mirror of the runtime confinement: the set of zone_ids an admin may
+// grant for a playlist = all zones of the layout(s) that playlist feeds (its items'
+// zones -> their layouts -> all zones of those layouts). Token-less (used at create time,
+// before the token exists). A zone the playlist's layout doesn't have -> not in this set ->
+// rejected at issuance, the same boundary resolveGrantedZone enforces at runtime.
+function grantableZoneIds(db, playlistId) {
+  return new Set(db.prepare(`
+    SELECT DISTINCT lz_all.id
+    FROM playlist_items pi
+    JOIN layout_zones lz     ON lz.id = pi.zone_id
+    JOIN layout_zones lz_all ON lz_all.layout_id = lz.layout_id
+    WHERE pi.playlist_id = ?
+  `).all(playlistId).map(r => r.id));
+}
+
+module.exports = { listDesignatedPlaylists, resolveGrantedZone, grantableZoneIds };

@@ -291,6 +291,21 @@ router.delete('/:id', requirePlaylistWrite, (req, res) => {
 // --- Playlist Items ---
 
 // List items
+// #73: the zones of the layout(s) this playlist feeds - for the agency-token designate UI to
+// offer grantable zones. Geometry only (matches the agency layout view's safe surface).
+router.get('/:id/zones', requirePlaylistRead, (req, res) => {
+  res.json(db.prepare(`
+    SELECT DISTINCT lz_all.id, lz_all.name, lz_all.width_percent, lz_all.height_percent,
+           l.name AS layout_name, l.width AS layout_width, l.height AS layout_height
+    FROM playlist_items pi
+    JOIN layout_zones lz     ON lz.id = pi.zone_id
+    JOIN layout_zones lz_all ON lz_all.layout_id = lz.layout_id
+    JOIN layouts l           ON l.id = lz_all.layout_id
+    WHERE pi.playlist_id = ?
+    ORDER BY lz_all.sort_order, lz_all.z_index
+  `).all(req.params.id));
+});
+
 router.get('/:id/items', requirePlaylistRead, (req, res) => {
   const items = db.prepare(`
     SELECT pi.*,

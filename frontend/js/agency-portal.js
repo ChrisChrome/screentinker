@@ -56,6 +56,42 @@
       : '<option value="">No playlists designated — ask your contact</option>';
     showPortal();
     portalMsg('', '');
+    // #73: the placement card reacts to the playlist selector - "where does THIS playlist go?"
+    sel.onchange = () => loadLayoutForPlaylist(sel.value);
+    loadLayoutForPlaylist(sel.value); // initial selection
+  }
+
+  // Visual placement guide for the SELECTED playlist: draw its layout to scale, highlight the
+  // GRANTED zone(s) with the px size to design for, show sibling zones as context (geometry
+  // only - no content, no device/screen data; the endpoint is device-free).
+  async function loadLayoutForPlaylist(playlistId) {
+    const card = $('placementCard'), view = $('layoutView');
+    if (!playlistId) { card.style.display = 'none'; return; }
+    let layouts;
+    try { layouts = await (await agencyFetch('/playlists/' + encodeURIComponent(playlistId) + '/layout')).json(); } catch (e) { return; }
+    card.style.display = 'block';
+    if (!layouts.length) {
+      view.innerHTML = '<p class="pill">This playlist plays full-screen — design for the full display.</p>';
+      return;
+    }
+    view.innerHTML = layouts.map(l => {
+      const mine = new Set(l.feeds_zone_ids);
+      const aspect = (l.height / l.width) * 100; // padding-bottom % = aspect ratio
+      const zones = l.zones.map(z => {
+        const isMine = mine.has(z.id);
+        const wpx = Math.round(l.width * z.width_percent / 100);
+        const hpx = Math.round(l.height * z.height_percent / 100);
+        return `<div style="position:absolute;left:${z.x_percent}%;top:${z.y_percent}%;width:${z.width_percent}%;height:${z.height_percent}%;`
+          + `border:2px solid ${isMine ? 'var(--accent)' : 'var(--border)'};box-sizing:border-box;`
+          + `background:${isMine ? 'rgba(79,140,255,.20)' : 'transparent'};display:flex;align-items:center;justify-content:center;`
+          + `text-align:center;overflow:hidden;font-size:11px;color:${isMine ? '#fff' : 'var(--muted)'}">`
+          + `<span>${escapeHtml(z.name)}${isMine ? `<br><strong>YOUR ZONE</strong><br>${wpx}×${hpx}px` : ''}</span></div>`;
+      }).join('');
+      return `<div style="margin-bottom:16px">`
+        + `<div class="pill" style="margin-bottom:6px">${escapeHtml(l.name)} · ${l.width}×${l.height}</div>`
+        + `<div style="position:relative;width:100%;padding-bottom:${aspect}%;background:#0d0f13;border:1px solid var(--border);border-radius:6px">`
+        + `<div style="position:absolute;inset:0">${zones}</div></div></div>`;
+    }).join('');
   }
 
   // ---- entry ----

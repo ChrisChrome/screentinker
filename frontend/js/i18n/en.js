@@ -402,6 +402,8 @@ export default {
   'apitoken.auto_publish_label': 'Auto-publish (skip my approval)',
   'apitoken.auto_publish_hint': 'Off (default): additions wait as drafts for you to publish. On: they go live immediately — only for agencies you fully trust.',
   'apitoken.auto_publish_on': 'auto-publish on',
+  'apitoken.zone_grant_hint': 'Grant specific zones, or leave unchecked for the whole playlist:',
+  'apitoken.zone_grant_fullscreen': 'Full-screen — no zones to grant.',
   'apitoken.create': 'Create token',
   'apitoken.none': 'No tokens yet.',
   'apitoken.col_token': 'Token',

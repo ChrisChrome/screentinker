@@ -56,11 +56,14 @@ test('#73 agency token: full bite-suite (happy path + 4 confinement assertions)'
   assert.equal(mine.status, 200, 'agency can list its targets');
   assert.deepEqual(mine.body.map(p => p.id), [pl1.id], 'GET /agency/playlists returns ONLY the designated playlist (not pl2)');
 
-  // GET layouts (real path through agencyGate): 200 + an array, and never any device fields
-  const lay = await jfetch('/api/agency/layouts', { headers: { Authorization: 'Bearer ' + atok } });
-  assert.equal(lay.status, 200, 'agency can read layout geometry');
-  assert.ok(Array.isArray(lay.body), 'layouts is an array');
+  // GET per-playlist layout (real path through router.param): 200 + array, never device fields;
+  // a NON-designated playlist's layout -> 403 (router.param confines it)
+  const lay = await jfetch(`/api/agency/playlists/${pl1.id}/layout`, { headers: { Authorization: 'Bearer ' + atok } });
+  assert.equal(lay.status, 200, 'agency can read its designated playlist layout');
+  assert.ok(Array.isArray(lay.body), 'layout is an array');
   assert.ok(!JSON.stringify(lay.body).includes('device'), 'layout response carries no device data');
+  const layX = await jfetch(`/api/agency/playlists/${pl2.id}/layout`, { headers: { Authorization: 'Bearer ' + atok } });
+  assert.equal(layX.status, 403, 'layout of a NON-designated playlist -> 403 (router.param)');
 
   // HAPPY PATH: upload via the agency token (shared ingest -> first-class content)
   const fd = new FormData();
@@ -88,6 +91,11 @@ test('#73 agency token: full bite-suite (happy path + 4 confinement assertions)'
   // BITE 4 (issuance): an agency token can't be BOUND to an out-of-workspace/unknown playlist -> 400
   const badTok = await jfetch('/api/tokens', jpost(jwt, { name: 'Bad', scope: 'agency', target_playlist_ids: ['nonexistent'] }));
   assert.equal(badTok.status, 400, 'cannot bind an out-of-workspace target at issuance');
+
+  // BITE 5 (issuance, zone): can't grant a zone the playlist's layout doesn't feed -> 400
+  // (pl1 has no zone-targeted items, so NO zone is grantable for it)
+  const badZone = await jfetch('/api/tokens', jpost(jwt, { name: 'BadZone', scope: 'agency', target_playlist_ids: [pl1.id], target_zones: { [pl1.id]: ['nope-zone'] } }));
+  assert.equal(badZone.status, 400, 'cannot grant a zone the playlist\'s layout does not feed');
 
   // Portal graceful-failure trigger: an invalid/revoked key -> 401, which the portal catches
   // to show "paste it again" (never a wall of 403s).

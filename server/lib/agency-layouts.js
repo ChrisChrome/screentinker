@@ -7,8 +7,9 @@
 // Confined to THIS token's designated playlists (t.token_id) in its bound workspace.
 // Returns layout canvas size + ALL zones' geometry (no zone CONTENT) + which zones this
 // token feeds. Bite-tested in test/agency-layouts.test.js.
-function listLayoutGeometry(db, tokenId, workspaceId) {
+function listLayoutGeometry(db, tokenId, workspaceId, playlistId = null) {
   // Distinct layouts that this token's designated playlists feed (via their items' zones).
+  // Optional playlistId narrows to ONE designated playlist (the per-playlist card).
   const layouts = db.prepare(`
     SELECT DISTINCT l.id, l.name, l.width, l.height
     FROM api_token_targets t
@@ -16,9 +17,9 @@ function listLayoutGeometry(db, tokenId, workspaceId) {
     JOIN playlist_items pi ON pi.playlist_id = p.id AND pi.zone_id IS NOT NULL
     JOIN layout_zones lz   ON lz.id = pi.zone_id
     JOIN layouts l         ON l.id = lz.layout_id
-    WHERE t.token_id = ?
+    WHERE t.token_id = ?${playlistId ? ' AND p.id = ?' : ''}
     ORDER BY l.name
-  `).all(workspaceId, tokenId);
+  `).all(...(playlistId ? [workspaceId, tokenId, playlistId] : [workspaceId, tokenId]));
 
   // All zones of a layout - GEOMETRY ONLY (no content, no device data lives here anyway).
   const zonesStmt = db.prepare(`

@@ -366,6 +366,8 @@ export default {
   'apitoken.auto_publish_label': 'Publication automatique (ignorer mon approbation)',
   'apitoken.auto_publish_hint': 'Désactivé (par défaut) : les ajouts attendent en brouillon votre publication. Activé : ils sont diffusés immédiatement, uniquement pour les agences de pleine confiance.',
   'apitoken.auto_publish_on': 'publication automatique activée',
+  'apitoken.zone_grant_hint': 'Accordez des zones spécifiques, ou laissez décoché pour toute la liste :',
+  'apitoken.zone_grant_fullscreen': 'Plein écran — aucune zone à accorder.',
   'apitoken.create': 'Créer un jeton',
   'apitoken.none': 'Aucun jeton pour le moment.',
   'apitoken.col_token': 'Jeton',

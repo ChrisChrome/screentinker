@@ -28,11 +28,18 @@ router.get('/playlists', (req, res) => {
   res.json(listDesignatedPlaylists(db, req.apiToken.id, req.jwtWorkspaceId));
 });
 
-// Layout GEOMETRY (canvas size + zone positions/sizes + which zones are this token's) so the
-// agency can size/place content. DEVICE-FREE (lib/agency-layouts.js): never touches the fleet
-// tables, so no device names/locations/topology can leak. Bite-tested in agency-layouts.test.js.
-router.get('/layouts', (req, res) => {
-  res.json(listLayoutGeometry(db, req.apiToken.id, req.jwtWorkspaceId));
+// Layout GEOMETRY for ONE designated playlist (the per-playlist card): canvas size + zone
+// positions/sizes, with "your zone" = the GRANTED zones (placement = grant). Has :playlistId,
+// so router.param confines it to a granted playlist. DEVICE-FREE (lib/agency-layouts.js) - no
+// device names/locations/topology. Bite-tested in agency-layouts.test.js (the geometry) +
+// router.param (the confinement).
+router.get('/playlists/:playlistId/layout', (req, res) => {
+  const layouts = listLayoutGeometry(db, req.apiToken.id, req.jwtWorkspaceId, req.params.playlistId);
+  const granted = new Set(db.prepare('SELECT zone_id FROM api_token_target_zones WHERE token_id = ? AND playlist_id = ?')
+    .all(req.apiToken.id, req.params.playlistId).map(r => r.zone_id));
+  // "your zone" = the granted zones, not the item-feed zones (placement is the grant)
+  for (const l of layouts) l.feeds_zone_ids = l.zones.filter(z => granted.has(z.id)).map(z => z.id);
+  res.json(layouts);
 });
 
 // #73 THE target seam. router.param fires for EVERY route with :playlistId, WITH the param,
