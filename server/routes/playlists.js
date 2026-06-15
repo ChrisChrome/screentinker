@@ -88,6 +88,35 @@ function buildSnapshotItems(playlistId) {
   return items;
 }
 
+// #104: a playlist isn't bound to a device, so it has no intrinsic layout. Derive
+// one from the playlist's own zone-bound items via the FK chain
+// playlist_items.zone_id -> layout_zones.id -> layout_zones.layout_id. 0 zoned items
+// -> fullscreen (null); 1 distinct layout -> use it; >1 (rare/legacy: zones from
+// different layouts) -> the layout covering the MOST items, flagged ambiguous so the
+// dashboard can caption it. Never throws.
+function derivePreviewLayout(assignments) {
+  const zoneIds = [...new Set((assignments || []).map(a => a && a.zone_id).filter(Boolean))];
+  if (zoneIds.length === 0) return null;
+  const ph = zoneIds.map(() => '?').join(',');
+  const zoneRows = db.prepare(`SELECT id, layout_id FROM layout_zones WHERE id IN (${ph})`).all(...zoneIds);
+  if (zoneRows.length === 0) return null; // dangling zone_ids -> fullscreen
+  const layoutIds = [...new Set(zoneRows.map(r => r.layout_id))];
+  let layoutId = layoutIds[0];
+  let ambiguous = false;
+  if (layoutIds.length > 1) {
+    ambiguous = true;
+    const z2l = new Map(zoneRows.map(r => [r.id, r.layout_id]));
+    const tally = {};
+    for (const a of assignments) { const l = z2l.get(a && a.zone_id); if (l) tally[l] = (tally[l] || 0) + 1; }
+    layoutId = Object.entries(tally).sort((x, y) => y[1] - x[1])[0][0];
+  }
+  const layout = db.prepare('SELECT * FROM layouts WHERE id = ?').get(layoutId);
+  if (!layout) return null;
+  layout.zones = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ? ORDER BY sort_order').all(layoutId);
+  if (ambiguous) layout._preview_ambiguous = true;
+  return layout;
+}
+
 // Map an item's schedule rows into the evaluator's block shape.
 function schedulesForItem(itemId) {
   return db.prepare(
@@ -186,6 +215,20 @@ router.get('/:id', requirePlaylistRead, (req, res) => {
   `).all(req.params.id);
   const displayCount = db.prepare('SELECT COUNT(*) as count FROM devices WHERE playlist_id = ?').get(req.params.id).count;
   res.json({ ...req.playlist, items, item_count: items.length, display_count: displayCount });
+});
+
+// #104: device-free draft preview payload. Same shape the device player consumes
+// (via assemblePayload, so it can't drift), but built from LIVE items (draft-aware,
+// not published_snapshot) with a layout derived from the playlist's own zones. JWT-
+// gated + workspace-scoped by requirePlaylistRead. The dashboard iframes /player
+// with ?preview=1&playlist=:id and renders this with the unmodified player renderer.
+const PREVIEW_ORIENTATIONS = new Set(['landscape', 'portrait', 'landscape-flipped', 'portrait-flipped']);
+router.get('/:id/preview-payload', requirePlaylistRead, (req, res) => {
+  const { assemblePayload } = require('../ws/deviceSocket');
+  const assignments = buildSnapshotItems(req.params.id);
+  const layout = derivePreviewLayout(assignments);
+  const orientation = PREVIEW_ORIENTATIONS.has(req.query.orientation) ? req.query.orientation : 'landscape';
+  res.json(assemblePayload({ assignments, layout, orientation, wall_config: null, timezone: null }));
 });
 
 // Update playlist
