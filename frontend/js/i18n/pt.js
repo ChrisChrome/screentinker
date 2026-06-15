@@ -729,6 +729,13 @@ export default {
   'playlist.no_content_found': 'Nenhum conteúdo encontrado',
   'playlist.no_widgets_found': 'Nenhum widget encontrado',
   'playlist.add_btn': 'Adicionar',
+  'playlist.replace_item': 'Substituir conteúdo',
+  'playlist.duplicate_item': 'Duplicar item',
+  'playlist.replace_modal_title': 'Substituir conteúdo',
+  'playlist.replace_btn': 'Substituir',
+  'playlist.replacing': 'Substituindo…',
+  'playlist.toast.item_duplicated': 'Item duplicado',
+  'playlist.toast.item_replaced': 'Conteúdo substituído',
   'playlist.adding': 'Adicionando...',
   'playlist.added': 'Adicionado',
 

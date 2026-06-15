@@ -813,6 +813,13 @@ export default {
   'playlist.no_content_found': 'No content found',
   'playlist.no_widgets_found': 'No widgets found',
   'playlist.add_btn': 'Add',
+  'playlist.replace_item': 'Replace content',
+  'playlist.duplicate_item': 'Duplicate item',
+  'playlist.replace_modal_title': 'Replace content',
+  'playlist.replace_btn': 'Replace',
+  'playlist.replacing': 'Replacing…',
+  'playlist.toast.item_duplicated': 'Item duplicated',
+  'playlist.toast.item_replaced': 'Content replaced',
   'playlist.adding': 'Adding...',
   'playlist.added': 'Added',
 

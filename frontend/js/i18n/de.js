@@ -729,6 +729,13 @@ export default {
   'playlist.no_content_found': 'Kein Inhalt gefunden',
   'playlist.no_widgets_found': 'Keine Widgets gefunden',
   'playlist.add_btn': 'Hinzufügen',
+  'playlist.replace_item': 'Inhalt ersetzen',
+  'playlist.duplicate_item': 'Element duplizieren',
+  'playlist.replace_modal_title': 'Inhalt ersetzen',
+  'playlist.replace_btn': 'Ersetzen',
+  'playlist.replacing': 'Wird ersetzt…',
+  'playlist.toast.item_duplicated': 'Element dupliziert',
+  'playlist.toast.item_replaced': 'Inhalt ersetzt',
   'playlist.adding': 'Wird hinzugefügt...',
   'playlist.added': 'Hinzugefügt',
 

@@ -343,6 +343,12 @@ function renderItems(items) {
         <button class="btn-icon item-schedule" data-item-id="${item.id}" title="${t('itemsched.title')}" aria-label="${t('itemsched.title')}" style="color:${item.schedules && item.schedules.length ? '#38bdf8' : 'var(--text-muted)'};background:none;border:none;cursor:pointer;padding:4px;border-radius:4px">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
         </button>
+        <button class="btn-icon item-replace" data-item-id="${item.id}" title="${t('playlist.replace_item')}" aria-label="${t('playlist.replace_item')}" style="color:var(--text-muted);background:none;border:none;cursor:pointer;padding:4px;border-radius:4px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+        </button>
+        <button class="btn-icon item-duplicate" data-item-id="${item.id}" title="${t('playlist.duplicate_item')}" aria-label="${t('playlist.duplicate_item')}" style="color:var(--text-muted);background:none;border:none;cursor:pointer;padding:4px;border-radius:4px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
         <button class="btn-icon item-move" data-item-id="${item.id}" data-dir="up" title="${t('playlist.move_up')}" aria-label="${t('playlist.move_up')}" ${i === 0 ? 'disabled' : ''} style="color:var(--text-muted);background:none;border:none;cursor:pointer;padding:4px;border-radius:4px;${i === 0 ? 'opacity:0.3;cursor:not-allowed' : ''}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>
         </button>
@@ -390,6 +396,32 @@ function renderItems(items) {
       const itemId = e.currentTarget.dataset.itemId;
       const item = items.find(it => String(it.id) === String(itemId));
       if (item) showScheduleModal(item);
+    });
+  });
+
+  // #105 duplicate: server copies the row + its schedule blocks, appended at the end.
+  itemsEl.querySelectorAll('.item-duplicate').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const itemId = e.currentTarget.dataset.itemId;
+      try {
+        e.currentTarget.disabled = true;
+        await api.duplicatePlaylistItem(currentPlaylistId, itemId);
+        const playlist = await api.getPlaylist(currentPlaylistId);
+        renderItems(playlist.items || []);
+        refreshAfterMutation();
+        showToast(t('playlist.toast.item_duplicated'));
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  });
+
+  // #105 replace: reuse the add-item picker in "replace" mode — swaps content/widget
+  // in place, preserving duration/schedule/zone (server-side).
+  itemsEl.querySelectorAll('.item-replace').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const itemId = e.currentTarget.dataset.itemId;
+      showAddItemModal(currentPlaylistId, { replaceItemId: itemId });
     });
   });
 
@@ -537,12 +569,15 @@ function inlineEdit(playlist, field) {
   }
 }
 
-async function showAddItemModal(playlistId) {
+async function showAddItemModal(playlistId, opts = {}) {
+  // #105: when opts.replaceItemId is set, picking an item REPLACES that item's
+  // content/widget in place (preserving duration/schedule/zone) instead of adding.
+  const replaceItemId = opts.replaceItemId || null;
   const modal = document.createElement('div');
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000';
   modal.innerHTML = `
     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;max-width:560px;width:95vw;max-height:80vh;display:flex;flex-direction:column">
-      <h3 style="margin-bottom:16px;color:var(--text-primary)">${t('playlist.add_modal_title')}</h3>
+      <h3 style="margin-bottom:16px;color:var(--text-primary)">${replaceItemId ? t('playlist.replace_modal_title') : t('playlist.add_modal_title')}</h3>
       <div style="display:flex;gap:8px;margin-bottom:12px">
         <button class="btn btn-primary btn-sm tab-btn active" data-tab="content">${t('playlist.tab_content')}</button>
         <button class="btn btn-secondary btn-sm tab-btn" data-tab="widgets">${t('playlist.tab_widgets')}</button>
@@ -597,7 +632,7 @@ async function showAddItemModal(playlistId) {
             <div style="font-size:13px;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(name)}</div>
             <div style="font-size:11px;color:var(--text-muted)">${esc(sub)}</div>
           </div>
-          <button class="btn btn-primary btn-sm add-item-btn" data-id="${esc(item.id)}" data-type="${isWidget ? 'widget' : 'content'}">${t('playlist.add_btn')}</button>
+          <button class="btn btn-primary btn-sm add-item-btn" data-id="${esc(item.id)}" data-type="${isWidget ? 'widget' : 'content'}">${replaceItemId ? t('playlist.replace_btn') : t('playlist.add_btn')}</button>
         </div>
       `;
     }).join('');
@@ -610,6 +645,18 @@ async function showAddItemModal(playlistId) {
         const data = type === 'widget' ? { widget_id: id } : { content_id: id };
         try {
           btn.disabled = true;
+          if (replaceItemId) {
+            btn.textContent = t('playlist.replacing');
+            // PUT supports a content/widget swap; the server nulls the opposite FK and
+            // preserves duration/schedule/zone. Close on success and re-render the list.
+            await api.updatePlaylistItem(playlistId, replaceItemId, data);
+            modal.remove();
+            const playlist = await api.getPlaylist(playlistId);
+            renderItems(playlist.items || []);
+            refreshAfterMutation();
+            showToast(t('playlist.toast.item_replaced'));
+            return;
+          }
           btn.textContent = t('playlist.adding');
           await api.addPlaylistItem(playlistId, data);
           btn.textContent = t('playlist.added');
@@ -618,7 +665,7 @@ async function showAddItemModal(playlistId) {
           refreshAfterMutation();
         } catch (err) {
           btn.disabled = false;
-          btn.textContent = t('playlist.add_btn');
+          btn.textContent = replaceItemId ? t('playlist.replace_btn') : t('playlist.add_btn');
           showToast(err.message, 'error');
         }
       });
