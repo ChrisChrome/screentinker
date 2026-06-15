@@ -493,6 +493,7 @@ export default {
   'widget.configure': 'Widget konfigurieren',
   'widget.preview': 'Vorschau',
   'widget.preview_title': 'Vorschau',
+  'widget.webpage_blocked_note': 'Wenn dieser Bereich leer ist, blockiert die Website die Einbettung im Browser – auf dem Gerätebildschirm wird sie trotzdem angezeigt.',
   'widget.close': 'Schließen',
   'widget.edit_x': '{type} bearbeiten',
   'widget.new_x': 'Neues {type}',

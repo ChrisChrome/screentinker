@@ -492,6 +492,7 @@ export default {
   'widget.configure': 'Configurar widget',
   'widget.preview': 'Previsualizar',
   'widget.preview_title': 'Previsualización',
+  'widget.webpage_blocked_note': 'Si esta área está en blanco, el sitio bloquea la inserción en un navegador; aún se mostrará en la pantalla del dispositivo.',
   'widget.close': 'Cerrar',
   'widget.edit_x': 'Editar {type}',
   'widget.new_x': 'Nuevo {type}',

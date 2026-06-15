@@ -493,6 +493,7 @@ export default {
   'widget.configure': 'Configurer le widget',
   'widget.preview': 'Aperçu',
   'widget.preview_title': 'Aperçu',
+  'widget.webpage_blocked_note': 'Si cette zone est vide, le site bloque l’intégration dans un navigateur ; il s’affichera quand même sur l’écran de l’appareil.',
   'widget.close': 'Fermer',
   'widget.edit_x': 'Modifier {type}',
   'widget.new_x': 'Nouveau {type}',

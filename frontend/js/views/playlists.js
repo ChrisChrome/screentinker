@@ -205,6 +205,52 @@ async function renderDetail(container, playlistId) {
   }
 }
 
+// #104: draft preview by REUSING the player. Iframes /player in device-free preview
+// mode (same-origin -> dashboard CSP frame-src 'self' allows it). The player fetches
+// /api/playlists/:id/preview-payload and renders with its unmodified renderer, so the
+// preview is byte-identical to what a device shows. Orientation toggle just reloads
+// the iframe with &orientation; the server passes it through.
+function showPlaylistPreview(playlist) {
+  let orientation = 'landscape';
+  const aspect = () => (orientation.startsWith('portrait') ? '9 / 16' : '16 / 9');
+  const frameSrc = () => `/player?preview=1&playlist=${encodeURIComponent(playlist.id)}&orientation=${orientation}&t=${Date.now()}`;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:10000;padding:16px';
+  overlay.innerHTML = `
+    <div style="background:var(--bg-card);border-radius:8px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--border);max-width:95vw;max-height:92vh">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--border);gap:12px">
+        <strong style="color:var(--text-primary)">${t('widget.preview')} — ${esc(playlist.name)}</strong>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-primary btn-sm" id="pvpLandscape">${t('device.form.orientation.landscape')}</button>
+          <button class="btn btn-secondary btn-sm" id="pvpPortrait">${t('device.form.orientation.portrait')}</button>
+          <button class="btn btn-secondary btn-sm" id="pvpClose">${t('widget.close')}</button>
+        </div>
+      </div>
+      <div style="padding:16px;display:flex;align-items:center;justify-content:center;background:#000">
+        <iframe id="pvpFrame" style="height:78vh;max-width:92vw;aspect-ratio:${aspect()};border:0;background:#000" src="${frameSrc()}"></iframe>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const frame = overlay.querySelector('#pvpFrame');
+  const btnL = overlay.querySelector('#pvpLandscape');
+  const btnP = overlay.querySelector('#pvpPortrait');
+  const setOrientation = (o) => {
+    orientation = o;
+    frame.style.aspectRatio = aspect();
+    frame.src = frameSrc();
+    btnL.className = 'btn btn-sm ' + (o === 'landscape' ? 'btn-primary' : 'btn-secondary');
+    btnP.className = 'btn btn-sm ' + (o.startsWith('portrait') ? 'btn-primary' : 'btn-secondary');
+  };
+  btnL.onclick = () => setOrientation('landscape');
+  btnP.onclick = () => setOrientation('portrait');
+  const close = () => overlay.remove();
+  overlay.querySelector('#pvpClose').onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  document.addEventListener('keydown', function esc(ev) {
+    if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+  });
+}
+
 function renderDetailContent(container, playlist) {
   const isDraft = playlist.status === 'draft';
   const hasPublished = !!playlist.published_snapshot;
@@ -236,6 +282,7 @@ function renderDetailContent(container, playlist) {
         </div>
       </div>
       <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" id="previewPlaylistBtn">${t('widget.preview')}</button>
         <button class="btn btn-primary" id="addItemBtn">${t('playlist.add_content')}</button>
         <button class="btn btn-secondary" id="deletePlaylistBtn" style="color:var(--danger)">${t('playlist.delete_playlist')}</button>
       </div>
@@ -263,6 +310,9 @@ function renderDetailContent(container, playlist) {
       }
     });
   }
+  const previewBtn = document.getElementById('previewPlaylistBtn');
+  if (previewBtn) previewBtn.addEventListener('click', () => showPlaylistPreview(playlist));
+
   const discardBtn = document.getElementById('discardDraftBtn');
   if (discardBtn) {
     discardBtn.addEventListener('click', async () => {
