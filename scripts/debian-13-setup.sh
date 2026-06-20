@@ -253,14 +253,21 @@ fi
 if [ "$NEED_PLAYER" = true ]; then
     log "Installing player packages..."
     apt-get install -y -qq \
-        xserver-xorg x11-xserver-utils xinit \
+        xserver-xorg xserver-xorg-legacy x11-xserver-utils xinit \
         chromium unclutter xdotool \
         >> "$LOG_FILE" 2>&1 || {
             warn "Failed to install chromium package, trying chromium-browser..."
-            apt-get install -y -qq xserver-xorg x11-xserver-utils xinit chromium-browser unclutter xdotool >> "$LOG_FILE" 2>&1
+            apt-get install -y -qq xserver-xorg xserver-xorg-legacy x11-xserver-utils xinit chromium-browser unclutter xdotool >> "$LOG_FILE" 2>&1
         }
 
     CHROMIUM_BIN=$(command -v chromium 2>/dev/null || command -v chromium-browser 2>/dev/null || echo "/usr/bin/chromium")
+
+    log "Allowing non-root X server startup..."
+    mkdir -p /etc/X11
+    cat > /etc/X11/Xwrapper.config << 'XWRAPEOF'
+allowed_users=anybody
+needs_root_rights=yes
+XWRAPEOF
 
     log "Creating kiosk launcher..."
     cat > "$RUNTIME_HOME/screentinker-kiosk.sh" << KIOSKEOF
@@ -269,13 +276,16 @@ KIOSK_URL="${KIOSK_URL}"
 
 sleep 2
 
+# Disable screen blanking and power management
 xset s off
 xset s noblank
 xset -dpms
 xset s 0 0
 
+# Hide cursor after 3 seconds of inactivity
 unclutter -idle 3 -root &
 
+# Clean Chromium crash flags (prevents restore session dialogs)
 CDIR="\$HOME/.config/chromium/Default"
 mkdir -p "\$CDIR"
 if [ -f "\$CDIR/Preferences" ]; then
@@ -283,11 +293,12 @@ if [ -f "\$CDIR/Preferences" ]; then
     sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "\$CDIR/Preferences" 2>/dev/null || true
 fi
 
+# Wait for local server if running all-in-one
 if echo "\$KIOSK_URL" | grep -q "localhost"; then
     echo "Waiting for ScreenTinker server..."
-    for i in \$(seq 1 30); do
+    for i in \$(seq 1 60); do
         if curl -sf "http://localhost:${SCREENTINKER_PORT}/api/health" >/dev/null 2>&1; then
-            echo "Server ready"
+            echo "Server ready after \${i}x2s"
             break
         fi
         sleep 2
@@ -355,16 +366,23 @@ XINITEOF
 Description=ScreenTinker Kiosk Display
 ${KIOSK_AFTER}
 ${KIOSK_REQ}
+# Prevent conflicts with getty on tty1
+Conflicts=getty@tty1.service
+After=getty@tty1.service
 
 [Service]
 Type=simple
 User=${RUNTIME_USER}
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=${RUNTIME_HOME}/.Xauthority
+# Remove stale X lock files from previous crashes before starting
+ExecStartPre=/bin/bash -c 'rm -f /tmp/.X0-lock /tmp/.X11-unix/X0'
 ExecStartPre=/bin/sleep 3
 ExecStart=/usr/bin/startx ${RUNTIME_HOME}/.xinitrc -- :0 -nolisten tcp vt1
-Restart=always
+Restart=on-failure
 RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=120
 
 TTYPath=/dev/tty1
 StandardInput=tty
@@ -387,6 +405,10 @@ SERVICEEOF
 ExecStart=
 ExecStart=-/sbin/agetty --autologin ${RUNTIME_USER} --noclear %I \$TERM
 AUTOLOGINEOF
+
+    # Disable getty on tty1 so it doesn't conflict with the kiosk service
+    systemctl disable getty@tty1.service 2>/dev/null || true
+    systemctl mask getty@tty1.service 2>/dev/null || true
 fi
 
 if [ "$NEED_SERVER" = true ]; then
@@ -484,6 +506,14 @@ MOTDEOF
 if grep -q "#RuntimeWatchdogSec=0" /etc/systemd/system.conf 2>/dev/null; then
     sed -i 's/#RuntimeWatchdogSec=0/RuntimeWatchdogSec=10/' /etc/systemd/system.conf
     log "Hardware watchdog enabled (10s)"
+fi
+
+# Disable console blanking so the screen stays on during boot
+if [ -f /etc/default/grub ]; then
+    if ! grep -q "consoleblank=0" /etc/default/grub; then
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 consoleblank=0"/' /etc/default/grub
+        update-grub >> "$LOG_FILE" 2>&1 && log "Console blanking disabled in GRUB" || warn "update-grub failed (non-fatal)"
+    fi
 fi
 
 echo ""
