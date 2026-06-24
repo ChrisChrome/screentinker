@@ -280,7 +280,7 @@ fi
 if echo "\$KIOSK_URL" | grep -q "localhost"; then
     echo "Waiting for ScreenTinker server..."
     for i in \$(seq 1 30); do
-        if curl -sf "http://localhost:${SCREENTINKER_PORT}/api/health" >/dev/null 2>&1; then
+        if curl -sf "http://localhost:${SCREENTINKER_PORT}/api/status" >/dev/null 2>&1; then
             echo "Server ready"
             break
         fi
