@@ -43,9 +43,16 @@ module.exports = {
   // Engine.IO transport-level ping/pong. Raised from Socket.IO defaults
   // (25000/20000) because TV WebKits (LG webOS, older Tizen) miss pongs
   // under decode load - tighter values cause spurious transport drops.
-  // Worst-case dead-socket detection: pingInterval + pingTimeout = 60s.
-  pingInterval: parseInt(process.env.PING_INTERVAL) || 30000,
+  // #148: faster half-open detection WITHOUT reintroducing that risk — we lower only the
+  // PING INTERVAL (probe more often), keeping the deliberately-generous 30s pong TIMEOUT so a
+  // decode-loaded TV WebKit still has the full window to answer. Detection = interval +
+  // timeout = 45s (was 60s); the client inherits these via the handshake so BOTH ends detect
+  // a dead peer ~25% sooner. Do NOT drop pingTimeout below ~30s (see the decode-load note).
+  pingInterval: parseInt(process.env.PING_INTERVAL) || 15000,
   pingTimeout:  parseInt(process.env.PING_TIMEOUT)  || 30000,
+  // #148 Item 4: TCP SO_KEEPALIVE idle delay — OS-level dead-peer probing independent of the
+  // app ping, so a half-open TCP can't persist indefinitely.
+  tcpKeepAliveMs: parseInt(process.env.TCP_KEEPALIVE_MS) || 20000,
   maxFileSize: 500 * 1024 * 1024, // 500MB
   thumbnailWidth: 320,
   screenshotQuality: 70,

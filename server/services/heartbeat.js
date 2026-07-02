@@ -47,6 +47,15 @@ function startHeartbeatChecker(io) {
       const lastBeat = conn ? conn.lastHeartbeat : (device.last_heartbeat ? device.last_heartbeat * 1000 : 0);
 
       if (now - lastBeat > config.heartbeatTimeout) {
+        // #148 Item 2: marking a device offline MUST also close any socket we still hold for
+        // it, so DB-offline can never diverge from socket-state into a silent half-open the
+        // client is never told about. The live-socket guard above already `continue`d for a
+        // genuinely-live socket, so this only reaps a stale/half-open one (Engine.IO's
+        // ping-timeout also reaps it, but this makes offline<=>closed explicit + immediate).
+        if (conn) {
+          const sock = deviceNs.sockets.get(conn.socketId);
+          if (sock) { try { sock.disconnect(true); } catch (_) { /* already gone */ } }
+        }
         db.prepare("UPDATE devices SET status = 'offline', updated_at = strftime('%s','now') WHERE id = ?")
           .run(device.id);
         deviceConnections.delete(device.id);

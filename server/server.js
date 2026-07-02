@@ -57,6 +57,9 @@ if (hasSsl) {
   server = http.createServer(app);
 }
 
+// #148 Item 4: TCP SO_KEEPALIVE on every accepted connection (lib/tcp-keepalive.js).
+require('./lib/tcp-keepalive').applyTcpKeepAlive(server, config.tcpKeepAliveMs);
+
 // Socket.IO CORS is checked via the same corsOriginCheck function defined below
 // (after config is loaded). Hoisted into a closure so we can reference it before
 // the function is defined — at first connection time, corsOriginCheck exists.
