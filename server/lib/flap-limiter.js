@@ -39,8 +39,15 @@ function maxFor(key) { return key === ANON_KEY ? config.connectRateAnonMax : con
 //   { allow: false, retryAfterMs, reason, tripped?, trips?, quarantined? }
 // reason: 'quarantined' (in-memory time-limited), 'flap-cooldown' (post-trip), 'flap-rate'
 // (the trip edge). `quarantined:true` marks the START of a quarantine (log once).
-function check(key, now = Date.now()) {
+function check(key, now = Date.now(), opts = {}) {
   if (!config.flapLimiterEnabled) return { allow: true };   // #146 P1.3 kill switch
+  // #148: a PAIRED + AUTHENTICATED device reconnecting is a legitimate client recovering
+  // (e.g. from an edge idle-reap / half-open TCP), NOT an attacker. Exempt it from the long
+  // 30-min QUARANTINE escalation — behind ONE SNAT IP a repeated edge flush would otherwise
+  // accumulate the whole paired fleet into quarantine at once, a self-inflicted fleet-wide
+  // lockout. It still gets the brief soft cooldown if it truly hammers; only the LONG lockout
+  // is waived. Unpaired/anon flapping (attacker / unprovisioned hammering) still quarantines.
+  const exemptQuarantine = !!opts.paired;
   let s = state.get(key);
   if (!s) { s = { hits: [], blockedUntil: 0, lastSeen: now, trips: 0, tripWinStart: now, quarantinedUntil: 0 }; state.set(key, s); }
   s.lastSeen = now;
@@ -50,7 +57,10 @@ function check(key, now = Date.now()) {
   // is safe in-memory now that Item A ended the prune-induced restart loop; a
   // self-healing auto-action must NOT survive as a devices.blocked row.
   if (now < s.quarantinedUntil) {
-    return refuse(now, { allow: false, retryAfterMs: s.quarantinedUntil - now, reason: 'quarantined' });
+    // #148: a device that presents valid paired creds is authenticated-legit — release any
+    // in-flight quarantine (e.g. tripped before it re-authed, or by a spoofer of its id).
+    if (exemptQuarantine) { s.quarantinedUntil = 0; s.trips = 0; }
+    else return refuse(now, { allow: false, retryAfterMs: s.quarantinedUntil - now, reason: 'quarantined' });
   }
 
   // Inside an enforced cooldown -> refuse cheaply.
@@ -68,7 +78,9 @@ function check(key, now = Date.now()) {
     if (now - s.tripWinStart > config.connectRateWindowMs) { s.tripWinStart = now; s.trips = 0; }
     s.trips += 1;
     // Escalate to a time-limited quarantine after N trips in the window (0 = off).
-    if (config.connectRateQuarantineTrips > 0 && s.trips >= config.connectRateQuarantineTrips) {
+    // #148: NEVER escalate a paired+authenticated device to the long lockout — the soft
+    // cooldown below is the most a legitimate reconnecting device ever gets.
+    if (!exemptQuarantine && config.connectRateQuarantineTrips > 0 && s.trips >= config.connectRateQuarantineTrips) {
       s.quarantinedUntil = now + config.connectRateQuarantineMs;
       bump(quarantineStartsCtr, now);   // a quarantine event is visible even though the gauge decays
       return refuse(now, { allow: false, retryAfterMs: config.connectRateQuarantineMs, reason: 'flap-rate', tripped: true, trips: s.trips, quarantined: true });

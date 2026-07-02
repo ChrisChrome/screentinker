@@ -322,7 +322,12 @@ module.exports = function setupDeviceSocket(io) {
       // Keyed via the same SNAT-safe identity, NEVER IP.
       const isRefreshConnect = device_id && currentDeviceId === device_id;
       if (!isRefreshConnect) {
-        const fv = flapLimiter.check(ident.key);
+        // #148: a paired + AUTHENTICATED device reconnecting is exempt from the flap
+        // QUARANTINE (not from the soft cooldown). validateDeviceToken confirms device_id +
+        // a matching STORED token (false for missing/mismatch), so a spoofed device_id can't
+        // claim the exemption — an attacker without the real token is still quarantinable.
+        const paired = !!device_id && validateDeviceToken(device_id, device_token);
+        const fv = flapLimiter.check(ident.key, Date.now(), { paired });
         if (!fv.allow) {
           // #146 P0: auto-quarantine is IN-MEMORY + TIME-LIMITED (lib/flap-limiter),
           // never a DB block — a stuck-then-recovered device self-heals. The
