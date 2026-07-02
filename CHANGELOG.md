@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.9.2-patch1
+
+**Server/CMS-only connection-lifecycle hardening for #148 — NO Android APK, players stay on
+their current builds.** This strictly HELPS and de-risks, but is **NOT a guaranteed #148 fix**:
+the MAXHUB client-side reconnect failure and the disconnect synchronizer (edge conntrack /
+reporting) are separate, unproven-here tracks that may still require a client update / a Bold
+Sophos-edge review — **do not consider #148 fully closed on this patch alone.**
+
+### Fixed / hardened — connection lifecycle (#148)
+- **The flap-limiter no longer quarantines legitimate PAIRED devices on reconnect churn.** A
+  paired + authenticated device reconnecting is exempt from the 30-min quarantine escalation
+  (a brief soft cooldown at most), so a repeated edge/NAT flush behind one SNAT IP can no
+  longer be amplified into a self-inflicted fleet-wide lockout. Unpaired/abusive flapping is
+  still quarantined (the attacker / unprovisioned-hammering case is unchanged).
+- **Marking a device offline now also closes its socket**, so DB-offline can't diverge from
+  socket-state into a silent half-open the client is never told about.
+- **Faster half-open detection:** ping interval 30s → 15s (the pong TIMEOUT is kept at 30s so
+  decode-loaded TV WebKits aren't falsely dropped) → dead-peer detection 60s → 45s on BOTH the
+  server AND the client (the client inherits these via the handshake — **no APK needed**).
+- **TCP SO_KEEPALIVE** on every connection so a half-open TCP can't persist indefinitely at the
+  OS layer.
+
+Server/CMS version only; ships no APK (versionCode still increments so a future player build is
+OTA-recognized). Docker: `ghcr.io/screentinker/screentinker:1.9.2-patch1` (pre-release —
+`:latest` stays at 1.9.2).
+
 ## 1.9.2
 
 **⚠ Major internal hardening release (the "#146" rewrite) — large blast radius.** 1.9.2
