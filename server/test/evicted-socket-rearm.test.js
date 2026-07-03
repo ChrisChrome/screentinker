@@ -25,6 +25,12 @@ const crypto = require('node:crypto');
 
 // Isolate the DB BEFORE requiring config/database (they read env at load time).
 process.env.DATA_DIR = path.join(os.tmpdir(), 'st-evict-' + crypto.randomBytes(4).toString('hex'));
+// #148 patch2: this test exercises the EVICTION path (orthogonal to the session-settle
+// debounce). Shrink the settle window so the test's ~60ms gap between socket1 and socket2 is
+// past it, i.e. socket2 is ACCEPTED and evicts socket1 (the scenario under test) rather than
+// being soft-refused as a rapid duplicate. (The settle behaviour itself is covered by
+// test/session-settle.test.js and test/148-eviction-storm.test.js.)
+process.env.SESSION_SETTLE_WINDOW_MS = '30';
 process.env.SELF_HOSTED = 'true';
 process.env.NODE_ENV = 'test';
 

@@ -600,6 +600,7 @@ const otaBreaker = require('./lib/ota-breaker');
 otaBreaker.startSweep();   // #144: periodically evict idle breaker buckets so keyed state stays bounded
 require('./lib/reconnect-throttle').startSweep();   // #146: same, for the reconnect throttle's per-device buckets
 require('./lib/flap-limiter').startSweep();          // #146 Item B: evict idle flap-limiter buckets
+require('./lib/session-settle').startSweep();        // #148 patch2: evict idle session-settle entries
 require('./lib/content-ack-limiter').startSweep();   // #146 Item E: evict idle content-ack buckets
 const apkCache = require('./lib/apk-cache');
 apkCache.start();                                    // #146 Item C: resolve APK path/size/mtime once + refresh on interval (no per-request fs)

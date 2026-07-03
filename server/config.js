@@ -173,6 +173,12 @@ module.exports = {
   // only the hard ceiling (no rate-band throttle) so a deploy can't throttle
   // healthy screens. Throttle state is in-memory and resets on restart.
   reconnectWarmupMs: parseInt(process.env.RECONNECT_WARMUP_MS) || 30000,
+  // #148 patch2: per-device session-settle debounce window. A device opening duplicate/rapid
+  // sockets within this window keeps its LIVE incumbent and the duplicate is soft-refused, so
+  // it converges on one connection and stays online (closes the reconnect-throttle warm-up
+  // gap). Warm-up-independent. ~2-3s: long enough to swallow a burst, short enough that a
+  // genuine move (after the incumbent is gone / the window passes) is accepted within seconds.
+  sessionSettleWindowMs: parseInt(process.env.SESSION_SETTLE_WINDOW_MS) || 2500,
   reconnectBandElevatedMult: parseFloat(process.env.RECONNECT_BAND_ELEVATED_MULT) || 2,
   reconnectBandCriticalMult: parseFloat(process.env.RECONNECT_BAND_CRITICAL_MULT) || 4,
 

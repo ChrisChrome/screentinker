@@ -11,6 +11,7 @@ const contentAckLimiter = require('../lib/content-ack-limiter');
 const statusLogWriter = require('../lib/status-log-writer');
 const { protectSocket } = require('../lib/safe-socket');
 const flapLimiter = require('../lib/flap-limiter');
+const sessionSettle = require('../lib/session-settle');   // #148 patch2: eviction-storm debounce
 const { resolveIdentity } = require('../lib/device-identity');
 const logCoalescer = require('../lib/log-coalescer');
 const loopLag = require('../services/loop-lag');
@@ -476,6 +477,24 @@ module.exports = function setupDeviceSocket(io) {
             }
           }
 
+          // #148 patch2: SESSION-SETTLE debounce. A device opening duplicate/rapid sockets
+          // must converge on ONE live connection and stay online, not churn through evictions
+          // (the reconnect-throttle's 30s post-restart warm-up skips this — this does NOT).
+          // If a LIVE incumbent exists and we accepted a socket for this device within the
+          // settle window, soft-refuse THIS duplicate and keep the incumbent.
+          // LIVENESS SAFEGUARD (load-bearing): only hold when the incumbent socket is actually
+          // in the namespace — a dead/half-open incumbent is replaced below, NEVER stranding
+          // the device offline. Soft refusal (paired-safe), never a quarantine.
+          const priorConn = heartbeat.getConnection(device_id);
+          const incumbentAlive = !!(priorConn && priorConn.socketId !== socket.id && deviceNs.sockets.has(priorConn.socketId));
+          if (sessionSettle.shouldHold(device_id, incumbentAlive)) {
+            logCoalescer.record(`settle:${device_id}`, `[settle] device ${device_id} keeping live incumbent ${priorConn.socketId}; soft-refusing duplicate ${socket.id}`);
+            evictedSockets.add(socket.id);   // this refused socket's disconnect must NOT touch device state
+            socket.emit('device:throttled', { retry_after_ms: config.sessionSettleWindowMs, reason: 'session_settle' });
+            process.nextTick(() => { try { socket.disconnect(true); } catch (_) { evictedSockets.delete(socket.id); } });
+            return;
+          }
+
           currentDeviceId = device_id;
           authenticated = true;
           // Cancel any pending offline timer - device is back in the grace window
@@ -484,6 +503,7 @@ module.exports = function setupDeviceSocket(io) {
             pendingOfflines.delete(device_id);
           }
           evictPriorSocket(device_id, socket.id);
+          sessionSettle.accepted(device_id);   // #148 patch2: (re)arm the settle window on an accepted connection
           db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
             .run(getClientIp(socket), device_id);
 
