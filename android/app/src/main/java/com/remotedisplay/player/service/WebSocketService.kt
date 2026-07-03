@@ -22,11 +22,24 @@ import java.net.URI
 class WebSocketService : Service() {
 
     private var socket: Socket? = null
+    // #148 root-cause guard: the single-socket invariant. currentUrl + socketActive track the
+    // ONE socket so connect() is idempotent across every entry point (boot, service start,
+    // activity bind, foreground re-bind) — a re-bind can never open a duplicate. See
+    // ConnectionGuard. socketActive == "connected OR Socket.IO is auto-reconnecting it".
+    @Volatile private var socketActive = false
+    @Volatile private var currentUrl: String? = null
+    private var reopenRunnable: Runnable? = null
     private lateinit var config: ServerConfig
     private lateinit var deviceInfo: DeviceInfo
     private val handler = Handler(Looper.getMainLooper())
     private var heartbeatRunnable: Runnable? = null
     private val binder = LocalBinder()
+
+    companion object {
+        // #148: backoff before re-opening the single socket after a disconnect that Socket.IO
+        // does NOT auto-reconnect (io server/client disconnect) — never a blind immediate re-open.
+        private const val RECONNECT_AFTER_EVICT_MS = 3000L
+    }
 
     // Callbacks
     var onPaired: ((String, String) -> Unit)? = null
@@ -76,6 +89,10 @@ class WebSocketService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // #148 single owner: the SERVICE owns the one connection. Idempotent (ConnectionGuard),
+        // so a START_STICKY restart / re-delivery / boot start reuses a live socket and never
+        // opens a duplicate. No-op until a server url is configured (provisioning).
+        connect()
         return START_STICKY
     }
 
@@ -94,14 +111,31 @@ class WebSocketService : Service() {
         return this
     }
 
+    /**
+     * Idempotent connect — the #148 root-cause guard. Safe to call from EVERY entry point
+     * (service start, activity bind, foreground transition, reconnect). If we already hold a
+     * live or self-healing socket to the same url, REUSE it; only ever open ONE socket per
+     * device. @Synchronized so racing entry points can't open two.
+     */
+    @Synchronized
     fun connect(serverUrl: String? = null) {
         val url = serverUrl ?: config.serverUrl
         if (url.isEmpty()) {
             Log.e("WebSocketService", "No server URL configured")
             return
         }
+        if (!ConnectionGuard.shouldOpenNewSocket(socket != null, currentUrl == url, socketActive)) {
+            Log.i("WebSocketService", "connect(): reusing existing socket to $url — no duplicate (#148)")
+            return
+        }
+        openSocket(url)
+    }
 
+    @Synchronized
+    private fun openSocket(url: String) {
         disconnect()
+        currentUrl = url
+        socketActive = true
 
         try {
             val options = IO.Options().apply {
@@ -126,8 +160,16 @@ class WebSocketService : Service() {
                     val reason = args.firstOrNull()?.toString() ?: "unknown"
                     Log.w("WebSocketService", "Disconnected from server: $reason")
                     // Stop heartbeat while disconnected; player keeps showing cached content.
-                    // Socket.IO will reconnect automatically per the options above.
                     stopHeartbeat()
+                    // #148 reconnect discipline: Socket.IO auto-reconnects the SAME socket on a
+                    // transport drop (reconnection=true) — leave socketActive true so connect()
+                    // keeps reusing it. But on a server- or client-initiated disconnect it does
+                    // NOT auto-reconnect, so mark the socket inert and bring up exactly ONE new
+                    // connection after a backoff — never a blind re-open that gets evicted again.
+                    if (reason == "io server disconnect" || reason == "io client disconnect") {
+                        socketActive = false
+                        scheduleReopen(RECONNECT_AFTER_EVICT_MS)
+                    }
                 }
 
                 safeOn(Socket.EVENT_CONNECT_ERROR) { args ->
@@ -613,9 +655,26 @@ class WebSocketService : Service() {
 
     fun disconnect() {
         stopHeartbeat()
+        cancelReopen()
+        socketActive = false
         try { socket?.disconnect() } catch (e: Throwable) { Log.w("WebSocketService", "disconnect: ${e.message}") }
         try { socket?.off() } catch (e: Throwable) { Log.w("WebSocketService", "off: ${e.message}") }
         socket = null
+    }
+
+    // #148 reconnect discipline: bring up exactly ONE new connection after an eviction, with a
+    // backoff, and only one pending at a time — so a server eviction can't trigger a blind
+    // re-open loop. connect() itself is idempotent, so this is safe even if an activity rebind
+    // races it.
+    private fun scheduleReopen(delayMs: Long) {
+        if (reopenRunnable != null) return
+        val r = Runnable { reopenRunnable = null; connect() }
+        reopenRunnable = r
+        handler.postDelayed(r, delayMs)
+    }
+    private fun cancelReopen() {
+        reopenRunnable?.let { handler.removeCallbacks(it) }
+        reopenRunnable = null
     }
 
     fun isConnected(): Boolean = socket?.connected() == true
