@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.9.2-patch2
+
+**Server/CMS-only field-safe net for #148 — NO Android APK, players unchanged.** Makes the
+server absorb a device that opens duplicate/rapid sockets, so a thrashing PAIRED device
+converges to ONE stable connection and stays online. It does **NOT** fix the client opening
+duplicate sockets (the APK duplicate-socket root cause — separate track); **#148 is not closed
+on this alone.**
+
+### Fixed / hardened — eviction storm (#148)
+- **Per-device session-settle debounce.** When a device_id with a LIVE incumbent socket opens
+  another socket within a short window (`SESSION_SETTLE_WINDOW_MS`, default 2500ms), the
+  duplicate is **soft-refused and the incumbent kept** — so a duplicate burst converges on one
+  connection and the device stays online, instead of churning through evictions. This closes
+  the gap the reconnect-throttle's **30s post-restart warm-up** leaves open (during warm-up only
+  the hard ceiling applies, so a burst passed undamped and each new socket evicted the prior).
+  The debounce is **warm-up-independent**.
+- **Liveness safeguard:** the incumbent is only kept if its socket is genuinely live; a
+  dead/half-open incumbent is replaced — the device is **never stranded offline**.
+- **Soft refusal, never a quarantine** (paired-safe); single-session enforcement intact for a
+  legitimate move; unpaired/abusive flapping still caught by the existing limiters.
+
+Operational note: a chunk of the observed churn was the warm-up window **re-opening on every
+rapid patch redeploy** — the debounce closes that in code, but reducing redeploy frequency
+independently reduces warm-up-window exposure.
+
+Server/CMS only; ships no APK (versionCode still increments so a future player build is
+OTA-recognized). Docker: `ghcr.io/screentinker/screentinker:1.9.2-patch2` (pre-release —
+`:latest` stays at 1.9.2).
+
 ## 1.9.2-patch1
 
 **Server/CMS-only connection-lifecycle hardening for #148 — NO Android APK, players stay on
