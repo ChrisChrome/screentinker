@@ -4,4 +4,25 @@
     <string name="accessibility_description">RemoteDisplay uses accessibility to enable remote power controls and system navigation.</string>
     <string name="nothing_scheduled">Nothing scheduled right now</string>
     <string name="waiting_for_content">Waiting for content…</string>
+
+    <!-- Hidden settings menu (triggered by 2x BACK or ESC) -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_change_server">Change server URL</string>
+    <string name="settings_reconfigure">Reconfigure device (re-pair)</string>
+    <string name="settings_device_info">Device info</string>
+    <string name="settings_info_device">Device</string>
+    <string name="settings_exit">Exit app</string>
+    <string name="settings_save">Save</string>
+    <string name="settings_exit_title">Exit ScreenTinker?</string>
+    <string name="settings_exit_confirm">The app will stop displaying content. You can reopen it later from the app launcher.</string>
+    <string name="settings_exit_yes">Exit</string>
+    <string name="settings_connection_failed">Can\'t reach the server</string>
+    <string name="settings_connection_hint">Press BACK twice for settings</string>
+
+    <!-- Permissions -->
+    <string name="settings_permissions">Permissions</string>
+    <string name="settings_perm_accessibility">Accessibility</string>
+    <string name="settings_perm_notifications">Notifications</string>
+    <string name="settings_perm_hint">Tap \"Open\" to manage permissions in system settings</string>
+    <string name="settings_perm_open">Open settings</string>
 </resources>

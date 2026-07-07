@@ -121,7 +121,8 @@ class WebSocketService : Service() {
     fun connect(serverUrl: String? = null) {
         val url = serverUrl ?: config.serverUrl
         if (url.isEmpty()) {
-            Log.e("WebSocketService", "No server URL configured")
+            consecutiveFailures++
+            Log.e("WebSocketService", "No server URL configured (${consecutiveFailures} consecutive)")
             return
         }
         if (!ConnectionGuard.shouldOpenNewSocket(socket != null, currentUrl == url, socketActive)) {
@@ -153,6 +154,7 @@ class WebSocketService : Service() {
             socket = IO.socket(URI.create("$url/device"), options).apply {
                 safeOn(Socket.EVENT_CONNECT) {
                     Log.i("WebSocketService", "Connected to server")
+                    consecutiveFailures = 0
                     register()
                 }
 
@@ -173,7 +175,8 @@ class WebSocketService : Service() {
                 }
 
                 safeOn(Socket.EVENT_CONNECT_ERROR) { args ->
-                    Log.e("WebSocketService", "Connection error: ${args.firstOrNull()}")
+                    consecutiveFailures++
+                    Log.e("WebSocketService", "Connection error (${consecutiveFailures} consecutive): ${args.firstOrNull()}")
                 }
 
                 safeOn("device:registered") { args ->
@@ -678,6 +681,11 @@ class WebSocketService : Service() {
     }
 
     fun isConnected(): Boolean = socket?.connected() == true
+
+    // Consecutive connection failures (reset on any successful connect).
+    // Used by MainActivity to surface a "Stuck connecting?" prompt.
+    @Volatile var consecutiveFailures: Int = 0
+        private set
 
     override fun onDestroy() {
         wakeLock?.let { if (it.isHeld) it.release() }

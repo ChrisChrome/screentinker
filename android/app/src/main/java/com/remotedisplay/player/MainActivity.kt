@@ -1,12 +1,15 @@
 package com.remotedisplay.player
 
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.Manifest
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.os.Handler
 import android.os.IBinder
@@ -19,7 +22,9 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityManager
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.media3.ui.PlayerView
 import com.remotedisplay.player.data.ContentCache
 import com.remotedisplay.player.data.ServerConfig
@@ -65,6 +70,14 @@ class MainActivity : AppCompatActivity() {
     private var remoteStreaming = false
     private var screenshotStreamRunnable: Runnable? = null
     private var playbackStarted = false
+
+    // Multi-tap BACK/ESC for hidden settings menu.
+    // Collect taps in a 2-second window; on expiry: 2 taps → settings, 3+ taps → exit.
+    private val backTapTimes = mutableListOf<Long>()
+    private var backTapRunnable: Runnable? = null
+    private val TAP_WINDOW_MS = 1800L
+    // Connection-failure auto-prompt threshold.
+    private var failureBannerShown = false
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -247,6 +260,16 @@ class MainActivity : AppCompatActivity() {
         // dashboard badge clears/lights up promptly without waiting for a reconnect.
         updateChecker.otaStatusReporter = { wsService?.sendOtaStatus() }
         updateChecker.startPeriodicCheck()
+
+        // Periodic connection-failure check so the "Stuck connecting?" banner appears
+        // without waiting for the next playlist update
+        val failureCheck = object : Runnable {
+            override fun run() {
+                checkConnectionFailureBanner()
+                handler.postDelayed(this, 30_000L)
+            }
+        }
+        handler.postDelayed(failureCheck, 15_000L)
 
     }
 
@@ -783,8 +806,184 @@ class MainActivity : AppCompatActivity() {
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
-        // Don't exit the app on back press - this is a kiosk/signage app
+        // Don't exit the app on back press - this is a kiosk/signage app.
+        // Multi-tap detection is handled in dispatchKeyEvent.
         Log.i("MainActivity", "Back press intercepted (kiosk mode)")
+    }
+
+    // Multi-tap BACK/ESC detection — 2 taps → settings, 3+ taps → exit dialog.
+    // Catches hardware BACK, D-pad BACK (KEYCODE_BACK=4), and ESC (111).
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                    handleBackTap()
+                    return true  // consume — never let the system handle it
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun handleBackTap() {
+        val now = System.currentTimeMillis()
+        backTapTimes.add(now)
+
+        // Trim taps older than the window
+        while (backTapTimes.isNotEmpty() && now - backTapTimes.first() > TAP_WINDOW_MS) {
+            backTapTimes.removeAt(0)
+        }
+
+        // Cancel any pending evaluation and re-schedule
+        backTapRunnable?.let { handler.removeCallbacks(it) }
+        backTapRunnable = Runnable {
+            val count = backTapTimes.size
+            backTapTimes.clear()
+            when {
+                count >= 3 -> showExitDialog()
+                count == 2 -> showSettingsDialog()
+                // count == 1 → ignored (kiosk)
+            }
+        }
+        handler.postDelayed(backTapRunnable!!, TAP_WINDOW_MS)
+    }
+
+    private fun showSettingsDialog() {
+        val serverUrl = config.serverUrl
+        val connected = wsService?.isConnected() == true
+        val version = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        } catch (_: Exception) { "?" }
+
+        val items = arrayOf(
+            "${getString(R.string.settings_change_server)}\n  ${if (serverUrl.isEmpty()) "—" else serverUrl}",
+            getString(R.string.settings_reconfigure),
+            getString(R.string.settings_permissions),
+            "${getString(R.string.settings_device_info)}\n  ${getString(R.string.settings_info_device)}: ${config.deviceId.take(8)}…  |  v$version  |  ${if (connected) "●" else "○"}",
+            getString(R.string.settings_exit)
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.settings_title))
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> showChangeServerDialog(serverUrl)
+                    1 -> {
+                        config.clearDeviceCredentials()
+                        navigateToProvisioning(serverUrl)
+                    }
+                    2 -> showPermissionsDialog()
+                    4 -> showExitDialog()
+                    // 3 = info (read-only, dismiss)
+                }
+            }
+            .setOnCancelListener { /* dismissed, back to kiosk */ }
+            .show()
+    }
+
+    private fun showChangeServerDialog(currentUrl: String) {
+        val input = EditText(this).apply {
+            setText(currentUrl)
+            inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+            hint = "https://screentinker.com"
+            setSingleLine()
+        }
+        val container = FrameLayout(this).apply {
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.settings_change_server))
+            .setView(container)
+            .setPositiveButton(getString(R.string.settings_save)) { _, _ ->
+                val url = input.text.toString().trim().trimEnd('/')
+                if (url.isNotEmpty() && url != currentUrl) {
+                    config.clearDeviceCredentials()
+                    navigateToProvisioning(url)
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showPermissionsDialog() {
+        val accEnabled = isAccessibilityEnabled()
+        val notifyGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else true
+
+        val lines = buildString {
+            appendLine("${getString(R.string.settings_perm_accessibility)}: ${if (accEnabled) "✓" else "✗"}")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                appendLine("${getString(R.string.settings_perm_notifications)}: ${if (notifyGranted) "✓" else "✗"}")
+            }
+            appendLine("")
+            appendLine(getString(R.string.settings_perm_hint))
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.settings_permissions))
+            .setMessage(lines)
+            .setPositiveButton(getString(R.string.settings_perm_open)) { _, _ ->
+                val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = android.net.Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showExitDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.settings_exit_title))
+            .setMessage(getString(R.string.settings_exit_confirm))
+            .setPositiveButton(getString(R.string.settings_exit_yes)) { _, _ ->
+                try {
+                    wsService?.disconnect()
+                    if (bound) { unbindService(connection); bound = false }
+                } catch (_: Exception) {}
+                finishAffinity()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.settings_exit_title))
+            .setMessage(getString(R.string.settings_exit_confirm))
+            .setPositiveButton(getString(R.string.settings_exit_yes)) { _, _ ->
+                try {
+                    wsService?.disconnect()
+                    if (bound) { unbindService(connection); bound = false }
+                } catch (_: Exception) {}
+                finishAffinity()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun navigateToProvisioning(url: String? = null) {
+        try { wsService?.disconnect() } catch (_: Exception) {}
+        if (bound) { try { unbindService(connection) } catch (_: Exception) {}; bound = false }
+        val intent = Intent(this, ProvisioningActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+            url?.let { putExtra("EXTRA_SERVER_URL", it) }
+        }
+        startActivity(intent)
+        finish()
+    }
+
+    private fun checkConnectionFailureBanner() {
+        val failures = wsService?.consecutiveFailures ?: 0
+        if (failures > 10 && !failureBannerShown && wsService?.isConnected() != true) {
+            failureBannerShown = true
+            showStatus("${getString(R.string.settings_connection_failed)}\n${getString(R.string.settings_connection_hint)}")
+        }
+        if (failures == 0) {
+            failureBannerShown = false
+        }
     }
 
     private fun isAccessibilityEnabled(): Boolean {

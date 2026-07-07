@@ -76,8 +76,12 @@ class ProvisioningActivity : AppCompatActivity() {
         pairingSection = findViewById(R.id.pairingSection)
         serverSection = findViewById(R.id.serverSection)
 
-        // Pre-fill if previously entered
-        if (config.serverUrl.isNotEmpty()) {
+        // Pre-fill if previously entered, OR if an external caller passed a URL
+        // (e.g. MainActivity settings → "Change server").
+        val passedUrl = intent.getStringExtra("EXTRA_SERVER_URL")?.trimEnd('/')
+        if (!passedUrl.isNullOrEmpty()) {
+            serverUrlInput.setText(passedUrl)
+        } else if (config.serverUrl.isNotEmpty()) {
             serverUrlInput.setText(config.serverUrl)
         }
 

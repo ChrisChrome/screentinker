@@ -49,11 +49,22 @@ If the target server is up and on the **same LAN** as the device, the player
 
 ## Fix: re-point the player to a different server
 
-The app only shows its **setup screen** when it is *not provisioned/paired*
-(`MainActivity`: `if (!config.isProvisioned || !config.isPaired) -> ProvisioningActivity`).
-So to change servers you must reset that state. Two ways:
+Three ways to reconfigure the server URL, from easiest to most involved:
 
-### A. On the phone, no tools (most reliable)
+### A. In-app settings (APK v1.9.2+) — RECOMMENDED
+1. **Press BACK (or ESC) twice quickly** on the device/remote — a Settings dialog opens.
+2. Options available:
+   - **Change server URL** — enter new URL, clears pairing, returns to provisioning
+   - **Reconfigure device** — clears credentials, returns to provisioning screen
+   - **Permissions** — check Accessibility/Notification status, open system settings
+   - **Device info** — device ID, APK version, connection status
+   - **Exit app** — close the kiosk app (3× BACK also opens exit directly)
+3. After changing server/reconfiguring, enter the pairing code from the dashboard to reconnect.
+
+If the app is stuck on "Connecting to server…" for more than a minute, it will
+show a banner: **"Can't reach the server — Press BACK twice for settings."**
+
+### B. On the phone, no tools (most reliable)
 1. **Settings → Apps → RemoteDisplay → Storage → Clear data.**
    This wipes the stale server URL and pairing. (Cached content is cleared too;
    it re-downloads after pairing — no harm.)
@@ -67,7 +78,7 @@ So to change servers you must reset that state. Two ways:
 > remote power/navigation is also reset. Re-enable it if you need remote
 > reboot/screen control: Settings → Accessibility → RemoteDisplay → On.
 
-### B. Via adb (if you have a working connection)
+### C. Via adb (if you have a working connection)
 ```bash
 D=<ip:port>
 # Option 1: reset provisioning the same way "Clear data" does
