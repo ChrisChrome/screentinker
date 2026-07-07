@@ -134,6 +134,41 @@
   }
   if (typeof window !== 'undefined') window.__stResumeDecision = resumeDecision; // test hook (inert in prod)
 
+  // FIX B (hardened) — application-level LIVENESS WATCHDOG. The resume path above only fires on
+  // visibilitychange, so a socket that goes half-open with NO visibility event (network drop, NAT
+  // idle timeout, transport death while foregrounded) would never be caught: socket.connected stays
+  // true on a dead socket and socket.io won't reconnect. The watchdog watches for server SILENCE.
+  // The server sends an engine ping every ~15s (config.pingInterval) AND app events, so a healthy
+  // socket refreshes lastServerMsgAt at least every ~15s (markAlive is wired into a central receive
+  // path in connect(): socket.onAny + socket.io 'ping'). If the socket goes quiet past the liveness
+  // window while we still believe we're connected + authenticated, it is half-open -> clean
+  // teardown-before-reopen via connect() (exactly one socket; #118 re-registers once).
+  //
+  // Double-connect discipline: the watchdog fires ONLY while socket.connected===true (the half-open
+  // state socket.io cannot see) — socket.io's own auto-reconnect only runs when socket.connected is
+  // false, so the two never overlap. connect() is teardown-first, and it resets lastServerMsgAt, so
+  // the watchdog and the resume fast-path can't double-fire a second reconnect. Client-only: uses
+  // signals the server already sends; no server change.
+  var lastServerMsgAt = 0;
+  var LIVENESS_TIMEOUT_MS = 35000; // ~2+ missed 15s server pings; below engine.io's own ~45s close
+  var watchdogTimer = null;
+  function markAlive() { lastServerMsgAt = Date.now(); } // central receive-path hook (see connect())
+  // Pure, unit-testable: reconnect only for a connected+authenticated socket gone silent past the window.
+  function watchdogShouldReconnect(hasSocket, connected, authed, silentMs) {
+    return !!(hasSocket && connected && authed && silentMs > LIVENESS_TIMEOUT_MS);
+  }
+  function startWatchdog() {
+    stopWatchdog();
+    watchdogTimer = setInterval(function () {
+      var silentMs = lastServerMsgAt ? (Date.now() - lastServerMsgAt) : 0;
+      if (watchdogShouldReconnect(!!socket, !!(socket && socket.connected), authenticated, silentMs)) {
+        connect(); // half-open backstop: teardown-first -> one socket, #118 re-registers once
+      }
+    }, 10000);
+  }
+  function stopWatchdog() { if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; } }
+  if (typeof window !== 'undefined') window.__stWatchdogShouldReconnect = watchdogShouldReconnect; // test hook (inert in prod)
+
   // ---- networking ----
   var socket = null;
   var deviceId = get(LS.id);
@@ -183,6 +218,15 @@
       reconnectionDelayMax: 10000,
       timeout: 10000
     });
+
+    // FIX B (hardened): central receive-path liveness. A fresh socket is assumed alive; then EVERY
+    // inbound server message refreshes lastServerMsgAt — app events via onAny, and the engine ping
+    // (~15s) via the manager 'ping'. This resets liveness so the watchdog / resume fast-path can't
+    // double-fire, and feeds the watchdog's server-silence detection. (io() returns a fresh socket
+    // per connect — verified — so these listeners don't accumulate.)
+    lastServerMsgAt = Date.now();
+    socket.onAny(markAlive);
+    socket.io.on('ping', markAlive);
 
     socket.on('connect', function () {
       // #118: a brand-new socket is not authenticated until device:registered. Reset the
@@ -530,7 +574,7 @@
   document.addEventListener('keydown', function (e) {
     if (e.keyCode === 10009) { // Samsung RETURN / BACK
       if (!elSetup.classList.contains('hidden')) {
-        stopKeepAwake(); // FIX A: clear the interval cleanly before the app exits
+        stopKeepAwake(); stopWatchdog(); // FIX A/B: clear timers cleanly before the app exits
         try { tizen.application.getCurrentApplication().exit(); } catch (x) {}
       } else {
         if (socket) { try { socket.disconnect(); } catch (x) {} }
@@ -546,7 +590,8 @@
   // fully provisioned device (has a saved device_id + token) goes straight to
   // playback; otherwise show the setup screen and ask for / confirm the server.
   startKeepAwake();                                          // FIX A: assert + re-assert keep-awake on an interval
-  document.addEventListener('visibilitychange', onVisibility); // FIX B: handle suspend/resume
+  document.addEventListener('visibilitychange', onVisibility); // FIX B: suspend/resume fast-path
+  startWatchdog();                                           // FIX B (hardened): server-silence liveness backstop
   if (serverUrl && deviceId && deviceToken) {
     show(elStage); connect();                       // paired — reconnect to playback
   } else if (serverUrl) {
