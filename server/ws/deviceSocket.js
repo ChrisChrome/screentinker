@@ -15,6 +15,7 @@ const sessionSettle = require('../lib/session-settle');   // #148 patch2: evicti
 const { resolveIdentity } = require('../lib/device-identity');
 const logCoalescer = require('../lib/log-coalescer');
 const loopLag = require('../services/loop-lag');
+const deviceSettings = require('../lib/device-settings'); // #150 delete+re-pair settings restore
 
 // Debounce window for marking a device offline on socket disconnect. Brief
 // flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
@@ -627,6 +628,20 @@ module.exports = function setupDeviceSocket(io) {
         }
         currentDeviceId = id;
         authenticated = true;
+
+        // #150: relink the fingerprint to the NEW device row (the fingerprint block above
+        // leaves device_id NULL on a post-delete re-pair) so the settings key is reliable,
+        // then restore any settings this physical device had at its last deletion —
+        // orientation/name/playlist/etc come back automatically instead of resetting. Runs
+        // BEFORE the dashboard:device-added emit below so that emit carries restored values.
+        if (fingerprint) {
+          try {
+            db.prepare("INSERT INTO device_fingerprints (fingerprint, device_id, last_seen) VALUES (?, ?, strftime('%s','now')) ON CONFLICT(fingerprint) DO UPDATE SET device_id = excluded.device_id, last_seen = excluded.last_seen")
+              .run(fingerprint, id);
+            const restored = deviceSettings.applyToDevice(id, fingerprint);
+            if (restored) console.log(`[#150] restored saved settings for re-paired device ${id} (fp ${fingerprint.slice(0, 8)}…)`);
+          } catch (e) { console.warn(`[#150] settings restore failed for ${id}: ${e.message}`); }
+        }
 
         heartbeat.registerConnection(id, socket.id);
         socket.join(id);

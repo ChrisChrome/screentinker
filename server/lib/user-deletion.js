@@ -76,6 +76,11 @@ function purgeWorkspaces(db, wsIds, have) {
     }
   }
   for (const t of WORKSPACE_SCOPED) if (have.has(t)) db.prepare(`DELETE FROM ${t} WHERE workspace_id IN (${wph})`).run(...wsIds);
+  // #150: purge fingerprint-keyed device settings for these workspaces. device_settings has
+  // NO FK to devices (so it survives device deletion by design), which means it is NOT caught
+  // by this cascade either — purge it explicitly so saved settings can never bleed onto a
+  // different tenant if the same physical device (same fingerprint) later pairs elsewhere.
+  if (have.has('device_settings')) db.prepare(`DELETE FROM device_settings WHERE workspace_id IN (${wph})`).run(...wsIds);
   if (have.has('activity_log')) db.prepare(`UPDATE activity_log SET workspace_id = NULL WHERE workspace_id IN (${wph})`).run(...wsIds);
   db.prepare(`DELETE FROM workspaces WHERE id IN (${wph})`).run(...wsIds); // cascades workspace_members/invites
 }

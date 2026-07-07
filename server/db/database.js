@@ -251,6 +251,26 @@ const migrations = [
   // register gate on its next reconnect (no restart). Hand-settable by direct SQLite:
   //   UPDATE devices SET blocked = 1 WHERE id = '<device_id>';  (0 to unblock)
   "ALTER TABLE devices ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0",
+  // #150: fingerprint-keyed device settings that SURVIVE device-row deletion, so a
+  // delete + re-pair (MDM churn) restores orientation/name/playlist/etc for the SAME
+  // physical device instead of silently resetting to defaults. NO FK to devices -> it
+  // survives the delete cascade. workspace_id/device_name/last_seen/removed_at form the
+  // human-readable index the operator "re-adopt" flow browses when the fingerprint changed.
+  `CREATE TABLE IF NOT EXISTS device_settings (
+    fingerprint         TEXT PRIMARY KEY,
+    workspace_id        TEXT,
+    device_name         TEXT,
+    orientation         TEXT,
+    timezone            TEXT,
+    notes               TEXT,
+    default_content_id  TEXT,
+    layout_id           TEXT,
+    playlist_id         TEXT,
+    blocked             INTEGER,
+    team_id             TEXT,
+    last_seen           INTEGER,
+    removed_at          INTEGER
+  )`,
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.

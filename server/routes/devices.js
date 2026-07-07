@@ -7,6 +7,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES, isPlatformStaff } = require('../middlewa
 const { accessContext } = require('../lib/tenancy');
 const { stripDeviceSecrets } = require('../lib/device-sanitize');
 const { layoutZones, orphanCountsByDevice } = require('../lib/zone-validate');
+const deviceSettings = require('../lib/device-settings'); // #150 delete+re-pair settings preservation
 
 // List devices in the caller's current workspace.
 // Phase 2.2a: filter by workspace_id instead of user_id. The caller's current
@@ -83,6 +84,14 @@ router.get('/unassigned', (req, res) => {
     ORDER BY created_at DESC
   `).all();
   res.json(devices);
+});
+
+// #150: "previously removed devices" — fingerprint-keyed settings snapshots for the caller's
+// current workspace, for the operator re-adopt flow (changed-fingerprint case). MUST be
+// declared before GET '/:id' or Express matches 'removed' as an :id. Read-scoped to workspace.
+router.get('/removed', (req, res) => {
+  if (!req.workspaceId) return res.json([]);
+  res.json(deviceSettings.listRemoved(req.workspaceId));
 });
 
 // Get single device with telemetry history
@@ -202,6 +211,11 @@ router.put('/:id', (req, res) => {
   if (!device) return;
 
   const { name, notes, timezone, orientation, default_content_id, layout_id } = req.body;
+  // #150: validate orientation against the known enum (previously accepted any string, which
+  // let a bad value reach the player -> unknown rotation falls back to landscape silently).
+  if (orientation !== undefined && !deviceSettings.ORIENTATIONS.has(orientation)) {
+    return res.status(400).json({ error: `Invalid orientation. Allowed: ${[...deviceSettings.ORIENTATIONS].join(', ')}` });
+  }
   // Whitelist allowed fields to prevent SQL injection via field names
   const ALLOWED_FIELDS = ['name', 'notes', 'timezone', 'orientation', 'default_content_id'];
   const updates = [];
@@ -253,10 +267,35 @@ router.post('/:id/unblock', (req, res) => {
   res.json({ success: true, id: req.params.id, blocked: false });
 });
 
+// #150: re-adopt — apply a removed device's saved settings onto device :id. For the case the
+// fingerprint did NOT auto-match (factory reset / new hardware), so the automatic re-pair
+// restore couldn't fire. Auth: caller can write device :id (checkDeviceOwnership) AND the
+// snapshot belongs to the SAME workspace as the device (no cross-tenant apply).
+router.post('/:id/re-adopt', (req, res) => {
+  const device = checkDeviceOwnership(req, res);
+  if (!device) return;
+  const { fingerprint } = req.body || {};
+  if (!fingerprint) return res.status(400).json({ error: 'fingerprint required' });
+  const snap = deviceSettings.getByFingerprint(fingerprint);
+  if (!snap) return res.status(404).json({ error: 'No saved settings for that fingerprint' });
+  if (snap.workspace_id !== device.workspace_id) {
+    return res.status(403).json({ error: 'Saved settings belong to a different workspace' });
+  }
+  deviceSettings.applyToDevice(req.params.id, fingerprint);
+  const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);
+  console.log(`[#150] re-adopted settings (fp ${fingerprint.slice(0, 8)}…) onto device ${req.params.id} by user ${req.user.id}`);
+  res.json(stripDeviceSecrets(updated));
+});
+
 // Delete device
 router.delete('/:id', (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;
+
+  // #150: snapshot this device's settings (keyed by its fingerprint) BEFORE the row dies,
+  // so a re-pair of the SAME physical device restores orientation/name/playlist/etc instead
+  // of silently resetting to defaults. No-op if the device has no fingerprint link yet.
+  try { deviceSettings.snapshot(req.params.id); } catch (e) { console.warn(`[#150] settings snapshot failed for ${req.params.id}: ${e.message}`); }
 
   // Clean up related data (playlist is NOT deleted — may be shared with other devices)
   db.prepare('DELETE FROM schedules WHERE device_id = ?').run(req.params.id);
