@@ -15,7 +15,7 @@
   // packaged config.xml via the Tizen application API; fall back to a constant that
   // build-wgt.sh stamps from config.xml's version="" so the dashboard always shows the
   // version that is actually installed (never the old hardcoded '1.0.0').
-  var APP_VERSION_FALLBACK = '1.9.1'; // st:app-version — stamped by build-wgt.sh
+  var APP_VERSION_FALLBACK = '1.9.2'; // st:app-version — stamped by build-wgt.sh
   var APP_VERSION = (function () {
     try {
       var v = tizen.application.getCurrentApplication().appInfo.version;
@@ -84,6 +84,55 @@
     try { if (window.tizen && tizen.power) tizen.power.request('SCREEN', 'SCREEN_NORMAL'); } catch (e) {}
     try { if (window.webapis && webapis.appcommon) webapis.appcommon.setScreenSaver(webapis.appcommon.AppCommonScreenSaverState.SCREEN_SAVER_OFF); } catch (e) {}
   }
+
+  // FIX A — RE-ASSERT keep-awake on an interval. tizen.power.request / the screensaver-off
+  // setting can be released when the TV backgrounds/suspends the app, and the player had no
+  // way to re-suppress it (keepAwake was only called at boot/connect/command). ~30s is well
+  // under any TV screensaver timeout and the calls are cheap best-effort no-ops. Cleared by
+  // stopKeepAwake() on app teardown.
+  var keepAwakeTimer = null;
+  function startKeepAwake() {
+    stopKeepAwake();
+    keepAwake();
+    keepAwakeTimer = setInterval(keepAwake, 30000);
+  }
+  function stopKeepAwake() { if (keepAwakeTimer) { clearInterval(keepAwakeTimer); keepAwakeTimer = null; } }
+
+  // FIX B — VISIBILITY / RESUME handling. On a TV, a background/suspend can (a) release
+  // keep-awake and (b) silently drop the socket, leaving it HALF-OPEN — socket.connected stays
+  // true while the transport is dead, which socket.io CANNOT detect, so it won't auto-reconnect.
+  //
+  // Double-connect discipline (the one way this could reintroduce #148's duplicate socket):
+  //   - DEFER to socket.io when the socket is already disconnected (socket.io owns that
+  //     reconnect, and #118 re-registers on 'connect').
+  //   - OWN a clean teardown-before-reopen (via connect(), which disconnects the old socket
+  //     FIRST — cancelling any socket.io reconnect — then opens exactly ONE new socket) ONLY
+  //     for the half-open case socket.io can't see.
+  //   These are mutually-exclusive socket states (connected vs not), so a manual reconnect
+  //   never races socket.io's auto-reconnect. We do NOT manually re-register (connect's 'connect'
+  //   handler does, once). Half-open is inferred from how long the app was hidden — socket.connected
+  //   alone is unreliable post-suspend and there is no server ack channel to actively probe
+  //   without a server change (out of scope for this client-only build).
+  var hiddenAtMs = 0;
+  var SUSPEND_HIDE_MS = 3000; // hidden >= this ≈ an OS suspend that can half-open the socket
+
+  // Pure decision, factored out so the double-connect logic is unit-testable:
+  //   'reconnect' = half-open -> own teardown+reopen ; 'defer' = already down -> socket.io owns it ; 'noop'
+  function resumeDecision(hasSocket, socketConnected, hiddenMs) {
+    if (!hasSocket) return 'noop';
+    if (!socketConnected) return 'defer';
+    return (hiddenMs >= SUSPEND_HIDE_MS) ? 'reconnect' : 'noop';
+  }
+  function onVisibility() {
+    if (document.visibilityState === 'hidden' || document.hidden) { hiddenAtMs = Date.now(); return; }
+    keepAwake(); // re-assert immediately on resume
+    var hiddenMs = hiddenAtMs ? (Date.now() - hiddenAtMs) : 0;
+    hiddenAtMs = 0;
+    var action = resumeDecision(!!socket, !!(socket && socket.connected), hiddenMs);
+    if (action === 'reconnect') connect(); // teardown-before-reopen -> exactly one socket; #118 registers once
+    // 'defer' -> socket.io auto-reconnects (re-registers on 'connect'); 'noop' -> healthy, do nothing
+  }
+  if (typeof window !== 'undefined') window.__stResumeDecision = resumeDecision; // test hook (inert in prod)
 
   // ---- networking ----
   var socket = null;
@@ -179,7 +228,10 @@
     socket.on('device:unpaired', function () {
       del(LS.id); del(LS.token); del(LS.code);
       deviceId = null; deviceToken = null;
-      register(); // re-register fresh -> new pairing code
+      // FIX F — back off 3s before re-registering, symmetric with the auth-error path below,
+      // so a repeatedly-unpaired device (e.g. MDM re-pair churn) can't tight-loop
+      // register -> unpaired -> register.
+      setTimeout(register, 3000);
     });
 
     socket.on('device:auth-error', function (data) {
@@ -269,8 +321,11 @@
       // requireDeviceAuth() rejects the beat with device:auth-error.
       if (!socket || !socket.connected || !deviceId || !authenticated) return;
       socket.emit('device:heartbeat', { device_id: deviceId, telemetry: telemetry() });
-      // Every 4th beat (~60s) ask for a fresh playlist, matching the Android player.
-      if ((++beatCount % 4) === 0) socket.emit('device:heartbeat', { device_id: deviceId, telemetry: telemetry() });
+      // FIX C — every 4th beat (~60s) ask for a fresh playlist by re-emitting device:register;
+      // the server responds with a fresh device:playlist-update (deviceSocket.js). This was
+      // previously a duplicate device:heartbeat (comment != code), so the .wgt had NO working
+      // fallback refresh and relied entirely on server push. Matches the Android player.
+      if ((++beatCount % 4) === 0) register();
     }, HEARTBEAT_MS);
   }
   function stopHeartbeat() {
@@ -475,6 +530,7 @@
   document.addEventListener('keydown', function (e) {
     if (e.keyCode === 10009) { // Samsung RETURN / BACK
       if (!elSetup.classList.contains('hidden')) {
+        stopKeepAwake(); // FIX A: clear the interval cleanly before the app exits
         try { tizen.application.getCurrentApplication().exit(); } catch (x) {}
       } else {
         if (socket) { try { socket.disconnect(); } catch (x) {} }
@@ -489,7 +545,8 @@
   // Always reach the server prompt until the display is actually paired. Only a
   // fully provisioned device (has a saved device_id + token) goes straight to
   // playback; otherwise show the setup screen and ask for / confirm the server.
-  keepAwake();
+  startKeepAwake();                                          // FIX A: assert + re-assert keep-awake on an interval
+  document.addEventListener('visibilitychange', onVisibility); // FIX B: handle suspend/resume
   if (serverUrl && deviceId && deviceToken) {
     show(elStage); connect();                       // paired — reconnect to playback
   } else if (serverUrl) {
