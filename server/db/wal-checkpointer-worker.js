@@ -12,6 +12,10 @@ const Database = require('better-sqlite3');
 
 const { dbPath, intervalMs, highWaterBytes, starvationRuns } = workerData;
 
+// Fault injection for TESTS ONLY (env-gated; inert in prod). Exits immediately on start so
+// the controller's respawn / autocheckpoint-fallback path can be exercised deterministically.
+if (process.env.WAL_CKPT_FAIL_START) process.exit(1);
+
 // Fresh, worker-owned connection (NOT the main handle).
 const db = new Database(dbPath);
 db.pragma('busy_timeout = 5000');      // wait (on THIS worker thread) through the main writer's brief locks

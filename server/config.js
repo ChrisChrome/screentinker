@@ -267,6 +267,15 @@ module.exports = {
   // ...or escalate if the WAL grew across this many consecutive PASSIVE runs (PASSIVE not
   // keeping up even below the high-water). Belt-and-suspenders with the MB bound above.
   walCheckpointStarvationRuns: parseInt(process.env.WAL_CHECKPOINT_STARVATION_RUNS) || 3,
+  // Worker-death handling: with autocheckpoint=0 a dead worker means nothing checkpoints and
+  // the WAL grows until the disk fills. An unexpectedly-dead worker is respawned up to
+  // RespawnMax times per RespawnWindowMs (with a small backoff); if that's exhausted we
+  // re-arm a conservative inline autocheckpoint of FallbackPages on the main connection
+  // (degraded-but-safe: occasional inline stall beats unbounded WAL growth).
+  walCheckpointRespawnMax: parseInt(process.env.WAL_CHECKPOINT_RESPAWN_MAX) || 5,
+  walCheckpointRespawnWindowMs: parseInt(process.env.WAL_CHECKPOINT_RESPAWN_WINDOW_MS) || 60000,
+  walCheckpointRespawnBackoffMs: parseInt(process.env.WAL_CHECKPOINT_RESPAWN_BACKOFF_MS) || 1000,
+  walCheckpointFallbackPages: parseInt(process.env.WAL_CHECKPOINT_FALLBACK_PAGES) || 1000,
   // #146 device_status_log write batching (lib/status-log-writer.js). Status
   // transitions are buffered and coalesced to the NET state per device per flush,
   // so a flapping device writes ~1 row/flush instead of a row per transition —
