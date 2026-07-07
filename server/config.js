@@ -250,6 +250,23 @@ module.exports = {
   logCoalesceFlushMs: parseInt(process.env.LOG_COALESCE_FLUSH_MS) || 30000,
   lagFlushMs: parseInt(process.env.LAG_FLUSH_MS) || 10000,
   lagBufferMax: parseInt(process.env.LAG_BUFFER_MAX) || 2000,
+
+  // Off-main-thread WAL checkpointer (db/wal-checkpointer). SQLite's default
+  // wal_autocheckpoint (1000 pages) runs a SYNCHRONOUS, fsync-heavy checkpoint inline
+  // on whichever write trips it — on slow storage that blocks the event loop ~600-750ms
+  // on a regular ~60s beat (the periodic p99 spike). We set wal_autocheckpoint=0 on the
+  // MAIN connection and checkpoint from a worker_threads worker instead.
+  // Interval: at a typical ~4MB/60s write rate the WAL grows ~1MB between runs — well under
+  // the old 4MB inline threshold — so each PASSIVE (and any rare escalation TRUNCATE) is
+  // cheap, while PASSIVE still reclaims frames promptly. 15s balances small-WAL vs worker load.
+  walCheckpointIntervalMs: parseInt(process.env.WAL_CHECKPOINT_INTERVAL_MS) || 15000,
+  // Starvation bound: PASSIVE skips frames held by active readers/writers, so under
+  // continuous writes it can perpetually under-checkpoint and the WAL grows unbounded. If the
+  // -wal file exceeds this high-water mark, the worker escalates to a (blocking) TRUNCATE.
+  walCheckpointHighWaterMB: parseInt(process.env.WAL_CHECKPOINT_HIGH_WATER_MB) || 16,
+  // ...or escalate if the WAL grew across this many consecutive PASSIVE runs (PASSIVE not
+  // keeping up even below the high-water). Belt-and-suspenders with the MB bound above.
+  walCheckpointStarvationRuns: parseInt(process.env.WAL_CHECKPOINT_STARVATION_RUNS) || 3,
   // #146 device_status_log write batching (lib/status-log-writer.js). Status
   // transitions are buffered and coalesced to the NET state per device per flush,
   // so a flapping device writes ~1 row/flush instead of a row per transition —

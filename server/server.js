@@ -689,6 +689,26 @@ startActivationNudge();
 const { startAgencyDigest } = require('./services/agency-digest');
 startAgencyDigest();
 
+// Off-main-thread WAL checkpointer: disables inline auto-checkpoint on the main connection
+// (the ~60s p99 spike = a synchronous fsync-heavy checkpoint on the loop) and runs PASSIVE
+// (escalating to TRUNCATE if starved) from a worker thread. Started AFTER the DB is open+migrated.
+const { startWalCheckpointer, stopWalCheckpointer } = require('./db/wal-checkpointer');
+startWalCheckpointer(require('./db/database').db, config.dbPath);
+
+// Graceful shutdown: stop the checkpointer worker (closes its own DB handle) + flush + close.
+let _shuttingDown = false;
+function gracefulShutdown(sig) {
+  if (_shuttingDown) return; _shuttingDown = true;
+  console.log(`[shutdown] ${sig} — stopping WAL checkpointer + closing DB`);
+  Promise.resolve(stopWalCheckpointer()).catch(() => {}).finally(() => {
+    try { require('./lib/status-log-writer').flush(); } catch (_) {}
+    try { require('./db/database').db.close(); } catch (_) {}
+    process.exit(0);
+  });
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 // Handle provisioning via WebSocket notification
 const { db } = require('./db/database');
 const originalProvisionRoute = require('./routes/provisioning');
