@@ -36,6 +36,10 @@ export const api = {
   // no restart. Server enforces via the SNAT-safe identity chain (deviceSocket).
   blockDevice: (id) => request(`/devices/${id}/block`, { method: 'POST' }),
   unblockDevice: (id) => request(`/devices/${id}/unblock`, { method: 'POST' }),
+  // #150: fingerprint-keyed settings snapshots of previously-removed devices (this workspace),
+  // and the re-adopt action that applies a snapshot onto a newly-paired device.
+  getRemovedDevices: () => request('/devices/removed'),
+  reAdoptDevice: (id, fingerprint) => request(`/devices/${id}/re-adopt`, { method: 'POST', body: JSON.stringify({ fingerprint }) }),
 
   // #109 PiP overlay: push/clear a floating overlay on a device or group. `id` may be a
   // device id OR a group id (the server resolves + expands). Needs full scope (no-op for JWT).
