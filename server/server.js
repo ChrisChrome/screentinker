@@ -647,6 +647,29 @@ app.get('/api/update/check', (req, res) => {
   });
 });
 
+// Exit-signal contract v1 — beacon transport (reliable-on-unload). Clients that can't reliably
+// socket.emit at death (browser/Tizen pagehide, APK crash where async emit won't flush) POST their
+// manner-of-death here via navigator.sendBeacon / blocking HTTP. Token-authed (there's no JWT/socket
+// session at unload time); PUBLIC (mounted before requireAuth). Sets offline_reason exactly like the
+// device:exit socket handler — the later Offline transition resolves + surfaces it. NEVER triggers
+// offline itself (additive only). Always 204 (never error a dying client; never leak an id/token oracle).
+app.post('/api/device/exit', (req, res) => {
+  const { db } = require('./db/database');
+  const liveness = require('./lib/liveness');
+  const { device_id, device_token, reason, detail } = req.body || {};
+  if (!device_id || typeof device_token !== 'string') return res.status(204).end();
+  const row = db.prepare('SELECT device_token FROM devices WHERE id = ?').get(device_id);
+  let ok = false;
+  try {
+    ok = !!(row && row.device_token && device_token.length === row.device_token.length &&
+      crypto.timingSafeEqual(Buffer.from(row.device_token), Buffer.from(device_token)));
+  } catch (_) { ok = false; }
+  if (!ok) return res.status(204).end();
+  const e = liveness.sanitizeExitReason(reason, detail);   // unknown/invalid -> null -> device falls to 'silent'
+  if (e) db.prepare("UPDATE devices SET offline_reason = ?, offline_reason_at = strftime('%s','now'), offline_detail = ? WHERE id = ?").run(e.reason, e.detail, device_id);
+  res.status(204).end();
+});
+
 // (Content file endpoint moved above protected routes)
 
 // (Screenshot route moved above protected routes)

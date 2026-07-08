@@ -417,7 +417,7 @@ module.exports = function setupDeviceSocket(io) {
                   pendingOfflines.delete(existing.device_id);
                 }
                 evictPriorSocket(existing.device_id, socket.id);
-                db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
+                db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now'), offline_reason = NULL, offline_reason_at = NULL, offline_detail = NULL WHERE id = ?")
                   .run(getClientIp(socket), existing.device_id);
                 socket.emit('device:registered', { device_id: existing.device_id, device_token: newToken, status: 'online' });
                 // If device was already claimed by a user, tell the player it's paired
@@ -527,7 +527,7 @@ module.exports = function setupDeviceSocket(io) {
           }
           evictPriorSocket(device_id, socket.id);
           sessionSettle.accepted(device_id);   // #148 patch2: (re)arm the settle window on an accepted connection
-          db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
+          db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now'), offline_reason = NULL, offline_reason_at = NULL, offline_detail = NULL WHERE id = ?")
             .run(getClientIp(socket), device_id);
 
           // #143: past the validateDeviceToken gate above the stored token is
@@ -836,6 +836,21 @@ module.exports = function setupDeviceSocket(io) {
         .run(ota_status ?? 'none', ota_target_version ?? null, ota_attempts ?? 0, device_id);
     });
 
+    // Exit-signal contract v1 — the device's best-effort "last gasp": it announces its manner of death
+    // (crashed | clean_exit) as (usually) its final act. We record it; when the device then goes Offline
+    // the annotation is applied (else 'silent'). ADDITIVE — never touches offline detection. Cleared on
+    // (re)online (the register UPDATEs) so a stale reason can't mislabel a later death. The same canonical
+    // shape also arrives via the beacon POST /api/device/exit for reliable-on-unload delivery.
+    socket.on('device:exit', (data) => {
+      if (!requireDeviceAuth() || !currentDeviceId) return;
+      const { device_id, reason, detail } = data || {};
+      if (device_id && device_id !== currentDeviceId) return;                 // forged/mismatched -> no-op
+      const e = liveness.sanitizeExitReason(reason, detail);                  // unknown -> null -> falls to 'silent'
+      if (!e) return;
+      db.prepare("UPDATE devices SET offline_reason = ?, offline_reason_at = strftime('%s','now'), offline_detail = ? WHERE id = ?")
+        .run(e.reason, e.detail, currentDeviceId);
+    });
+
     // Play event logging (proof-of-play)
     socket.on('device:play-event', (data) => {
       if (!requireDeviceAuth()) return;
@@ -959,10 +974,14 @@ module.exports = function setupDeviceSocket(io) {
         const activeNow = heartbeat.getConnection(deviceId);
         if (activeNow && activeNow.socketId !== closingSocketId) return;
 
-        db.prepare("UPDATE devices SET status = 'offline', updated_at = strftime('%s','now') WHERE id = ?").run(deviceId);
+        // Exit-signal contract: resolve manner-of-death. If the device announced a reason before dying
+        // (offline_reason non-NULL, set by device:exit/beacon this session), keep it; else -> 'silent'
+        // (no signal arrived). COALESCE makes this a pure annotation — offline detection is unchanged.
+        db.prepare("UPDATE devices SET status = 'offline', updated_at = strftime('%s','now'), offline_reason = COALESCE(offline_reason, 'silent'), offline_reason_at = COALESCE(offline_reason_at, strftime('%s','now')) WHERE id = ?").run(deviceId);
         heartbeat.removeConnection(deviceId);
         logDeviceStatus(deviceId, 'offline');
-        emitToDeviceWorkspace(dashboardNs, deviceId, 'dashboard:device-status', { device_id: deviceId, status: 'offline' });
+        const _off = db.prepare("SELECT offline_reason, offline_detail, client_type FROM devices WHERE id = ?").get(deviceId) || {};
+        emitToDeviceWorkspace(dashboardNs, deviceId, 'dashboard:device-status', { device_id: deviceId, status: 'offline', liveness: 'offline', offline_reason: _off.offline_reason || 'silent', offline_detail: _off.offline_detail || null, client_type: _off.client_type || null });
 
         // If this device was leading a wall, reassign leadership to the next
         // online member so playback stays driven.

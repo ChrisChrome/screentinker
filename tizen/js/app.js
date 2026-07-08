@@ -640,6 +640,7 @@
     if (e.keyCode === 10009) { // Samsung RETURN / BACK
       if (!elSetup.classList.contains('hidden')) {
         stopKeepAwake(); stopWatchdog(); // FIX A/B: clear timers cleanly before the app exits
+        sendExitSignal('clean_exit', 'back_key'); // exit-signal: operator BACK-key exit = confident clean_exit
         try { tizen.application.getCurrentApplication().exit(); } catch (x) {}
       } else {
         if (socket) { try { socket.disconnect(); } catch (x) {} }
@@ -658,6 +659,42 @@
   startKeepAwake();                                          // FIX A: assert + re-assert keep-awake on an interval
   document.addEventListener('visibilitychange', onVisibility); // FIX B: suspend/resume fast-path
   startWatchdog();                                           // FIX B (hardened): server-silence liveness backstop
+
+  // Exit-signal contract v1 — best-effort last gasp. crashed: window.onerror / unhandledrejection.
+  // clean_exit: operator BACK-key exit (below) + pagehide(persisted=false, a real unload not a bfcache
+  // suspend). Sends over BOTH the live socket (reliable when still connected, e.g. BACK-key / in-app
+  // crash) AND navigator.sendBeacon (reliable-on-unload — Chromium webview); the server dedups. Honesty:
+  // only these two confident categories; uncertain -> nothing -> server infers 'silent'. A Tizen system/
+  // launcher terminate fires NO hook here -> correctly falls to 'silent'. Idempotent (first wins).
+  var __exitSent = false;
+  function sendExitSignal(reason, detail) {
+    try {
+      if (__exitSent) return;
+      if (reason !== 'crashed' && reason !== 'clean_exit') return;
+      if (!deviceId || !deviceToken || !serverUrl) return;              // unpaired -> nothing to attribute
+      __exitSent = true;
+      var d = (typeof detail === 'string' && detail) ? detail.slice(0, 200) : undefined;
+      if (socket && socket.connected) { try { socket.emit('device:exit', { device_id: deviceId, reason: reason, detail: d }); } catch (e) {} }
+      if (navigator.sendBeacon) {
+        var body = JSON.stringify({ device_id: deviceId, device_token: deviceToken, reason: reason, detail: d });
+        navigator.sendBeacon(serverUrl.replace(/\/+$/, '') + '/api/device/exit', new Blob([body], { type: 'application/json' }));
+      }
+    } catch (e) { /* a dying app must never throw */ }
+  }
+  window.addEventListener('error', function (ev) {
+    if (!ev) return;
+    var isResourceError = ev.target && ev.target !== window && (ev.target.src || ev.target.href); // img/script load fail is NOT a crash
+    if (isResourceError) return;
+    sendExitSignal('crashed', (ev.error && ev.error.message) || ev.message || 'error');
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    var r = ev && ev.reason;
+    sendExitSignal('crashed', (r && (r.message || String(r))) || 'unhandledrejection');
+  });
+  window.addEventListener('pagehide', function (ev) {
+    if (ev && ev.persisted) return;   // bfcache suspend (may restore) — NOT a death; the watchdog owns it
+    sendExitSignal('clean_exit', 'pagehide');
+  });
   if (serverUrl && deviceId && deviceToken) {
     // A2: render cached content IMMEDIATELY so a cold-start/offline TV isn't blank while the socket
     // connects (or if it can't). The socket's fresh device:playlist-update replaces it on connect.

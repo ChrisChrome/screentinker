@@ -18,6 +18,23 @@ class RemoteDisplayApp : Application() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        installCrashExitSignal()
+    }
+
+    // Exit-signal contract v1 — 'crashed'. A global uncaught-exception handler fires a BEST-EFFORT
+    // blocking last-gasp to the server, then delegates to the previous default handler so the crash
+    // still propagates and the process dies normally. Runs on the crashing thread (already dying), so
+    // the short blocking POST is acceptable. BEST-EFFORT: a native/OOM kill runs no JVM handler ->
+    // nothing is sent -> the server infers 'silent'. Honesty: only ever emits 'crashed' here.
+    private fun installCrashExitSignal() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val detail = (throwable.javaClass.simpleName + ": " + (throwable.message ?: "")).trim()
+                com.remotedisplay.player.service.ExitSignal.send(this, "crashed", detail)
+            } catch (t: Throwable) { /* never mask the original crash */ }
+            prev?.uncaughtException(thread, throwable)   // chain -> normal crash reporting + process death
+        }
     }
 
     private fun createNotificationChannel() {

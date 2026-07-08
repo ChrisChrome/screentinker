@@ -776,6 +776,19 @@ class WebSocketService : Service() {
     fun isConnected(): Boolean = socket?.connected() == true
 
     override fun onDestroy() {
+        // Exit-signal contract v1 — 'clean_exit' (BEST-EFFORT). onDestroy runs ONLY on cooperative
+        // teardown (stopService/unbind/memory-reclaim-with-grace); a force-stop / MDM-uninstall / SIGKILL
+        // skips it entirely -> the server infers 'silent' (correct — not misclassified). Try the still-
+        // live socket first, then a bounded blocking beacon (the reliable path); the server dedups.
+        try {
+            if (socket?.connected() == true && config.deviceId.isNotEmpty()) {
+                socket?.emit("device:exit", JSONObject().apply {
+                    put("device_id", config.deviceId); put("reason", "clean_exit"); put("detail", "onDestroy")
+                })
+            }
+        } catch (e: Throwable) { /* never let the last gasp block teardown */ }
+        val ctx = applicationContext
+        Thread { ExitSignal.send(ctx, "clean_exit", "onDestroy") }.apply { start(); try { join(1500) } catch (e: InterruptedException) { /* proceed with teardown */ } }
         wakeLock?.let { if (it.isHeld) it.release() }
         disconnect()
         super.onDestroy()

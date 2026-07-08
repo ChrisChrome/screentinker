@@ -94,6 +94,13 @@ const migrations = [
   'ALTER TABLE devices ADD COLUMN client_version TEXT',
   'ALTER TABLE devices ADD COLUMN platform TEXT',
   'ALTER TABLE devices ADD COLUMN contract_version TEXT',
+  // Exit-signal contract v1 — manner-of-death annotation on Offline (additive; NEVER alters offline
+  // detection). offline_reason: 'crashed'|'clean_exit' (client-sent via device:exit / beacon) or
+  // 'silent' (server-inferred when no signal arrived). Cleared on (re)online so it's always this
+  // session's. offline_detail: optional crash message / lifecycle-hook name.
+  'ALTER TABLE devices ADD COLUMN offline_reason TEXT',
+  'ALTER TABLE devices ADD COLUMN offline_reason_at INTEGER',
+  'ALTER TABLE devices ADD COLUMN offline_detail TEXT',
   // Email settings on users
   "ALTER TABLE users ADD COLUMN email_alerts INTEGER DEFAULT 1",
   // Content folders

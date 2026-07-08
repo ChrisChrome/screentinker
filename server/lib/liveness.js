@@ -66,4 +66,16 @@ function identityChanged(current, incoming) {
     || current.contract_version !== incoming.contract_version;
 }
 
-module.exports = { ackableHeartbeat, deriveLiveness, captureIdentity, identityChanged, HEALTHY_HEARTBEAT_MS, DEGRADED_RECONNECTS };
+// Exit-signal contract v1 — manner-of-death. A client may ONLY announce 'crashed' (its uncaught-
+// exception handler fired) or 'clean_exit' (a confident lifecycle-end). 'silent' is server-inferred by
+// ABSENCE and is NEVER accepted from a client. Honesty by construction: an unknown/uncertain value is
+// rejected (-> null), so the device falls to server-inferred 'silent' rather than being coerced into a
+// wrong category. detail is optional (crash message / lifecycle-hook name), sanitized + length-capped.
+const CLIENT_EXIT_REASONS = ['crashed', 'clean_exit'];
+function sanitizeExitReason(reason, detail) {
+  if (!CLIENT_EXIT_REASONS.includes(reason)) return null;
+  const d = (typeof detail === 'string' && detail.trim()) ? detail.trim().slice(0, 200) : null;
+  return { reason, detail: d };
+}
+
+module.exports = { ackableHeartbeat, deriveLiveness, captureIdentity, identityChanged, sanitizeExitReason, CLIENT_EXIT_REASONS, HEALTHY_HEARTBEAT_MS, DEGRADED_RECONNECTS };

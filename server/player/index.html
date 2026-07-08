@@ -345,6 +345,44 @@
     let config = getConfig();
     let playlist = [];
     let currentIndex = -1;
+
+    // ==================== Exit-signal contract v1 (best-effort last gasp) ====================
+    // Announce manner-of-death via navigator.sendBeacon (reliable-on-unload — survives the socket
+    // teardown). crashed: real uncaught SCRIPT error / unhandled rejection. clean_exit: pagehide with
+    // persisted=false (a genuine unload — NOT a bfcache suspend, which the liveness watchdog handles,
+    // and NOT mere visibility-hidden). Honesty: only these two confident categories are ever sent;
+    // anything uncertain sends nothing -> the server infers 'silent'. Idempotent (first signal wins,
+    // so a crash is never relabelled clean_exit by the pagehide that follows it).
+    let __exitSent = false;
+    function sendExitBeacon(reason, detail) {
+      try {
+        if (__exitSent) return;
+        if (reason !== 'crashed' && reason !== 'clean_exit') return;
+        if (!config || !config.deviceId || !config.deviceToken) return;   // unpaired -> nothing to attribute
+        __exitSent = true;
+        const url = (config.serverUrl || window.location.origin) + '/api/device/exit';
+        const body = JSON.stringify({ device_id: config.deviceId, device_token: config.deviceToken,
+          reason, detail: (typeof detail === 'string' && detail) ? detail.slice(0, 200) : undefined });
+        const blob = new Blob([body], { type: 'application/json' });      // Content-Type so express.json parses it
+        if (navigator.sendBeacon && navigator.sendBeacon(url, blob)) return;
+        fetch(url, { method: 'POST', body, headers: { 'Content-Type': 'application/json' }, keepalive: true }).catch(() => {});
+      } catch (e) { /* a dying page must never throw */ }
+    }
+    window.addEventListener('error', (ev) => {
+      // ONLY a real uncaught script error is a crash — a resource (img/script/link) load failure is NOT.
+      if (!ev) return;
+      const isResourceError = ev.target && ev.target !== window && (ev.target.src || ev.target.href);
+      if (isResourceError) return;
+      sendExitBeacon('crashed', (ev.error && ev.error.message) || ev.message || 'error');
+    });
+    window.addEventListener('unhandledrejection', (ev) => {
+      const r = ev && ev.reason;
+      sendExitBeacon('crashed', (r && (r.message || String(r))) || 'unhandledrejection');
+    });
+    window.addEventListener('pagehide', (ev) => {
+      if (ev && ev.persisted) return;   // bfcache SUSPEND (may restore) — NOT a death; watchdog owns it
+      sendExitBeacon('clean_exit', 'pagehide');
+    });
     let isPlaying = false;
     let playerTimezone = null;      // #74/#75: device-effective IANA tz for schedule eval
     let scheduleRetryTimer = null;  // re-check when every item is filtered out
