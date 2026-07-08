@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { on, off, requestScreenshot } from '../socket.js';
 import { showToast } from '../components/toast.js';
-import { esc } from '../utils.js';
+import { esc, livenessBadge } from '../utils.js';
 import { t, tn } from '../i18n.js';
 
 const DESTRUCTIVE_COMMANDS = ['reboot', 'shutdown'];
@@ -101,8 +101,7 @@ function renderDeviceCard(device) {
             </div>`
         }
         <div class="device-card-status">
-          <span class="status-dot ${device.status}"></span>
-          <span>${device.status === 'provisioning' ? t('dashboard.awaiting_pairing') : device.status}</span>
+          ${(() => { const b = livenessBadge(device); return `<span class="status-dot ${b.state}"></span><span>${esc(b.label)}</span>`; })()}
         </div>
         ${device.status === 'provisioning' && device.pairing_code ? `
         <div style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.85);color:#f59e0b;padding:4px 12px;border-radius:6px;font-size:13px;font-weight:600;letter-spacing:2px;font-family:monospace">
@@ -359,10 +358,11 @@ export function render(container) {
 
   // Real-time updates
   statusHandler = (data) => {
+    const b = livenessBadge(data); // v4: prefer data.liveness (3-state), fall back to binary status
     const cards = document.querySelectorAll(`[data-device-id="${data.device_id}"]`);
     cards.forEach(card => {
       const statusEl = card.querySelector('.device-card-status');
-      if (statusEl) statusEl.innerHTML = `<span class="status-dot ${data.status}"></span><span>${data.status}</span>`;
+      if (statusEl) statusEl.innerHTML = `<span class="status-dot ${b.state}"></span><span>${esc(b.label)}</span>`;
     });
   };
 

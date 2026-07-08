@@ -264,6 +264,10 @@ export default {
   'device.playlist.empty_desc': "Add content from your library to this display's playlist.",
   'device.playlist_picker.with_count': '{name} — {n} items',
   'device.playlist_picker.with_auto': '{name} (auto) — {n} items',
+  // v4 liveness badge (server-derived 3-state)
+  'device.liveness.healthy': 'Healthy',
+  'device.liveness.degraded': 'Reconnecting',
+  'device.liveness.offline': 'Offline',
   // Info cards
   'device.info.status': 'Status',
   'device.info.ip_address': 'IP Address',

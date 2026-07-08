@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { on, off, requestScreenshot, startRemote, stopRemote, sendTouch, sendKey, sendCommand } from '../socket.js';
 import { showToast } from '../components/toast.js';
-import { esc } from '../utils.js';
+import { esc, livenessBadge } from '../utils.js';
 import { t, tn } from '../i18n.js';
 
 let currentDevice = null;
@@ -68,8 +68,9 @@ export function render(container, deviceId) {
     if (data.device_id !== deviceId) return;
     const badge = document.querySelector('.device-status-badge');
     if (badge) {
-      badge.className = `device-status-badge ${data.status}`;
-      badge.textContent = data.status;
+      const b = livenessBadge(data); // v4: 3-state liveness when present, else binary status
+      badge.className = `device-status-badge ${b.state}`;
+      badge.textContent = b.label;
     }
     if (data.telemetry) updateTelemetryDisplay(data.telemetry);
   };
@@ -149,7 +150,7 @@ async function loadDevice(deviceId, activeTab = null) {
       <div class="device-header">
         <div class="device-header-left">
           <h1 id="deviceName">${device.name}</h1>
-          <span class="device-status-badge ${device.status}">${device.status}</span>
+          ${(() => { const b = livenessBadge(device); return `<span class="device-status-badge ${b.state}">${esc(b.label)}</span>`; })()}
           ${device.owner_name || device.owner_email ? `<span style="font-size:12px;color:var(--text-muted)">${t('device.owner_label', { owner: device.owner_name || device.owner_email })}</span>` : ''}
         </div>
         <div style="display:flex;gap:8px">
