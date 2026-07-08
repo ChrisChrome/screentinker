@@ -15,7 +15,7 @@
   // packaged config.xml via the Tizen application API; fall back to a constant that
   // build-wgt.sh stamps from config.xml's version="" so the dashboard always shows the
   // version that is actually installed (never the old hardcoded '1.0.0').
-  var APP_VERSION_FALLBACK = '1.9.1'; // st:app-version — stamped by build-wgt.sh
+  var APP_VERSION_FALLBACK = '1.9.2'; // st:app-version — stamped by build-wgt.sh
   var APP_VERSION = (function () {
     try {
       var v = tizen.application.getCurrentApplication().appInfo.version;
@@ -32,7 +32,8 @@
     id: 'st_device_id',
     token: 'st_device_token',
     fp: 'st_fingerprint',
-    code: 'st_pairing_code'
+    code: 'st_pairing_code',
+    payload: 'st_payload_cache' // A2: last renderable playlist-update, replayed on cold-start/offline
   };
 
   // ---- persistent state ----
@@ -85,6 +86,107 @@
     try { if (window.webapis && webapis.appcommon) webapis.appcommon.setScreenSaver(webapis.appcommon.AppCommonScreenSaverState.SCREEN_SAVER_OFF); } catch (e) {}
   }
 
+  // A5 — MONOTONIC clock for lifecycle time deltas (watchdog silence, resume hidden-duration), so an
+  // NTP/RTC wall-clock step on a 24/7 TV can't false-fire (forward jump) or blind (backward jump) the
+  // watchdog. Date.now() is kept ONLY where a real wall clock is needed (telemetry, cross-device wall sync).
+  var mono = (typeof performance !== 'undefined' && performance.now)
+    ? function () { return performance.now(); }
+    : function () { return Date.now(); };
+
+  // FIX A — RE-ASSERT keep-awake on an interval. tizen.power.request / the screensaver-off
+  // setting can be released when the TV backgrounds/suspends the app, and the player had no
+  // way to re-suppress it (keepAwake was only called at boot/connect/command). ~30s is well
+  // under any TV screensaver timeout and the calls are cheap best-effort no-ops. Cleared by
+  // stopKeepAwake() on app teardown.
+  var keepAwakeTimer = null;
+  function startKeepAwake() {
+    stopKeepAwake();
+    keepAwake();
+    keepAwakeTimer = setInterval(keepAwake, 30000);
+  }
+  function stopKeepAwake() { if (keepAwakeTimer) { clearInterval(keepAwakeTimer); keepAwakeTimer = null; } }
+
+  // FIX B — VISIBILITY / RESUME handling. On a TV, a background/suspend can (a) release
+  // keep-awake and (b) silently drop the socket, leaving it HALF-OPEN — socket.connected stays
+  // true while the transport is dead, which socket.io CANNOT detect, so it won't auto-reconnect.
+  //
+  // Double-connect discipline (the one way this could reintroduce #148's duplicate socket):
+  //   - DEFER to socket.io when the socket is already disconnected (socket.io owns that
+  //     reconnect, and #118 re-registers on 'connect').
+  //   - OWN a clean teardown-before-reopen (via connect(), which disconnects the old socket
+  //     FIRST — cancelling any socket.io reconnect — then opens exactly ONE new socket) ONLY
+  //     for the half-open case socket.io can't see.
+  //   These are mutually-exclusive socket states (connected vs not), so a manual reconnect
+  //   never races socket.io's auto-reconnect. We do NOT manually re-register (connect's 'connect'
+  //   handler does, once). Half-open is inferred from how long the app was hidden — socket.connected
+  //   alone is unreliable post-suspend and there is no server ack channel to actively probe
+  //   without a server change (out of scope for this client-only build).
+  var hiddenAtMs = 0;
+  var SUSPEND_HIDE_MS = 3000; // hidden >= this ≈ an OS suspend that can half-open the socket
+
+  // Pure decision, factored out so the double-connect logic is unit-testable:
+  //   'reconnect' = half-open -> own teardown+reopen ; 'defer' = already down -> socket.io owns it ; 'noop'
+  function resumeDecision(hasSocket, socketConnected, hiddenMs) {
+    if (!hasSocket) return 'noop';
+    if (!socketConnected) return 'defer';
+    return (hiddenMs >= SUSPEND_HIDE_MS) ? 'reconnect' : 'noop';
+  }
+  function onVisibility() {
+    if (document.visibilityState === 'hidden' || document.hidden) { hiddenAtMs = mono(); return; } // A5: monotonic
+    keepAwake(); // re-assert immediately on resume
+    var hiddenMs = hiddenAtMs ? (mono() - hiddenAtMs) : 0; // A5: monotonic hidden-duration
+    hiddenAtMs = 0;
+    var action = resumeDecision(!!socket, !!(socket && socket.connected), hiddenMs);
+    if (action === 'reconnect') connect(); // teardown-before-reopen -> exactly one socket; #118 registers once
+    // 'defer' -> socket.io auto-reconnects (re-registers on 'connect'); 'noop' -> healthy, do nothing
+  }
+  if (typeof window !== 'undefined') window.__stResumeDecision = resumeDecision; // test hook (inert in prod)
+
+  // FIX B (hardened) — application-level LIVENESS WATCHDOG. The resume path above only fires on
+  // visibilitychange, so a socket that goes half-open with NO visibility event (network drop, NAT
+  // idle timeout, transport death while foregrounded) would never be caught: socket.connected stays
+  // true on a dead socket and socket.io won't reconnect. The watchdog watches for server SILENCE.
+  // The server sends an engine ping every ~15s (config.pingInterval) AND app events, so a healthy
+  // socket refreshes lastServerMsgAt at least every ~15s (markAlive is wired into a central receive
+  // path in connect(): socket.onAny + socket.io 'ping'). If the socket goes quiet past the liveness
+  // window while we still believe we're connected + authenticated, it is half-open -> clean
+  // teardown-before-reopen via connect() (exactly one socket; #118 re-registers once).
+  //
+  // Double-connect discipline: the watchdog fires ONLY while socket.connected===true (the half-open
+  // state socket.io cannot see) — socket.io's own auto-reconnect only runs when socket.connected is
+  // false, so the two never overlap. connect() is teardown-first, and it resets lastServerMsgAt, so
+  // the watchdog and the resume fast-path can't double-fire a second reconnect. Client-only: uses
+  // signals the server already sends; no server change.
+  var lastServerMsgAt = 0;
+  var livenessConfirmed = false;              // H1: DON'T arm until the server has actually talked to us
+  var DEFAULT_LIVENESS_MS = 35000;
+  var livenessWindowMs = DEFAULT_LIVENESS_MS; // H1: derived from the negotiated engine pingInterval per connect
+  var watchdogTimer = null;
+  function markAlive() { lastServerMsgAt = mono(); livenessConfirmed = true; } // central receive-path hook; A5 monotonic
+  // H1 (config-proof): adapt the silence window to whatever pingInterval the SERVER negotiated, so a larger
+  // server pingInterval can't make the client false-fire into a reconnect storm. 2 intervals + 5s margin,
+  // floored at the 35s default (which is 2×15s+5s). Called from the 'connect' handler once the handshake is known.
+  function setLivenessWindowFromPing(pingIntervalMs) {
+    if (pingIntervalMs && pingIntervalMs > 0) livenessWindowMs = Math.max(DEFAULT_LIVENESS_MS, 2 * pingIntervalMs + 5000);
+  }
+  // Pure, unit-testable. Reconnect ONLY when a connected+authenticated socket whose liveness we have CONFIRMED
+  // (seen >=1 real inbound signal — H1 degrade-safe: a server that never talks never arms the watchdog, so no
+  // storm) has gone silent past the server-derived window.
+  function watchdogShouldReconnect(hasSocket, connected, authed, confirmed, silentMs, windowMs) {
+    return !!(hasSocket && connected && authed && confirmed && silentMs > windowMs);
+  }
+  function startWatchdog() {
+    stopWatchdog();
+    watchdogTimer = setInterval(function () {
+      var silentMs = lastServerMsgAt ? (mono() - lastServerMsgAt) : 0; // A5 monotonic
+      if (watchdogShouldReconnect(!!socket, !!(socket && socket.connected), authenticated, livenessConfirmed, silentMs, livenessWindowMs)) {
+        connect(); // half-open backstop: teardown-first -> one socket, #118 re-registers once
+      }
+    }, 10000);
+  }
+  function stopWatchdog() { if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; } }
+  if (typeof window !== 'undefined') { window.__stWatchdogShouldReconnect = watchdogShouldReconnect; window.__stSetLivenessWindowFromPing = setLivenessWindowFromPing; }
+
   // ---- networking ----
   var socket = null;
   var deviceId = get(LS.id);
@@ -125,6 +227,7 @@
     if (!serverUrl) { show(elSetup); return; }
     keepAwake();
     if (socket) { try { socket.disconnect(); } catch (e) {} socket = null; }
+    if (registerTimer) { clearTimeout(registerTimer); registerTimer = null; } // H4: a fresh connect supersedes any pending re-register
 
     var base = serverUrl.replace(/\/+$/, '');
     socket = io(base + '/device', {
@@ -132,10 +235,30 @@
       reconnection: true,
       reconnectionDelay: 2000,
       reconnectionDelayMax: 10000,
-      timeout: 10000
+      randomizationFactor: 0.5, // A6: ±50% jitter so a fleet of TVs doesn't reconnect in lockstep (thundering herd) after a server restart — matches the APK
+      timeout: 20000            // cheap parity (GAP4c): match /player + APK; 10s prematurely errored slow TV WebKit / WS-blocked networks
     });
 
+    // FIX B (hardened): central receive-path liveness. A fresh socket is assumed alive; then EVERY
+    // inbound server message refreshes lastServerMsgAt — app events via onAny, and the engine ping
+    // (~15s) via the manager 'ping'. This resets liveness so the watchdog / resume fast-path can't
+    // double-fire, and feeds the watchdog's server-silence detection. (io() returns a fresh socket
+    // per connect — verified — so these listeners don't accumulate.)
+    lastServerMsgAt = mono();                 // A5 monotonic
+    livenessConfirmed = false;                // H1: arm the watchdog only after a real inbound signal
+    livenessWindowMs = DEFAULT_LIVENESS_MS;   // reset; refined from the handshake on 'connect'
+    socket.onAny(markAlive);
+    socket.io.on('ping', markAlive);
+
     socket.on('connect', function () {
+      // H1: derive the liveness window from the pingInterval the SERVER negotiated at the handshake,
+      // so raising server PING_INTERVAL can't make the watchdog false-fire (config-proof). The engine
+      // exposes it as `pingInterval` (socket.io-client 4.7.x, the bundled .wgt client) or `_pingInterval`
+      // (4.8.x); read both, and fall back to the 35s default if neither is present.
+      try {
+        var eng = socket.io && socket.io.engine;
+        setLivenessWindowFromPing(eng && (eng.pingInterval || eng._pingInterval));
+      } catch (e) {}
       // #118: a brand-new socket is not authenticated until device:registered. Reset the
       // flag and kill any heartbeat carried over from the previous socket, so a beat can't
       // fire on this fresh, unregistered connection (TV sleep/wake reconnects often).
@@ -177,9 +300,12 @@
     });
 
     socket.on('device:unpaired', function () {
-      del(LS.id); del(LS.token); del(LS.code);
+      del(LS.id); del(LS.token); del(LS.code); del(LS.payload);
       deviceId = null; deviceToken = null;
-      register(); // re-register fresh -> new pairing code
+      // FIX F — back off 3s before re-registering, symmetric with the auth-error path below,
+      // so a repeatedly-unpaired device (e.g. MDM re-pair churn) can't tight-loop
+      // register -> unpaired -> register.
+      scheduleRegister(3000);
     });
 
     socket.on('device:auth-error', function (data) {
@@ -190,9 +316,9 @@
       stopHeartbeat();
       toast((data && data.error) ? data.error : 'Auth error', false);
       // Bad/stale token or fingerprint-reclaim block: drop creds and re-pair.
-      del(LS.id); del(LS.token);
+      del(LS.id); del(LS.token); del(LS.payload); // A2: clear cached content when identity is lost
       deviceId = null; deviceToken = null;
-      setTimeout(register, 3000);
+      scheduleRegister(3000);
     });
 
     socket.on('device:playlist-update', onPlaylist);
@@ -269,8 +395,11 @@
       // requireDeviceAuth() rejects the beat with device:auth-error.
       if (!socket || !socket.connected || !deviceId || !authenticated) return;
       socket.emit('device:heartbeat', { device_id: deviceId, telemetry: telemetry() });
-      // Every 4th beat (~60s) ask for a fresh playlist, matching the Android player.
-      if ((++beatCount % 4) === 0) socket.emit('device:heartbeat', { device_id: deviceId, telemetry: telemetry() });
+      // FIX C — every 4th beat (~60s) ask for a fresh playlist by re-emitting device:register;
+      // the server responds with a fresh device:playlist-update (deviceSocket.js). This was
+      // previously a duplicate device:heartbeat (comment != code), so the .wgt had NO working
+      // fallback refresh and relied entirely on server push. Matches the Android player.
+      if ((++beatCount % 4) === 0) register();
     }, HEARTBEAT_MS);
   }
   function stopHeartbeat() {
@@ -320,6 +449,12 @@
         ? STDeviceControl.capabilities() : { backend: 'none', reboot: false, panel: false };
       reportCmd('info', 'capabilities',
         'fleet control backend=' + caps.backend + ' reboot=' + caps.reboot + ' panel=' + caps.panel);
+      // A3 observability: the keep-awake fix only actually holds the screen if these APIs resolve on the
+      // TV's firmware/signing path. Surface their presence to the dashboard log so Bold can VERIFY on real
+      // hardware whether keep-awake is real (vs a silent no-op) — the load-bearing check for the flap fix.
+      var ka = 'keep-awake: setScreenSaver=' + !!(window.webapis && webapis.appcommon)
+             + ' tizen.power=' + !!(window.tizen && tizen.power);
+      reportCmd('info', 'keepawake', ka);
     } catch (e) {}
   }
 
@@ -360,6 +495,25 @@
   }
   function startStreaming() { stopStreaming(); streamTimer = setInterval(captureAndSend, 1000); }
   function stopStreaming() { if (streamTimer) { clearInterval(streamTimer); streamTimer = null; } }
+
+  // H4 (teardown hygiene): TRACK the register re-try so a reset/reconnect can cancel a pending late
+  // register (Lens 2 found it untracked -> a stray register could fire on a fresh socket).
+  var registerTimer = null;
+  function scheduleRegister(delay) {
+    if (registerTimer) clearTimeout(registerTimer);
+    registerTimer = setTimeout(function () { registerTimer = null; register(); }, delay);
+  }
+  // H4: stop the per-SESSION timers/loops when leaving playback (reset / BACK-to-setup). Otherwise the
+  // player loop keeps firing on the hidden stage and throws (serverUrl=null), heartbeat/stream keep
+  // running, and a pending register can fire late. Keep-awake + the watchdog are LIFETIME timers
+  // (guarded no-ops while off-session) and are intentionally left running. Idempotent.
+  function teardownSession() {
+    stopHeartbeat();
+    stopStreaming();
+    try { player.stop(); } catch (e) {}
+    if (registerTimer) { clearTimeout(registerTimer); registerTimer = null; }
+    authenticated = false;
+  }
 
   // ---- playback ----
   var player = new PlaylistPlayer(elStage, function () { return serverUrl.replace(/\/+$/, ''); });
@@ -418,6 +572,9 @@
       show(elStage);
       return;
     }
+    // A2: cache the last RENDERABLE payload so a reboot / WS-outage with no connectivity replays it
+    // instead of showing the idle card. Only non-suspended payloads are cached.
+    try { set(LS.payload, JSON.stringify(payload)); } catch (e) {}
     // If we have content + we're paired, make sure we're on the stage.
     if (elPairing.classList.contains('hidden') === false) show(elStage);
     else if (elStage.classList.contains('hidden')) show(elStage);
@@ -435,7 +592,7 @@
     wallController.exit(); // leave wall mode if we were in it
     applyOrientation(payload.orientation || 'landscape');
     var layout = payload.layout;
-    if (layout && layout.zones && layout.zones.length) {
+    if (layout && Array.isArray(layout.zones) && layout.zones.length) { // B3: non-array zones would throw in zoneRenderer
       // Multi-zone layout (matches the Android player). Leave single-zone mode first.
       player.stop();
       zoneRenderer.setTimezone(payload.timezone || null); // #74/#75: effective tz
@@ -464,9 +621,10 @@
     connect();
   }
   elReset.addEventListener('click', function () {
-    del(LS.url); del(LS.id); del(LS.token); del(LS.code);
+    del(LS.url); del(LS.id); del(LS.token); del(LS.code); del(LS.payload);
     deviceId = null; deviceToken = null; serverUrl = null;
     if (socket) { try { socket.disconnect(); } catch (e) {} }
+    teardownSession(); // H4: stop heartbeat/stream/player-loop + pending register (no dangling timers on setup)
     show(elSetup);
   });
 
@@ -475,9 +633,11 @@
   document.addEventListener('keydown', function (e) {
     if (e.keyCode === 10009) { // Samsung RETURN / BACK
       if (!elSetup.classList.contains('hidden')) {
+        stopKeepAwake(); stopWatchdog(); // FIX A/B: clear timers cleanly before the app exits
         try { tizen.application.getCurrentApplication().exit(); } catch (x) {}
       } else {
         if (socket) { try { socket.disconnect(); } catch (x) {} }
+        teardownSession(); // H4: same clean teardown when BACK returns to setup
         elUrl.value = serverUrl || '';
         elSetupStatus.textContent = ''; elSetupStatus.className = 'status';
         show(elSetup); elUrl.focus();
@@ -489,9 +649,16 @@
   // Always reach the server prompt until the display is actually paired. Only a
   // fully provisioned device (has a saved device_id + token) goes straight to
   // playback; otherwise show the setup screen and ask for / confirm the server.
-  keepAwake();
+  startKeepAwake();                                          // FIX A: assert + re-assert keep-awake on an interval
+  document.addEventListener('visibilitychange', onVisibility); // FIX B: suspend/resume fast-path
+  startWatchdog();                                           // FIX B (hardened): server-silence liveness backstop
   if (serverUrl && deviceId && deviceToken) {
-    show(elStage); connect();                       // paired — reconnect to playback
+    // A2: render cached content IMMEDIATELY so a cold-start/offline TV isn't blank while the socket
+    // connects (or if it can't). The socket's fresh device:playlist-update replaces it on connect.
+    show(elStage);
+    var _cp = get(LS.payload);
+    if (_cp) { try { onPlaylist(JSON.parse(_cp)); } catch (e) {} }
+    connect();                                      // paired — reconnect to playback
   } else if (serverUrl) {
     show(elSetup); elUrl.value = serverUrl;          // server known, not paired — confirm + connect
     elSetupStatus.className = 'status';

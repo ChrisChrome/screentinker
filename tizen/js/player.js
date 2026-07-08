@@ -34,7 +34,9 @@ function PlaylistPlayer(stageEl, getBase) {
 }
 
 PlaylistPlayer.prototype.load = function (assignments) {
-  var items = (assignments || []).filter(function (a) {
+  // B3: a malformed device:playlist-update with a non-array `assignments` used to throw
+  // (.filter is not a function) out of the socket handler; coerce to [] instead.
+  var items = (Array.isArray(assignments) ? assignments : []).filter(function (a) {
     return a && (a.content_id || a.widget_id || a.remote_url);
   });
   // Stable order
@@ -72,7 +74,10 @@ PlaylistPlayer.prototype.idle = function () {
 };
 
 PlaylistPlayer.prototype.durationMs = function (item) {
-  var d = item.duration_sec || this.DEFAULT_DURATION;
+  // B3: a non-numeric duration_sec ("abc") used to yield NaN -> schedule(NaN) -> fire-ASAP spin.
+  // Coerce; any non-positive/NaN falls back to the default.
+  var d = Number(item.duration_sec);
+  if (!(d > 0)) d = this.DEFAULT_DURATION;
   if (d < this.MIN_DURATION) d = this.MIN_DURATION;
   return d * 1000;
 };
@@ -203,7 +208,14 @@ PlaylistPlayer.prototype.playCurrent = function () {
 
 // Give a broken item ~2s then move on so the loop never wedges.
 PlaylistPlayer.prototype.skipSoon = function () {
-  if (this.items.length > 1) this.schedule(2000);
+  if (this.items.length > 1) { this.schedule(2000); return; }
+  // A1: a SINGLE-item playlist used to WEDGE on a broken item — skipSoon did nothing, so a transient
+  // failure (CDN blip, brief network loss, a 404 that later resolves) left a permanent black screen
+  // while the heartbeat still reported the device online. Retry the SAME item after a backoff so it
+  // self-heals instead of going dark forever.
+  var self = this;
+  if (this.timer) clearTimeout(this.timer);
+  this.timer = setTimeout(function () { self.playCurrent(); }, 5000);
 };
 
 PlaylistPlayer.prototype.fit = function (el, item) {
@@ -239,7 +251,7 @@ PlaylistPlayer.prototype.renderVideo = function (item, single) {
   // Safety net: if 'ended' never fires (rare), advance after the known
   // content duration (or the assignment duration) + a buffer.
   if (!single) {
-    var secs = item.content_duration || item.duration_sec || this.DEFAULT_DURATION;
+    var secs = Number(item.content_duration || item.duration_sec) || this.DEFAULT_DURATION; // B3: numeric
     this.schedule((secs + 5) * 1000);
   }
 };
