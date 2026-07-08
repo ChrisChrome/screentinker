@@ -4,10 +4,38 @@ const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
 const statusLogWriter = require('../lib/status-log-writer');
 const { chunkedDelete, currentBand, yieldTick } = require('../lib/chunked-prune'); // #146 non-blocking sweeps
 
+const liveness = require('../lib/liveness'); // v4 core pass: server-derived 3-state liveness
+
 // Track connected device sockets: deviceId -> { socketId, lastHeartbeat }
 const deviceConnections = new Map();
 
+// FIX 2: version-agnostic reconnect-frequency signal (every client reconnects the same way). A
+// rolling window of recent (re)register timestamps per device -> "degraded-reconnecting" when it churns.
+let _io = null; // captured in startHeartbeatChecker so livenessFor() can check namespace presence
+const RECONNECT_WINDOW_MS = 60000;
+const reconnectTimes = new Map(); // deviceId -> [timestamps within the window]
+function recordReconnect(deviceId, now = Date.now()) {
+  const arr = (reconnectTimes.get(deviceId) || []).filter(t => now - t < RECONNECT_WINDOW_MS);
+  arr.push(now);
+  reconnectTimes.set(deviceId, arr);
+}
+function recentReconnects(deviceId, now = Date.now()) {
+  const arr = (reconnectTimes.get(deviceId) || []).filter(t => now - t < RECONNECT_WINDOW_MS);
+  if (arr.length) reconnectTimes.set(deviceId, arr); else reconnectTimes.delete(deviceId);
+  return arr.length;
+}
+// Server-derived liveness for a device — from socket presence + heartbeat age + reconnect churn ONLY
+// (all version-agnostic). A disconnected device is a clean 'offline' (normal state, not an error).
+function livenessFor(deviceId) {
+  const conn = deviceConnections.get(deviceId);
+  const deviceNs = _io ? _io.of('/device') : null;
+  const connected = !!(conn && deviceNs && deviceNs.sockets.has(conn.socketId));
+  const lastHeartbeatAgeMs = conn ? (Date.now() - conn.lastHeartbeat) : Infinity;
+  return liveness.deriveLiveness({ connected, lastHeartbeatAgeMs, recentReconnects: recentReconnects(deviceId) });
+}
+
 function startHeartbeatChecker(io) {
+  _io = io; // FIX 2: for livenessFor() namespace-presence checks
   // #146: startup sweep is chunked + async + fire-and-forget + NOT band-gated, so a
   // bloated device_status_log self-heals on next deploy WITHOUT freezing boot (the old
   // whole-table sort froze boot 40-48s -> healthcheck fail -> restart loop). It
@@ -64,8 +92,10 @@ function startHeartbeatChecker(io) {
         emitToWorkspace(dashboardNs, deviceRoom(device.id), 'dashboard:device-status', {
           device_id: device.id,
           status: 'offline',
+          liveness: 'offline', // FIX 2: derived — no live socket => offline (a normal state, not an error)
           telemetry: null
         });
+        reconnectTimes.delete(device.id); // clear churn history on a clean offline
 
         console.log(`Device ${device.id} marked offline (heartbeat timeout)`);
         // #146: batch through the coalescing writer (was an immediate INSERT here).
@@ -202,6 +232,9 @@ module.exports = {
   getConnection,
   getAllConnections,
   getConnectedCount,
+  recordReconnect,      // FIX 2
+  recentReconnects,     // FIX 2
+  livenessFor,          // FIX 2
   pruneProvisioningDevices,
   accrueUsage,
   pruneUsageDaily,

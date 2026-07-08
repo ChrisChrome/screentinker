@@ -5,6 +5,7 @@ const fs = require('fs');
 const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
+const liveness = require('../lib/liveness'); // v4 core pass: pure ack/liveness/identity helpers
 const commandQueue = require('../lib/command-queue');
 const reconnectThrottle = require('../lib/reconnect-throttle');
 const contentAckLimiter = require('../lib/content-ack-limiter');
@@ -254,6 +255,25 @@ function checkDeviceAccess(deviceId) {
   return { allowed: true };
 }
 
+// v4 core-pass helpers (module scope; db is a ready singleton at require time).
+const _deviceExistsStmt = db.prepare('SELECT 1 FROM devices WHERE id = ?');
+function deviceExists(id) { return !!(id && _deviceExistsStmt.get(id)); }
+const _identityReadStmt = db.prepare('SELECT client_type, client_version, platform, contract_version FROM devices WHERE id = ?');
+const _persistIdentityStmt = db.prepare('UPDATE devices SET client_type = ?, client_version = ?, platform = ?, contract_version = ? WHERE id = ?');
+function persistIdentity(deviceId, data) {
+  if (!deviceId) return;
+  // FIX 3: capture-don't-act; degrades to legacy/unknown for old clients; NEVER breaks register.
+  // A1 change-detection: only WRITE when the identity actually changed vs stored. A genuine
+  // reconnect with unchanged identity (the common case, incl. flapping / re-pair churn) does a cheap
+  // read and NO write — no UPDATE, no WAL churn. First provision (stored NULLs) and a real change
+  // (e.g. new client_version after an OTA) still write.
+  try {
+    const i = liveness.captureIdentity(data);
+    if (!liveness.identityChanged(_identityReadStmt.get(deviceId), i)) return; // unchanged — skip the write
+    _persistIdentityStmt.run(i.client_type, i.client_version, i.platform, i.contract_version, deviceId);
+  } catch (e) { /* identity capture must never break registration */ }
+}
+
 module.exports = function setupDeviceSocket(io) {
   // Expose helpers for use by route handlers
   module.exports.lastScreenshots = lastScreenshots;
@@ -406,9 +426,11 @@ module.exports = function setupDeviceSocket(io) {
                 }
                 currentDeviceId = existing.device_id;
                 heartbeat.registerConnection(existing.device_id, socket.id);
+                heartbeat.recordReconnect(existing.device_id);   // FIX 2: churn signal
+                persistIdentity(existing.device_id, data);       // FIX 3: identity capture
                 socket.join(existing.device_id);
                 logDeviceStatus(existing.device_id, 'online');
-                emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online' });
+                emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online', liveness: heartbeat.livenessFor(existing.device_id) });
                 // Flush any commands/playlist-updates queued while this device was offline.
                 commandQueue.flushQueue(deviceNs, existing.device_id, buildPlaylistPayload);
                 // Send playlist
@@ -523,6 +545,14 @@ module.exports = function setupDeviceSocket(io) {
           }
 
           heartbeat.registerConnection(device_id, socket.id);
+          // #134: a same-socket re-register is a playlist REFRESH (~45-60s), NOT a reconnect and NOT
+          // a new identity. Match the existing !isPlaylistRefresh gates (:486/:605): don't count it as
+          // churn (A2 — else healthy refreshers cross DEGRADED_RECONNECTS and show Degraded) and don't
+          // re-write identity (A1 — else a sync UPDATE + WAL churn every ~45-60s per device).
+          if (!isPlaylistRefresh) {
+            heartbeat.recordReconnect(device_id);     // genuine reconnect only
+            persistIdentity(device_id, data);         // change-detected write (see persistIdentity)
+          }
           socket.join(device_id);
           socket.emit('device:registered', { device_id, device_token: tokenToSend, status: 'online' });
           // #143: a device paired/claimed server-side (user_id set) that RECONNECTS must be told
@@ -644,6 +674,7 @@ module.exports = function setupDeviceSocket(io) {
         }
 
         heartbeat.registerConnection(id, socket.id);
+        persistIdentity(id, data);   // FIX 3: capture v4 identity on first provision (degrades for old clients)
         socket.join(id);
         socket.emit('device:registered', { device_id: id, device_token: newToken, status: 'provisioning' });
 
@@ -668,8 +699,16 @@ module.exports = function setupDeviceSocket(io) {
 
     // Heartbeat with telemetry
     socket.on('device:heartbeat', (data) => {
+      const { device_id, telemetry } = data || {};
+      // v4 PRIMARY + FIX 1 — UNIFORM ACK. Emitted from THIS single shared handler for every client
+      // type (APK / .wgt / /player hit the same handler = uniform by construction), and BEFORE the
+      // auth guard so a KNOWN device's watchdog stays armed even mid-reconnect (before this socket
+      // finishes re-registering). Anonymous / never-authenticated sockets are NOT acked (degrade-safe
+      // covers them). Old clients simply ignore the ack — harmless.
+      if (liveness.ackableHeartbeat(currentDeviceId, device_id, deviceExists)) {
+        socket.emit('device:heartbeat-ack', {}); // cheap, to the emitting socket only
+      }
       if (!requireDeviceAuth()) return;
-      const { device_id, telemetry } = data;
       if (!device_id || device_id !== currentDeviceId) return;
 
       currentDeviceId = device_id;
@@ -708,6 +747,7 @@ module.exports = function setupDeviceSocket(io) {
         emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', {
           device_id,
           status: 'online',
+          liveness: heartbeat.livenessFor(device_id), // FIX 2: server-derived 3-state (healthy/degraded/offline)
           telemetry
         });
       }

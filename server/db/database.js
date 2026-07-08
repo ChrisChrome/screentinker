@@ -88,6 +88,12 @@ const migrations = [
   'ALTER TABLE content ADD COLUMN team_id TEXT',
   // Device notes
   'ALTER TABLE devices ADD COLUMN notes TEXT',
+  // v4 core pass — client identity capture (capture-don't-act; degrades to legacy/unknown for old
+  // pre-v4 clients that send no identity block). No logic is built on these yet.
+  'ALTER TABLE devices ADD COLUMN client_type TEXT',
+  'ALTER TABLE devices ADD COLUMN client_version TEXT',
+  'ALTER TABLE devices ADD COLUMN platform TEXT',
+  'ALTER TABLE devices ADD COLUMN contract_version TEXT',
   // Email settings on users
   "ALTER TABLE users ADD COLUMN email_alerts INTEGER DEFAULT 1",
   // Content folders
