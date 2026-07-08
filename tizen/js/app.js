@@ -158,20 +158,22 @@
   // the watchdog and the resume fast-path can't double-fire a second reconnect. Client-only: uses
   // signals the server already sends; no server change.
   var lastServerMsgAt = 0;
-  var livenessConfirmed = false;              // H1: DON'T arm until the server has actually talked to us
-  var DEFAULT_LIVENESS_MS = 35000;
-  var livenessWindowMs = DEFAULT_LIVENESS_MS; // H1: derived from the negotiated engine pingInterval per connect
+  var livenessConfirmed = false;              // v4 degrade-safe: DON'T arm until a device:heartbeat-ack
+  // v4 canonical anti-herd THRESHOLD: 45s ± up to 10s random jitter (was a fixed 35s), so a fleet
+  // doesn't all declare half-open simultaneously under a shared cause (server load delaying acks
+  // fleet-wide). Matches the APK's LivenessWatchdog.thresholdMs so the three clients behave
+  // identically on the wire. Re-jittered per connect().
+  var THRESHOLD_BASE_MS = 45000, THRESHOLD_JITTER_MS = 10000;
+  function thresholdMs(rand) { return THRESHOLD_BASE_MS + Math.round((rand - 0.5) * 2 * THRESHOLD_JITTER_MS); }
+  var livenessWindowMs = THRESHOLD_BASE_MS;
   var watchdogTimer = null;
-  function markAlive() { lastServerMsgAt = mono(); livenessConfirmed = true; } // central receive-path hook; A5 monotonic
-  // H1 (config-proof): adapt the silence window to whatever pingInterval the SERVER negotiated, so a larger
-  // server pingInterval can't make the client false-fire into a reconnect storm. 2 intervals + 5s margin,
-  // floored at the 35s default (which is 2×15s+5s). Called from the 'connect' handler once the handshake is known.
-  function setLivenessWindowFromPing(pingIntervalMs) {
-    if (pingIntervalMs && pingIntervalMs > 0) livenessWindowMs = Math.max(DEFAULT_LIVENESS_MS, 2 * pingIntervalMs + 5000);
-  }
-  // Pure, unit-testable. Reconnect ONLY when a connected+authenticated socket whose liveness we have CONFIRMED
-  // (seen >=1 real inbound signal — H1 degrade-safe: a server that never talks never arms the watchdog, so no
-  // storm) has gone silent past the server-derived window.
+  // v4: ANY inbound refreshes the SILENCE timestamp (so other server traffic keeps a healthy socket
+  // alive) — but it does NOT arm. Arming gates on the ack specifically (see the device:heartbeat-ack
+  // handler), so engine pings alone can't arm us against an ack-less server.
+  function markAlive() { lastServerMsgAt = mono(); }         // A5 monotonic
+  // Pure, unit-testable. Reconnect ONLY when a connected+authenticated socket whose liveness we have
+  // ARMED (seen >=1 device:heartbeat-ack — v4 degrade-safe: a server that never app-acks never arms
+  // us, so no false-fire even though engine pings keep flowing) has gone silent past the window.
   function watchdogShouldReconnect(hasSocket, connected, authed, confirmed, silentMs, windowMs) {
     return !!(hasSocket && connected && authed && confirmed && silentMs > windowMs);
   }
@@ -185,7 +187,7 @@
     }, 10000);
   }
   function stopWatchdog() { if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; } }
-  if (typeof window !== 'undefined') { window.__stWatchdogShouldReconnect = watchdogShouldReconnect; window.__stSetLivenessWindowFromPing = setLivenessWindowFromPing; }
+  if (typeof window !== 'undefined') { window.__stWatchdogShouldReconnect = watchdogShouldReconnect; window.__stThresholdMs = thresholdMs; }
 
   // ---- networking ----
   var socket = null;
@@ -233,10 +235,10 @@
     socket = io(base + '/device', {
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionDelay: 2000,
-      reconnectionDelayMax: 10000,
-      randomizationFactor: 0.5, // A6: ±50% jitter so a fleet of TVs doesn't reconnect in lockstep (thundering herd) after a server restart — matches the APK
-      timeout: 20000            // cheap parity (GAP4c): match /player + APK; 10s prematurely errored slow TV WebKit / WS-blocked networks
+      reconnectionDelay: 1000,      // v4 canonical: 1s start (was 2s)
+      reconnectionDelayMax: 30000,  // v4 canonical: 30s cap, within the ~30-60s band (was 10s)
+      randomizationFactor: 0.2,     // v4 canonical: ±20% jitter (was ±50%); exponential-double shape kept
+      timeout: 20000                // cheap parity (GAP4c): match /player + APK; 10s prematurely errored slow TV WebKit / WS-blocked networks
     });
 
     // FIX B (hardened): central receive-path liveness. A fresh socket is assumed alive; then EVERY
@@ -245,20 +247,12 @@
     // double-fire, and feeds the watchdog's server-silence detection. (io() returns a fresh socket
     // per connect — verified — so these listeners don't accumulate.)
     lastServerMsgAt = mono();                 // A5 monotonic
-    livenessConfirmed = false;                // H1: arm the watchdog only after a real inbound signal
-    livenessWindowMs = DEFAULT_LIVENESS_MS;   // reset; refined from the handshake on 'connect'
-    socket.onAny(markAlive);
-    socket.io.on('ping', markAlive);
+    livenessConfirmed = false;                // v4 degrade-safe: DIS-arm until a heartbeat-ack re-arms
+    livenessWindowMs = thresholdMs(Math.random()); // v4: fresh 45s ± up to 10s jitter for this connection
+    socket.onAny(markAlive);                  // refresh SILENCE on any inbound (does not arm)
+    socket.io.on('ping', markAlive);          // engine ping refreshes silence too (still does not arm)
 
     socket.on('connect', function () {
-      // H1: derive the liveness window from the pingInterval the SERVER negotiated at the handshake,
-      // so raising server PING_INTERVAL can't make the watchdog false-fire (config-proof). The engine
-      // exposes it as `pingInterval` (socket.io-client 4.7.x, the bundled .wgt client) or `_pingInterval`
-      // (4.8.x); read both, and fall back to the 35s default if neither is present.
-      try {
-        var eng = socket.io && socket.io.engine;
-        setLivenessWindowFromPing(eng && (eng.pingInterval || eng._pingInterval));
-      } catch (e) {}
       // #118: a brand-new socket is not authenticated until device:registered. Reset the
       // flag and kill any heartbeat carried over from the previous socket, so a beat can't
       // fire on this fresh, unregistered connection (TV sleep/wake reconnects often).
@@ -294,6 +288,12 @@
       reportCapabilities(); // #125: surface the fleet-control backend to the dashboard
       if (data.status === 'provisioning') showPairing();
     });
+
+    // v4 degrade-safe ARM: the watchdog arms ONLY after the first app-level device:heartbeat-ack.
+    // A server that sends engine pings but no app-ack (old/pre-contract server) never arms us, so the
+    // watchdog can't false-fire — markAlive (onAny) still refreshed lastServerMsgAt for the silence
+    // check, but ARMING is gated on the ack specifically.
+    socket.on('device:heartbeat-ack', function () { livenessConfirmed = true; });
 
     socket.on('device:paired', function () {
       del(LS.code); clearToast(); show(elStage);
@@ -378,6 +378,12 @@
 
   function register() {
     var msg = { device_info: deviceInfo(), fingerprint: fingerprint() };
+    // v4 client identity block — additive, canonical snake_case (same field shape as the APK, so the
+    // server consumes one thing). Backward-compatible: an old server ignores unknown fields.
+    msg.client_type = 'wgt';
+    msg.client_version = APP_VERSION;             // config.xml version (stamped by build-wgt.sh)
+    msg.platform = 'Tizen ' + (tizenVersion() || '');
+    msg.contract_version = 'v4';
     if (deviceId && deviceToken) { msg.device_id = deviceId; msg.device_token = deviceToken; }
     else { msg.pairing_code = pairingCode(); }
     socket.emit('device:register', msg);
