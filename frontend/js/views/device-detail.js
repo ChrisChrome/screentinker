@@ -645,7 +645,7 @@ function showDevicePreview(device) {
   });
 }
 
-async // #150 re-adopt fallback: browse the workspace's previously-removed device snapshots and
+// #150 re-adopt fallback: browse the workspace's previously-removed device snapshots and
 // apply one onto THIS (usually blank, just-re-paired) device. Primary restore is the silent
 // fingerprint-match on re-pair; this is for factory-reset / new-hardware / changed-fingerprint.
 const ORIENT_LABELS = {
@@ -763,9 +763,11 @@ function setupActions(device) {
     }
   });
 
-  // Populate default content dropdown
-  try {
-    const content = await api.getContent();
+  // Populate default content dropdown (async, non-blocking — same .then() pattern as the
+  // playlist picker below). setupActions is a SYNCHRONOUS function; awaiting here made the whole
+  // file fail to parse ("Unexpected reserved word") AND would have deferred every listener below
+  // (save, #150 re-adopt, delete) until this fetch resolved. .then() keeps them registering immediately.
+  api.getContent().then(content => {
     const defaultSelect = document.getElementById('deviceDefaultContent');
     if (defaultSelect) {
       content.forEach(c => {
@@ -775,7 +777,7 @@ function setupActions(device) {
         defaultSelect.appendChild(opt);
       });
     }
-  } catch {}
+  }).catch(() => {});
 
   // Save settings (notes + orientation + default content)
   // Debug logging toggle: sends a transient set_debug command to the device and
