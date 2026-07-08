@@ -71,6 +71,7 @@ export function render(container, deviceId) {
       const b = livenessBadge(data); // v4: 3-state liveness when present, else binary status
       badge.className = `device-status-badge ${b.state}`;
       badge.textContent = b.label;
+      badge.title = b.title || ''; // exit-reason hover (empty for non-offline / no-reason)
     }
     if (data.telemetry) updateTelemetryDisplay(data.telemetry);
   };
@@ -150,7 +151,7 @@ async function loadDevice(deviceId, activeTab = null) {
       <div class="device-header">
         <div class="device-header-left">
           <h1 id="deviceName">${device.name}</h1>
-          ${(() => { const b = livenessBadge(device); return `<span class="device-status-badge ${b.state}">${esc(b.label)}</span>`; })()}
+          ${(() => { const b = livenessBadge(device); return `<span class="device-status-badge ${b.state}"${b.title ? ` title="${esc(b.title)}"` : ''}>${esc(b.label)}</span>`; })()}
           ${device.owner_name || device.owner_email ? `<span style="font-size:12px;color:var(--text-muted)">${t('device.owner_label', { owner: device.owner_name || device.owner_email })}</span>` : ''}
         </div>
         <div style="display:flex;gap:8px">

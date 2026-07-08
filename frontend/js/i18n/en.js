@@ -268,6 +268,22 @@ export default {
   'device.liveness.healthy': 'Healthy',
   'device.liveness.degraded': 'Reconnecting',
   'device.liveness.offline': 'Offline',
+  // exit-signal contract — manner-of-death annotation on Offline (reliability-aware, §10)
+  'device.exit.crashed': 'crashed',
+  'device.exit.clean': 'clean exit',
+  'device.exit.clean_besteffort': 'clean exit (best-effort)',
+  'device.exit.silent': 'silent (no signal)',
+  'device.exit.silent_short': 'silent',
+  // filter drill-in options (sub-dimension of Offline)
+  'dashboard.filter.offline_silent': 'Offline · silent',
+  'dashboard.filter.offline_crashed': 'Offline · crashed',
+  'dashboard.filter.offline_clean': 'Offline · clean exit',
+  'dashboard.filter.offline_by_reason': 'Offline by reason',
+  // honest hover explanations (carry the contract's reliability)
+  'device.exit.crashed.tip': 'The app’s own error handler fired — it crashed before dying (our fault).',
+  'device.exit.clean.tip': 'An orderly shutdown signal fired — something closed the app cleanly.',
+  'device.exit.clean_besteffort.tip': 'Reported an orderly shutdown, but this platform’s signal is best-effort — likely, not certain.',
+  'device.exit.silent.tip': 'No exit signal arrived — external or violent termination: power loss, network drop, force-stop, or MDM/kill. The honest catch-all.',
   // Info cards
   'device.info.status': 'Status',
   'device.info.ip_address': 'IP Address',

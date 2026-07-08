@@ -27,9 +27,40 @@ export function livenessState(data) {
   if (st === 'offline') return 'offline';
   return 'offline';                                   // unknown / no data yet -> safe default, never blank
 }
-export function livenessBadge(data) {
+// Exit-signal contract §8/§10 — honest, reliability-aware manner-of-death sub-label for an Offline
+// device. clean_exit is RELIABLE only on the browser /player (pagehide+sendBeacon); best-effort on
+// APK/.wgt, so we qualify it there rather than overstate certainty. crashed/silent are labeled plainly.
+// Returns null when no reason is known (old data / never went offline) -> plain "Offline".
+// short=true -> concise LIST label (drops the parenthetical qualifiers, which the tooltip still carries);
+// full (default) -> DETAIL label with the reliability qualifier. Honesty is preserved either way: the
+// full meaning lives in the tooltip (both views) and in the detail label.
+function offlineReasonLabel(reason, clientType, short) {
+  if (reason === 'crashed') return t('device.exit.crashed');
+  if (reason === 'clean_exit') {
+    if (short) return t('device.exit.clean');                         // list: "clean exit" (tooltip carries best-effort)
+    return clientType === 'player' ? t('device.exit.clean') : t('device.exit.clean_besteffort');
+  }
+  if (reason === 'silent') return short ? t('device.exit.silent_short') : t('device.exit.silent');
+  return null;
+}
+// Honest hover explanation of the manner of death — carries the contract's reliability (esp. 'silent'
+// = external/violent, and best-effort clean_exit) so an operator isn't misled by a terse badge label.
+function offlineReasonTip(reason, clientType) {
+  if (reason === 'crashed') return t('device.exit.crashed.tip');
+  if (reason === 'clean_exit') return clientType === 'player' ? t('device.exit.clean.tip') : t('device.exit.clean_besteffort.tip');
+  if (reason === 'silent') return t('device.exit.silent.tip');
+  return '';
+}
+export function livenessBadge(data, opts = {}) {
   const state = livenessState(data);
-  return { state, label: t(LIVENESS_LABEL_KEY[state]) };
+  let label = t(LIVENESS_LABEL_KEY[state]);
+  let title = '', reason = '';
+  if (state === 'offline') {                      // annotate Offline with the manner of death, if known
+    const r = data && data.offline_reason, ct = data && data.client_type;
+    const sub = offlineReasonLabel(r, ct, opts.short);
+    if (sub) { label += ' · ' + sub; title = offlineReasonTip(r, ct); reason = r || ''; }
+  }
+  return { state, label, title, reason };        // reason -> data-offline-reason (filter drill-in); '' unless offline+known
 }
 
 // Phase 2.1: the Phase 1 schema migration renamed the legacy 'superadmin'

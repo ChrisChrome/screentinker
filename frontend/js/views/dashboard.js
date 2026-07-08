@@ -101,7 +101,7 @@ function renderDeviceCard(device) {
             </div>`
         }
         <div class="device-card-status is-liveness">
-          ${(() => { const b = livenessBadge(device); return `<span class="device-status-badge ${b.state}" data-liveness="${b.state}">${esc(b.label)}</span>`; })()}
+          ${(() => { const b = livenessBadge(device, { short: true }); return `<span class="device-status-badge ${b.state}" data-liveness="${b.state}" data-offline-reason="${esc(b.reason)}"${b.title ? ` title="${esc(b.title)}"` : ''}>${esc(b.label)}</span>`; })()}
         </div>
         ${device.status === 'provisioning' && device.pairing_code ? `
         <div style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.85);color:#f59e0b;padding:4px 12px;border-radius:6px;font-size:13px;font-weight:600;letter-spacing:2px;font-family:monospace">
@@ -268,11 +268,16 @@ export function render(container) {
     <div id="dashStats" class="dash-stats-row" style="display:flex;gap:12px;margin-bottom:16px"></div>
     <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
       <input type="text" id="deviceSearch" class="input" placeholder="${t('dashboard.search')}" style="max-width:300px">
-      <select id="deviceFilter" class="input" style="width:160px;background:var(--bg-input)">
+      <select id="deviceFilter" class="input" style="width:180px;background:var(--bg-input)">
         <option value="">${t('dashboard.all_status')}</option>
         <option value="healthy">${t('device.liveness.healthy')}</option>
         <option value="degraded">${t('device.liveness.degraded')}</option>
         <option value="offline">${t('device.liveness.offline')}</option>
+        <optgroup label="${t('dashboard.filter.offline_by_reason')}">
+          <option value="offline:silent">${t('dashboard.filter.offline_silent')}</option>
+          <option value="offline:crashed">${t('dashboard.filter.offline_crashed')}</option>
+          <option value="offline:clean_exit">${t('dashboard.filter.offline_clean')}</option>
+        </optgroup>
       </select>
     </div>
     <div id="groupedDevices"></div>
@@ -295,12 +300,17 @@ export function render(container) {
     // Compare against the liveness STATE ('healthy'|'degraded'|'offline'), NOT the display label:
     // the badge text is now "Healthy"/"Reconnecting"/"Offline", so the old text-vs-'online' compare
     // matched nothing and emptied the list. data-liveness carries the state for a robust match.
-    const state = document.getElementById('deviceFilter').value;
+    const filter = document.getElementById('deviceFilter').value;    // '' | healthy | degraded | offline | offline:<reason>
+    const reasonDrill = filter.startsWith('offline:') ? filter.slice(8) : null; // drill into a manner-of-death
     document.querySelectorAll('.device-card').forEach(card => {
       const name = card.querySelector('.device-card-name')?.textContent.toLowerCase() || '';
-      const cardState = card.querySelector('.device-card-status [data-liveness]')?.dataset.liveness || '';
+      const el = card.querySelector('.device-card-status [data-liveness]');
+      const cardState = el?.dataset.liveness || '';
+      const cardReason = el?.dataset.offlineReason || '';
       const matchSearch = !search || name.includes(search);
-      const matchState = !state || cardState === state;
+      const matchState = reasonDrill
+        ? (cardState === 'offline' && cardReason === reasonDrill)     // Offline drill-in: liveness AND reason (e.g. silent = MDM-killed set)
+        : (!filter || cardState === filter);                         // existing three-state filter — unchanged
       card.style.display = (matchSearch && matchState) ? '' : 'none';
     });
   }
@@ -362,11 +372,11 @@ export function render(container) {
 
   // Real-time updates
   statusHandler = (data) => {
-    const b = livenessBadge(data); // v4: prefer data.liveness (3-state), fall back to binary status
+    const b = livenessBadge(data, { short: true }); // list = concise label; tooltip carries the full text
     const cards = document.querySelectorAll(`[data-device-id="${data.device_id}"]`);
     cards.forEach(card => {
       const statusEl = card.querySelector('.device-card-status');
-      if (statusEl) statusEl.innerHTML = `<span class="device-status-badge ${b.state}" data-liveness="${b.state}">${esc(b.label)}</span>`;
+      if (statusEl) statusEl.innerHTML = `<span class="device-status-badge ${b.state}" data-liveness="${b.state}" data-offline-reason="${esc(b.reason)}"${b.title ? ` title="${esc(b.title)}"` : ''}>${esc(b.label)}</span>`;
     });
   };
 
