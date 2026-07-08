@@ -46,6 +46,13 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        // Let JVM unit tests exercise Android-dependent code paths (e.g. ContentCache's real
+        // download logic, which logs via android.util.Log) without Robolectric — stubbed Android
+        // APIs return defaults instead of throwing "not mocked".
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

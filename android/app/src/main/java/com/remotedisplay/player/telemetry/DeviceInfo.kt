@@ -174,7 +174,7 @@ class DeviceInfo(private val context: Context) {
         return dm.widthPixels to dm.heightPixels
     }
 
-    private fun getAppVersion(): String {
+    fun getAppVersion(): String {
         return try {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
         } catch (e: Exception) {

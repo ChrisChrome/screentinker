@@ -8,7 +8,9 @@ import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import kotlin.random.Random
 import androidx.core.app.NotificationCompat
 import com.remotedisplay.player.MainActivity
 import com.remotedisplay.player.RemoteDisplayApp
@@ -34,6 +36,20 @@ class WebSocketService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var heartbeatRunnable: Runnable? = null
     private val binder = LocalBinder()
+
+    // v4 liveness watchdog state (see LivenessWatchdog for the pure decision logic).
+    // lastServerMessageAt: ANY inbound server message refreshes it (markAlive, wired into safeOn) —
+    // uses the monotonic elapsedRealtime clock so an NTP/wall-clock jump can't false-fire or blind
+    // the watchdog. livenessConfirmed: ARMED only after a device:heartbeat-ack (degrade-safe — an
+    // ack-less/old server never arms us, so no false-fire storm). currentThresholdMs: per-connection
+    // jittered 45s ± up to 10s. watchdogAttempt/lastWatchdogAttemptAt: exponential-backoff gate.
+    @Volatile private var lastServerMessageAt = 0L
+    @Volatile private var livenessConfirmed = false
+    @Volatile private var currentThresholdMs = LivenessWatchdog.THRESHOLD_BASE_MS
+    private var watchdogAttempt = 0
+    private var lastWatchdogAttemptAt = 0L
+
+    private fun markAlive() { lastServerMessageAt = SystemClock.elapsedRealtime() }
 
     companion object {
         // #148: backoff before re-opening the single socket after a disconnect that Socket.IO
@@ -101,6 +117,10 @@ class WebSocketService : Service() {
     // exception on the Socket.IO IO thread and crash the whole app.
     private fun Socket.safeOn(event: String, handler: (Array<Any?>) -> Unit): Socket {
         on(event) { args ->
+            // v4: ANY inbound server message refreshes liveness (not just acks). The half-open
+            // decision additionally requires socket.connected(), so refreshing on a disconnect
+            // event is harmless. This is the single central receive-path hook.
+            markAlive()
             try {
                 @Suppress("UNCHECKED_CAST")
                 handler(args as Array<Any?>)
@@ -136,6 +156,14 @@ class WebSocketService : Service() {
         disconnect()
         currentUrl = url
         socketActive = true
+
+        // v4 watchdog: a fresh socket is assumed alive; DIS-arm until it earns an ack again
+        // (degrade-safe), and pick a new jittered threshold for this connection so a fleet doesn't
+        // declare half-open in lockstep. watchdogAttempt is intentionally NOT reset here — it
+        // tracks repeated reconnect failures across sockets and resets on a healthy ack.
+        lastServerMessageAt = SystemClock.elapsedRealtime()
+        livenessConfirmed = false
+        currentThresholdMs = LivenessWatchdog.thresholdMs(Random.nextDouble())
 
         try {
             val options = IO.Options().apply {
@@ -191,6 +219,17 @@ class WebSocketService : Service() {
                     Log.i("WebSocketService", "Registered as: $newDeviceId")
                     handler.post { try { onRegistered?.invoke(newDeviceId) } catch (e: Throwable) { Log.e("WebSocketService", "onRegistered cb: ${e.message}") } }
                     startHeartbeat()
+                }
+
+                // v4 degrade-safe ARM: the watchdog arms ONLY after the first heartbeat-ack, so a
+                // server that never acks (old/pre-contract) never arms us -> no false-fire storm.
+                // markAlive already fired via safeOn (any inbound); a healthy ack also resets the
+                // reconnect backoff. Known ack-gap (reconnecting-not-yet-re-registered) is benign:
+                // arm-after-ack + any-inbound-refresh keep the watchdog from firing in that window.
+                safeOn("device:heartbeat-ack") {
+                    if (!livenessConfirmed) Log.i("WebSocketService", "v4 watchdog: ARMED (first heartbeat-ack)")
+                    livenessConfirmed = true
+                    watchdogAttempt = 0
                 }
 
                 safeOn("device:unpaired") {
@@ -370,6 +409,19 @@ class WebSocketService : Service() {
         }
     }
 
+    // v4 client identity block — additive, canonical snake_case (same field shape as the .wgt and
+    // /player), piggybacked on the register message the client already sends. Backward-compatible:
+    // an old server ignores unknown fields. Capture-don't-act — the server stores it; no client
+    // logic is built on it here.
+    private fun JSONObject.putIdentity() {
+        try {
+            put("client_type", "apk")
+            put("client_version", deviceInfo.getAppVersion())
+            put("platform", "Android " + android.os.Build.VERSION.RELEASE)
+            put("contract_version", "v4")
+        } catch (e: Throwable) { Log.w("WebSocketService", "identity: ${e.message}") }
+    }
+
     private fun register() {
         try {
             val data = JSONObject().apply {
@@ -388,6 +440,7 @@ class WebSocketService : Service() {
                 }
                 try { put("device_info", deviceInfo.getDeviceInfo()) } catch (e: Throwable) { Log.w("WebSocketService", "device_info: ${e.message}") }
                 try { put("fingerprint", deviceInfo.getFingerprint()) } catch (e: Throwable) { Log.w("WebSocketService", "fingerprint: ${e.message}") }
+                putIdentity()
             }
             socket?.emit("device:register", data)
         } catch (e: Throwable) {
@@ -407,16 +460,58 @@ class WebSocketService : Service() {
         heartbeatCount = 0
         heartbeatRunnable = object : Runnable {
             override fun run() {
+                // A watchdog reconnect (below) tears down + restarts the heartbeat; if this is a
+                // stale runnable superseded by that restart, stop — never let two loops run.
+                if (heartbeatRunnable !== this) return
                 sendHeartbeat()
                 heartbeatCount++
                 // Every 4th heartbeat (60s), request a fresh playlist
                 if (heartbeatCount % 4 == 0) {
                     requestPlaylistRefresh()
                 }
+                // v4 liveness watchdog: runs on the heartbeat tick (i.e. only while we've been
+                // SENDING heartbeats). If it detects+acts on a half-open socket it tears this loop
+                // down and a fresh one starts on re-register, so do NOT reschedule this one.
+                if (checkHalfOpenAndReconnect()) return
                 handler.postDelayed(this, 15000) // Every 15 seconds
             }
         }
         handler.post(heartbeatRunnable!!)
+    }
+
+    /**
+     * v4 half-open detection. On a HALF-OPEN socket Socket.IO still reports connected()==true
+     * (its own auto-reconnect can't see server-silence), so we detect it here: armed (saw an ack)
+     * + connected + silent past the jittered threshold. Returns true iff it triggered a reconnect
+     * (so the heartbeat loop stops). The exponential backoff gate spaces repeated attempts so the
+     * watchdog can't become the flood #143/#149 fixed. No status/health poll — load is read from
+     * our own ack-silence.
+     */
+    private fun checkHalfOpenAndReconnect(): Boolean {
+        val connected = socket?.connected() == true
+        val silenceMs = SystemClock.elapsedRealtime() - lastServerMessageAt
+        if (!LivenessWatchdog.isHalfOpen(livenessConfirmed, connected, silenceMs, currentThresholdMs)) return false
+        val sinceAttempt = SystemClock.elapsedRealtime() - lastWatchdogAttemptAt
+        val backoff = LivenessWatchdog.backoffMs(watchdogAttempt + 1, Random.nextDouble())
+        if (!LivenessWatchdog.mayReconnectNow(sinceAttempt, backoff)) return false
+        watchdogAttempt++
+        lastWatchdogAttemptAt = SystemClock.elapsedRealtime()
+        Log.w("WebSocketService", "v4 watchdog: HALF-OPEN (silent ${silenceMs}ms > ${currentThresholdMs}ms, attempt=$watchdogAttempt) — teardown+reconnect (#148)")
+        reconnectHalfOpen()
+        return true
+    }
+
+    /**
+     * Teardown-before-reopen (#148) for a half-open socket. disconnect() kills the dead socket AND
+     * its listeners/auto-reconnect FIRST (so we don't race Socket.IO's own reconnect), then
+     * connect() — with socket=null + socketActive=false — opens exactly ONE fresh socket via the
+     * ConnectionGuard. @Synchronized so it can't interleave with a racing connect()/openSocket().
+     * The watchdog LAYERS ON the existing #148 guard; it does not replace it.
+     */
+    @Synchronized
+    private fun reconnectHalfOpen() {
+        disconnect()
+        connect()
     }
 
     fun requestPlaylistRefresh() {
@@ -428,6 +523,7 @@ class WebSocketService : Service() {
                 val token = config.deviceToken
                 if (token.isNotEmpty()) put("device_token", token)
                 try { put("device_info", deviceInfo.getDeviceInfo()) } catch (e: Throwable) { Log.w("WebSocketService", "device_info: ${e.message}") }
+                putIdentity()
             }
             socket?.emit("device:register", data)
         } catch (e: Throwable) {
