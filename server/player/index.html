@@ -745,6 +745,65 @@
       container.appendChild(note);
     }
 
+    // ==================== v4 liveness watchdog ====================
+    // Brings /player onto the LOCKED v4 contract, IDENTICAL on the wire to the APK and .wgt.
+    // Threshold 45s ± up to 10s jitter (canonical); arm ONLY after a device:heartbeat-ack
+    // (degrade-safe — an ack-less server never arms us); lastServerMessageAt refreshes on ANY
+    // inbound (the SILENCE check) while ARMING gates on the ack. Backoff (1s→30s ±20%) is on the
+    // socket.io Manager (io opts below). NO status/health poll — load is read from ack-silence.
+    // Browser-specific half-open triggers (visibility/resume/online) drive the SAME check + the
+    // #148 teardown-first reconnect — additional triggers, not a separate mechanism.
+    const PLAYER_VERSION = '1.1.0-web';
+    const V4_THRESHOLD_BASE_MS = 45000, V4_THRESHOLD_JITTER_MS = 10000;
+    function v4ThresholdMs(rand) { return V4_THRESHOLD_BASE_MS + Math.round((rand - 0.5) * 2 * V4_THRESHOLD_JITTER_MS); }
+    // Wall-clock (Date.now) so silence COUNTS sleep/background time — the browser half-open causes
+    // (a setInterval tick alone would be throttled/frozen in a hidden tab and undercount).
+    let lastServerMessageAt = 0;
+    let livenessConfirmed = false;
+    let livenessWindowMs = V4_THRESHOLD_BASE_MS;
+    let watchdogTimer = null;
+    function markAlive() { lastServerMessageAt = Date.now(); }   // ANY inbound refreshes silence (does NOT arm)
+    // Pure decision (matches the APK/.wgt watchdogShouldReconnect): reconnect only a connected +
+    // registered socket whose liveness we've ARMED that has gone silent past the jittered window.
+    function watchdogShouldReconnect(hasSocket, connected, armed, silentMs, windowMs) {
+      return !!(hasSocket && connected && armed && silentMs > windowMs);
+    }
+    function checkLiveness() {
+      // THROTTLE-AWARE. (1) Silence is computed by TIMESTAMP (now - lastServerMessageAt), never by
+      // timer-fire-count, so a background-THROTTLED/late timer still measures the ACTUAL elapsed
+      // silence — it won't miss a real half-open for firing late, nor false-fire for firing late.
+      // (2) While the tab is HIDDEN, timers are throttled and the gap is EXPECTED — do NOT act on it
+      // (never reconnect a backgrounded tab). The hidden->visible transition resets the grace via
+      // verifyLivenessSoon(), so we don't false-fire on resume either.
+      if (document.visibilityState !== 'visible') return;
+      const silentMs = lastServerMessageAt ? (Date.now() - lastServerMessageAt) : 0;
+      if (watchdogShouldReconnect(!!socket, !!(socket && socket.connected), livenessConfirmed, silentMs, livenessWindowMs)) {
+        console.log('[v4] half-open (silent ' + silentMs + 'ms > ' + livenessWindowMs + ') — teardown+reconnect');
+        connect(config.serverUrl);   // #148 teardown-before-reopen: connect() disconnects the old socket first
+      }
+    }
+    // Fresh liveness check for a resume / bfcache-restore / network-change: silence accumulated
+    // while hidden or throttled is NOT trustworthy, so NEVER tear down a possibly-live socket on it.
+    // Reset the grace so the socket gets a fresh window to prove itself — a live socket's engine
+    // ping/ack refreshes silence within the window (no reconnect); a genuinely dead one stays silent
+    // past the window and the (now-visible) watchdog reconnects it. #148 teardown-first via connect().
+    function verifyLivenessSoon() {
+      lastServerMessageAt = Date.now();          // fresh grace — don't false-fire on stale hidden-silence
+      if (!socket) connect(config.serverUrl);    // never connected / torn down -> establish (teardown-first)
+      // socket connected  -> grace reset above; the watchdog verifies over the next window.
+      // socket present-but-disconnected -> socket.io's own reconnection already owns it.
+    }
+    function startWatchdog() { stopWatchdog(); watchdogTimer = setInterval(checkLiveness, 10000); }
+    function stopWatchdog() { if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; } }
+    function browserPlatform() {
+      try {
+        const m = navigator.userAgent.match(/(Edg|OPR|Chrome|Firefox|Version)\/(\d+)/);
+        if (m) { const name = { Edg: 'Edge', OPR: 'Opera', Version: 'Safari' }[m[1]] || m[1]; return name + ' ' + m[2]; }
+        return 'Browser';
+      } catch (e) { return 'Browser'; }
+    }
+    if (typeof window !== 'undefined') { window.__v4ThresholdMs = v4ThresholdMs; window.__v4WatchdogShouldReconnect = watchdogShouldReconnect; }
+
     // ==================== Socket Connection ====================
     function connect(serverUrl) {
       if (socket) { socket.disconnect(); socket = null; }
@@ -752,8 +811,9 @@
       socket = io(serverUrl + '/device', {
         reconnection: true,
         reconnectionAttempts: Infinity,
-        reconnectionDelay: 2000,
-        reconnectionDelayMax: 10000,
+        reconnectionDelay: 1000,       // v4 canonical: 1s start (was 2s)
+        reconnectionDelayMax: 30000,   // v4 canonical: 30s cap, within the ~30-60s band (was 10s)
+        randomizationFactor: 0.2,      // v4 canonical: ±20% jitter (was the socket.io 0.5 default)
         timeout: 20000,
         // Prefer WebSocket but allow polling fallback. Socket.IO default is
         // polling-first with an upgrade dance that's fragile on TV WebKits
@@ -765,6 +825,17 @@
         transports: ['websocket', 'polling'],
       });
 
+      // v4 liveness: a fresh socket is assumed alive; DIS-arm until a heartbeat-ack re-arms; pick a
+      // fresh jittered window for this connection. markAlive on ANY inbound (app events via onAny +
+      // the engine ping) refreshes the SILENCE timer only — it does NOT arm.
+      lastServerMessageAt = Date.now();
+      livenessConfirmed = false;
+      livenessWindowMs = v4ThresholdMs(Math.random());
+      socket.onAny(markAlive);
+      socket.io.on('ping', markAlive);
+      // v4 degrade-safe ARM: the watchdog arms ONLY after the first app-level device:heartbeat-ack.
+      socket.on('device:heartbeat-ack', () => { livenessConfirmed = true; });
+
       socket.on('connect', () => {
         console.log('Connected');
         register();
@@ -773,6 +844,7 @@
       socket.on('disconnect', () => {
         console.log('Disconnected');
         stopHeartbeat();
+        stopWatchdog(); // socket.io owns the reconnect once it KNOWS it's down; watchdog is for half-open only
       });
 
       socket.on('connect_error', (err) => {
@@ -797,6 +869,7 @@
         }
 
         startHeartbeat();
+        startWatchdog(); // v4: arm-gated half-open watchdog (no-op until a heartbeat-ack arms it)
         startPlaylistRefresh();
         startVersionCheck();
       });
@@ -1082,6 +1155,12 @@
         screen_width: screen.width,
         screen_height: screen.height,
       };
+      // v4 client identity block — additive, canonical snake_case (same shape as APK/.wgt so the
+      // server consumes one thing). Backward-compatible: an old server ignores unknown fields.
+      data.client_type = 'player';
+      data.client_version = PLAYER_VERSION;
+      data.platform = browserPlatform();
+      data.contract_version = 'v4';
       // Browser fingerprint (survives localStorage clear)
       data.fingerprint = generateBrowserFingerprint();
       console.log(`[register] device_id=${data.device_id || 'none'}, has_token=${!!data.device_token}, token_len=${data.device_token?.length || 0}, paired=${config.paired}, pairing_code=${data.pairing_code || 'none'}`);
@@ -2193,7 +2272,18 @@
       } catch {}
     }
     requestWakeLock();
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') requestWakeLock(); });
+    // v4 browser half-open triggers: tab foreground / bfcache resume / network change all drive the
+    // SAME liveness check + #148 teardown-first reconnect (checkLiveness -> connect() only if the
+    // socket is armed+connected+silent-past-window). checkLiveness no-ops on a healthy socket, so a
+    // visibility change does NOT spawn a duplicate socket (the classic browser bug).
+    document.addEventListener('visibilitychange', () => {
+      // On becoming visible after a (possibly throttled/frozen) background stint, do the fresh
+      // liveness check — reset the grace and reconnect ONLY if genuinely dead; never spuriously
+      // tear down a live socket on the hidden->visible gap.
+      if (document.visibilityState === 'visible') { requestWakeLock(); verifyLivenessSoon(); }
+    });
+    window.addEventListener('pageshow', verifyLivenessSoon);   // sleep/resume via bfcache restore
+    window.addEventListener('online', verifyLivenessSoon);     // network switch (wifi<->cellular)
 
     // Register service worker for offline content caching
     if ('serviceWorker' in navigator) {
