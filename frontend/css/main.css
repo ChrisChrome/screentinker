@@ -421,6 +421,19 @@ body {
   font-size: 11px;
   font-weight: 500;
 }
+/* Device cards render the reused liveness pill (.device-status-badge from device-detail), which brings
+   its own bg/padding/shape — so neutralize the dark wrapper for those. Wall cards keep the dark pill
+   above for their "NxN wall" label (they share .device-card-status but have no .is-liveness). */
+.device-card-status.is-liveness {
+  background: none;
+  backdrop-filter: none;
+  padding: 0;
+  border-radius: 0;
+}
+/* Lift the list pill off the screenshot so it stays legible over any image. */
+.device-card-status.is-liveness .device-status-badge {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+}
 
 .device-card-select {
   position: absolute;

@@ -100,8 +100,8 @@ function renderDeviceCard(device) {
               <span>${t('dashboard.no_preview')}</span>
             </div>`
         }
-        <div class="device-card-status">
-          ${(() => { const b = livenessBadge(device); return `<span class="status-dot ${b.state}"></span><span>${esc(b.label)}</span>`; })()}
+        <div class="device-card-status is-liveness">
+          ${(() => { const b = livenessBadge(device); return `<span class="device-status-badge ${b.state}" data-liveness="${b.state}">${esc(b.label)}</span>`; })()}
         </div>
         ${device.status === 'provisioning' && device.pairing_code ? `
         <div style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.85);color:#f59e0b;padding:4px 12px;border-radius:6px;font-size:13px;font-weight:600;letter-spacing:2px;font-family:monospace">
@@ -268,10 +268,11 @@ export function render(container) {
     <div id="dashStats" class="dash-stats-row" style="display:flex;gap:12px;margin-bottom:16px"></div>
     <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
       <input type="text" id="deviceSearch" class="input" placeholder="${t('dashboard.search')}" style="max-width:300px">
-      <select id="deviceFilter" class="input" style="width:140px;background:var(--bg-input)">
+      <select id="deviceFilter" class="input" style="width:160px;background:var(--bg-input)">
         <option value="">${t('dashboard.all_status')}</option>
-        <option value="online">${t('dashboard.online')}</option>
-        <option value="offline">${t('dashboard.offline')}</option>
+        <option value="healthy">${t('device.liveness.healthy')}</option>
+        <option value="degraded">${t('device.liveness.degraded')}</option>
+        <option value="offline">${t('device.liveness.offline')}</option>
       </select>
     </div>
     <div id="groupedDevices"></div>
@@ -291,13 +292,16 @@ export function render(container) {
 
   function filterDevices() {
     const search = document.getElementById('deviceSearch').value.toLowerCase();
-    const status = document.getElementById('deviceFilter').value;
+    // Compare against the liveness STATE ('healthy'|'degraded'|'offline'), NOT the display label:
+    // the badge text is now "Healthy"/"Reconnecting"/"Offline", so the old text-vs-'online' compare
+    // matched nothing and emptied the list. data-liveness carries the state for a robust match.
+    const state = document.getElementById('deviceFilter').value;
     document.querySelectorAll('.device-card').forEach(card => {
       const name = card.querySelector('.device-card-name')?.textContent.toLowerCase() || '';
-      const deviceStatus = card.querySelector('.device-card-status span:last-child')?.textContent || '';
+      const cardState = card.querySelector('.device-card-status [data-liveness]')?.dataset.liveness || '';
       const matchSearch = !search || name.includes(search);
-      const matchStatus = !status || deviceStatus === status;
-      card.style.display = (matchSearch && matchStatus) ? '' : 'none';
+      const matchState = !state || cardState === state;
+      card.style.display = (matchSearch && matchState) ? '' : 'none';
     });
   }
 
@@ -362,7 +366,7 @@ export function render(container) {
     const cards = document.querySelectorAll(`[data-device-id="${data.device_id}"]`);
     cards.forEach(card => {
       const statusEl = card.querySelector('.device-card-status');
-      if (statusEl) statusEl.innerHTML = `<span class="status-dot ${b.state}"></span><span>${esc(b.label)}</span>`;
+      if (statusEl) statusEl.innerHTML = `<span class="device-status-badge ${b.state}" data-liveness="${b.state}">${esc(b.label)}</span>`;
     });
   };
 
