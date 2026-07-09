@@ -214,6 +214,7 @@ router.get('/:id', requirePlaylistRead, (req, res) => {
     ORDER BY pi.sort_order ASC
   `).all(req.params.id);
   const displayCount = db.prepare('SELECT COUNT(*) as count FROM devices WHERE playlist_id = ?').get(req.params.id).count;
+  for (const it of items) it.schedules = schedulesForItem(it.id); // #156: editor read-path needs the blocks (mirror :351)
   res.json({ ...req.playlist, items, item_count: items.length, display_count: displayCount });
 });
 
