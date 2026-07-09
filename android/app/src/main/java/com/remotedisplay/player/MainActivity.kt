@@ -22,6 +22,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityManager
 import android.widget.ImageView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -72,10 +73,12 @@ class MainActivity : AppCompatActivity() {
     private var playbackStarted = false
 
     // Multi-tap BACK/ESC for hidden settings menu.
-    // Collect taps in a 2-second window; on expiry: 2 taps → settings, 3+ taps → exit.
+    // Collect taps in a 2-second window; on expiry: 2 taps → PIN → settings, 3+ taps → exit.
     private val backTapTimes = mutableListOf<Long>()
     private var backTapRunnable: Runnable? = null
     private val TAP_WINDOW_MS = 1800L
+    private val DEFAULT_SETTINGS_PIN = "0000"
+    private val PREF_SETTINGS_PIN = "settings_pin"
     // Connection-failure auto-prompt threshold.
     private var failureBannerShown = false
 
@@ -841,11 +844,40 @@ class MainActivity : AppCompatActivity() {
             backTapTimes.clear()
             when {
                 count >= 3 -> showExitDialog()
-                count == 2 -> showSettingsDialog()
+                count == 2 -> showPinDialog()
                 // count == 1 → ignored (kiosk)
             }
         }
         handler.postDelayed(backTapRunnable!!, TAP_WINDOW_MS)
+    }
+
+    private fun showPinDialog() {
+        val prefs = getSharedPreferences("remote_display", MODE_PRIVATE)
+        val storedPin = prefs.getString(PREF_SETTINGS_PIN, DEFAULT_SETTINGS_PIN) ?: DEFAULT_SETTINGS_PIN
+
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            hint = DEFAULT_SETTINGS_PIN
+            setSingleLine()
+        }
+        val container = FrameLayout(this).apply {
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.settings_pin_title))
+            .setView(container)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                if (input.text.toString() == storedPin) {
+                    showSettingsDialog()
+                } else {
+                    Toast.makeText(this, getString(R.string.settings_pin_wrong), Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun showSettingsDialog() {

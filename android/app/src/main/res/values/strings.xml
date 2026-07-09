@@ -5,7 +5,9 @@
     <string name="nothing_scheduled">Nothing scheduled right now</string>
     <string name="waiting_for_content">Waiting for content…</string>
 
-    <!-- Hidden settings menu (triggered by 2x BACK or ESC) -->
+    <!-- Hidden settings menu (triggered by 2x BACK or ESC, PIN-gated) -->
+    <string name="settings_pin_title">Enter PIN</string>
+    <string name="settings_pin_wrong">Wrong PIN</string>
     <string name="settings_title">Settings</string>
     <string name="settings_change_server">Change server URL</string>
     <string name="settings_reconfigure">Reconfigure device (re-pair)</string>
