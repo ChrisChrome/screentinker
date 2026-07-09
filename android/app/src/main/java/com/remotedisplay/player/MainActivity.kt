@@ -950,18 +950,6 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.settings_exit_title))
-            .setMessage(getString(R.string.settings_exit_confirm))
-            .setPositiveButton(getString(R.string.settings_exit_yes)) { _, _ ->
-                try {
-                    wsService?.disconnect()
-                    if (bound) { unbindService(connection); bound = false }
-                } catch (_: Exception) {}
-                finishAffinity()
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
     }
 
     private fun navigateToProvisioning(url: String? = null) {
