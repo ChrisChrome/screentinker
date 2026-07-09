@@ -215,6 +215,13 @@ class WebSocketService : Service() {
                     val name = data.optString("name", "Display")
                     config.setPaired(true)
                     config.deviceName = name
+                    // Server-provisioned settings PIN — unique per device, stored encrypted.
+                    // If the server doesn't send one (old server), ServerConfig generates a
+                    // random PIN on first access so the gate is never left with a hardcoded default.
+                    val pin = data.optString("settings_pin", "")
+                    if (pin.isNotEmpty()) {
+                        config.settingsPin = pin
+                    }
                     Log.i("WebSocketService", "Paired as: $name")
                     handler.post { try { onPaired?.invoke(id, name) } catch (e: Throwable) { Log.e("WebSocketService", "onPaired cb: ${e.message}") } }
                 }

@@ -77,8 +77,6 @@ class MainActivity : AppCompatActivity() {
     private val backTapTimes = mutableListOf<Long>()
     private var backTapRunnable: Runnable? = null
     private val TAP_WINDOW_MS = 1800L
-    private val DEFAULT_SETTINGS_PIN = "0000"
-    private val PREF_SETTINGS_PIN = "settings_pin"
     // Connection-failure auto-prompt threshold.
     private var failureBannerShown = false
 
@@ -852,12 +850,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPinDialog() {
-        val prefs = getSharedPreferences("remote_display", MODE_PRIVATE)
-        val storedPin = prefs.getString(PREF_SETTINGS_PIN, DEFAULT_SETTINGS_PIN) ?: DEFAULT_SETTINGS_PIN
-
         val input = EditText(this).apply {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            hint = DEFAULT_SETTINGS_PIN
+            hint = getString(R.string.settings_pin_hint)
             setSingleLine()
         }
         val container = FrameLayout(this).apply {
@@ -870,7 +865,7 @@ class MainActivity : AppCompatActivity() {
             .setTitle(getString(R.string.settings_pin_title))
             .setView(container)
             .setPositiveButton(android.R.string.ok) { _, _ ->
-                if (input.text.toString() == storedPin) {
+                if (input.text.toString() == config.settingsPin) {
                     showSettingsDialog()
                 } else {
                     Toast.makeText(this, getString(R.string.settings_pin_wrong), Toast.LENGTH_SHORT).show()
@@ -981,7 +976,6 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
-    }
     }
 
     private fun navigateToProvisioning(url: String? = null) {

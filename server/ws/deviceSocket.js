@@ -401,7 +401,11 @@ module.exports = function setupDeviceSocket(io) {
                 socket.emit('device:registered', { device_id: existing.device_id, device_token: newToken, status: 'online' });
                 // If device was already claimed by a user, tell the player it's paired
                 if (oldDevice.user_id) {
-                  socket.emit('device:paired', { name: oldDevice.name || 'Display' });
+                  socket.emit('device:paired', {
+                    device_id: oldDevice.id,
+                    name: oldDevice.name || 'Display',
+                    settings_pin: oldDevice.settings_pin || undefined
+                  });
                 }
                 currentDeviceId = existing.device_id;
                 heartbeat.registerConnection(existing.device_id, socket.id);
@@ -532,7 +536,7 @@ module.exports = function setupDeviceSocket(io) {
           // — never received it and sat on the Connect page forever showing the URL (Bold #143).
           // Re-send the exact event the client already listens for; no client change needed.
           if (device.user_id) {
-            socket.emit('device:paired', { device_id, name: device.name || 'Display' });
+            socket.emit('device:paired', { device_id, name: device.name || 'Display', settings_pin: device.settings_pin || undefined });
           }
           logDeviceStatus(device_id, 'online');
           // Flush any commands/playlist-updates queued while this device was offline.

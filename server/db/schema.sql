@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS devices (
     user_id         TEXT REFERENCES users(id),
     name            TEXT NOT NULL DEFAULT 'Unnamed Display',
     pairing_code    TEXT UNIQUE,
+    settings_pin    TEXT,
     status          TEXT NOT NULL DEFAULT 'offline',
     blocked         INTEGER NOT NULL DEFAULT 0,
     last_heartbeat  INTEGER,

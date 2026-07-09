@@ -745,15 +745,18 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (
   pairLockout.reset(ip); // a valid claim forgives prior failed attempts from this IP
 
   const deviceName = name || 'Display ' + (db.prepare('SELECT COUNT(*) as count FROM devices WHERE user_id = ?').get(req.user.id).count + 1);
-  db.prepare("UPDATE devices SET pairing_code = NULL, name = ?, user_id = ?, workspace_id = ?, status = 'online', updated_at = strftime('%s','now') WHERE id = ?")
-    .run(deviceName, req.user.id, req.workspaceId, device.id);
+  // Generate a random 6-digit PIN for the hidden settings menu — each device gets a
+  // unique PIN provisioned by the server (never a hardcoded default).
+  const settingsPin = String(Math.floor(100000 + Math.random() * 900000));
+  db.prepare("UPDATE devices SET pairing_code = NULL, name = ?, user_id = ?, workspace_id = ?, status = 'online', settings_pin = ?, updated_at = strftime('%s','now') WHERE id = ?")
+    .run(deviceName, req.user.id, req.workspaceId, settingsPin, device.id);
 
   // Link fingerprint to user
   db.prepare("UPDATE device_fingerprints SET user_id = ?, device_id = ? WHERE device_id = ?")
     .run(req.user.id, device.id, device.id);
 
   // Notify the device via WebSocket
-  deviceNs.to(device.id).emit('device:paired', { device_id: device.id, name: deviceName });
+  deviceNs.to(device.id).emit('device:paired', { device_id: device.id, name: deviceName, settings_pin: settingsPin });
 
   const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(device.id);
   require('./lib/device-sanitize').stripDeviceSecrets(updated); // never leak device_token to clients

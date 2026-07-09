@@ -251,6 +251,9 @@ const migrations = [
   // register gate on its next reconnect (no restart). Hand-settable by direct SQLite:
   //   UPDATE devices SET blocked = 1 WHERE id = '<device_id>';  (0 to unblock)
   "ALTER TABLE devices ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0",
+  // settings_pin: 6-digit PIN for the in-app hidden settings menu, provisioned by
+  // the server during pairing so each device gets a unique PIN (never a hardcoded default).
+  "ALTER TABLE devices ADD COLUMN settings_pin TEXT",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.

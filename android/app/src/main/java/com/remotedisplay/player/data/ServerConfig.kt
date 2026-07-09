@@ -41,6 +41,20 @@ class ServerConfig(context: Context) {
         get() = prefs.getString("device_name", "Unnamed Display") ?: "Unnamed Display"
         set(value) = prefs.edit().putString("device_name", value).apply()
 
+    // Provisioned by the server during pairing — a unique 6-digit PIN for the hidden
+    // settings menu on each device. If the server doesn't send one (backward compat),
+    // generate a random PIN locally on first access so every device still has a unique gate.
+    var settingsPin: String
+        get() {
+            val stored = prefs.getString("settings_pin", null)
+            if (stored != null) return stored
+            // First access, no server-provided PIN — generate one locally
+            val generated = (100000..999999).random().toString()
+            prefs.edit().putString("settings_pin", generated).apply()
+            return generated
+        }
+        set(value) = prefs.edit().putString("settings_pin", value).apply()
+
     val isProvisioned: Boolean
         get() = deviceId.isNotEmpty() && serverUrl.isNotEmpty()
 
