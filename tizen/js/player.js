@@ -311,6 +311,9 @@ function ZoneRenderer(stageEl, getBase) {
 
 ZoneRenderer.prototype.setTimezone = function (tz) { this.timezone = tz || null; };
 ZoneRenderer.prototype.active = function () { return this.zones.length > 0; };
+// #162: drop the cached signature so the next render() repaints even if the layout is
+// unchanged — used when the shared #stage was blanked by the other (single-zone) renderer.
+ZoneRenderer.prototype.invalidate = function () { this.sig = ''; };
 
 ZoneRenderer.prototype.cancelAll = function () {
   for (var k in this.timers) { if (this.timers.hasOwnProperty(k) && this.timers[k]) clearTimeout(this.timers[k]); }

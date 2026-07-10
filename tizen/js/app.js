@@ -517,6 +517,7 @@
     stopHeartbeat();
     stopStreaming();
     try { player.stop(); } catch (e) {}
+    stageOwner = ''; // #162: stage cleared — next playlist must repaint
     if (registerTimer) { clearTimeout(registerTimer); registerTimer = null; }
     authenticated = false;
   }
@@ -526,6 +527,11 @@
   // Multi-zone layout renderer (matches the Android player). app.js picks the renderer
   // per playlist-update from payload.layout; the two never run at once.
   var zoneRenderer = new ZoneRenderer(elStage, function () { return serverUrl.replace(/\/+$/, ''); });
+  // #162: player and zoneRenderer SHARE the single #stage node. Track who currently owns it so we
+  // only blank the OTHER renderer when actually switching modes — never on a same-mode unchanged
+  // update, which (combined with each renderer's unchanged-sig short-circuit) used to leave the
+  // stage blank. '' = neither (idle/suspended/cold start).
+  var stageOwner = '';
   // Video-wall sync (mirrors the web player). Drives the single-zone player as leader or
   // follower. canEmit gates wall emits on auth+connection so a pre-register tick can't
   // trip device:auth-error (same guard rationale as the heartbeat).
@@ -576,6 +582,7 @@
         esc(payload.message || 'Display suspended') + '</h1><p class="sub">' +
         esc(payload.detail || '') + '</p></div>';
       show(elStage);
+      stageOwner = ''; // suspended card owns the stage; force a repaint when we resume
       return;
     }
     // A2: cache the last RENDERABLE payload so a reboot / WS-outage with no connectivity replays it
@@ -587,11 +594,15 @@
 
     if (payload.wall_config) {
       // Video wall: fullscreen content mapped into this screen's slice. No multi-zone,
-      // and no orientation transform — the wall geometry owns the stage.
-      zoneRenderer.clear();
+      // and no orientation transform — the wall geometry owns the stage. Wall renders via
+      // the single-zone player, so it OWNS the stage like 'player'.
+      // #162: only blank the zone renderer when switching away from it, and invalidate the
+      // player's sig so it repaints (see the single-zone branch for the full rationale).
+      if (stageOwner !== 'player') { zoneRenderer.clear(); player.invalidate(); }
       wallController.apply(payload.wall_config);
       player.setTimezone(payload.timezone || null);
       player.load(payload.assignments || []);
+      stageOwner = 'player';
       return;
     }
 
@@ -599,15 +610,23 @@
     applyOrientation(payload.orientation || 'landscape');
     var layout = payload.layout;
     if (layout && Array.isArray(layout.zones) && layout.zones.length) { // B3: non-array zones would throw in zoneRenderer
-      // Multi-zone layout (matches the Android player). Leave single-zone mode first.
-      player.stop();
+      // Multi-zone layout (matches the Android player). Leave single-zone mode first — but only
+      // when we were actually in it, else stopping the player blanks the shared #stage and the
+      // zone renderer's unchanged-sig guard then declines to repaint (#162).
+      if (stageOwner !== 'zones') { player.stop(); zoneRenderer.invalidate(); }
       zoneRenderer.setTimezone(payload.timezone || null); // #74/#75: effective tz
       zoneRenderer.render(layout, payload.assignments || []);
+      stageOwner = 'zones';
     } else {
-      // Fullscreen single zone. Leave any previous zone layout first.
-      zoneRenderer.clear();
+      // Fullscreen single zone. player & zoneRenderer SHARE #stage. Blanking the zone renderer on
+      // EVERY update and then hitting player.load()'s unchanged-sig `return` stranded the stage
+      // blank — permanent for a single looping item (no advance timer to self-heal) and firing
+      // ~every 60s on the heartbeat re-register (#162). Only blank the zone renderer when switching
+      // away from it, and invalidate the player's sig so it repaints on the switch.
+      if (stageOwner !== 'player') { zoneRenderer.clear(); player.invalidate(); }
       player.setTimezone(payload.timezone || null); // #74/#75: effective tz for schedule eval
       player.load(payload.assignments || []);
+      stageOwner = 'player';
     }
   }
 
