@@ -305,6 +305,11 @@ async function loadDevice(deviceId, activeTab = null) {
             <div class="info-card-label">${t('device.info.app_version')}</div>
             <div class="info-card-value small">${device.app_version || '--'}</div>
           </div>
+          <div class="info-card">
+            <div class="info-card-label">${t('device.info.settings_pin')}</div>
+            <div class="info-card-value small" style="font-family:monospace;letter-spacing:1px">${device.settings_pin || '--'}</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${t('device.info.settings_pin_hint')}</div>
+          </div>
           ` : ''}
           <div class="info-card">
             <div class="info-card-label">${t('device.info.screen_resolution')}</div>

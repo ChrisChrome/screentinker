@@ -267,6 +267,12 @@ const migrations = [
   // settings_pin: 6-digit PIN for the in-app hidden settings menu, provisioned by
   // the server during pairing so each device gets a unique PIN (never a hardcoded default).
   "ALTER TABLE devices ADD COLUMN settings_pin TEXT",
+  // Backfill a unique 6-digit PIN for already-paired devices that predate the
+  // settings_pin column (their next reconnect re-sends device:paired with it, so
+  // the existing fleet isn't locked out of the on-device menu). Idempotent: the
+  // IS NULL guard means it only ever touches un-provisioned rows. Unpaired rows
+  // (user_id IS NULL) are skipped — they get a PIN when they pair.
+  "UPDATE devices SET settings_pin = CAST(abs(random()) % 900000 + 100000 AS TEXT) WHERE settings_pin IS NULL AND user_id IS NOT NULL",
   // #150: fingerprint-keyed device settings that SURVIVE device-row deletion, so a
   // delete + re-pair (MDM churn) restores orientation/name/playlist/etc for the SAME
   // physical device instead of silently resetting to defaults. NO FK to devices -> it

@@ -253,6 +253,8 @@ export default {
   'device.info.uptime': 'Tiempo activo',
   'device.info.android_version': 'Versión de Android',
   'device.info.app_version': 'Versión de la app',
+  'device.info.settings_pin': 'PIN de ajustes',
+  'device.info.settings_pin_hint': 'Menú de ajustes del dispositivo (2× Atrás)',
   'device.info.screen_resolution': 'Resolución de pantalla',
   'device.info.ram': 'RAM',
   'device.info.cpu_usage': 'Uso de CPU',

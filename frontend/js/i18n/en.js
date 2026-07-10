@@ -296,6 +296,8 @@ export default {
   'device.info.uptime': 'Uptime',
   'device.info.android_version': 'Android Version',
   'device.info.app_version': 'App Version',
+  'device.info.settings_pin': 'Settings PIN',
+  'device.info.settings_pin_hint': 'On-device settings menu (2× Back)',
   'device.info.screen_resolution': 'Screen Resolution',
   'device.info.ram': 'RAM',
   'device.info.cpu_usage': 'CPU Usage',

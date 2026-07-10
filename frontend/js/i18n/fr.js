@@ -254,6 +254,8 @@ export default {
   'device.info.uptime': 'Disponibilité',
   'device.info.android_version': 'Version d\'Android',
   'device.info.app_version': 'Version de l\'app',
+  'device.info.settings_pin': 'Code PIN des réglages',
+  'device.info.settings_pin_hint': 'Menu des réglages sur l\'appareil (2× Retour)',
   'device.info.screen_resolution': 'Résolution',
   'device.info.ram': 'RAM',
   'device.info.cpu_usage': 'Utilisation CPU',
