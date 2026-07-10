@@ -5,6 +5,7 @@ const fs = require('fs');
 const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
+const liveness = require('../lib/liveness'); // v4 core pass: pure ack/liveness/identity helpers
 const commandQueue = require('../lib/command-queue');
 const reconnectThrottle = require('../lib/reconnect-throttle');
 const contentAckLimiter = require('../lib/content-ack-limiter');
@@ -15,6 +16,7 @@ const sessionSettle = require('../lib/session-settle');   // #148 patch2: evicti
 const { resolveIdentity } = require('../lib/device-identity');
 const logCoalescer = require('../lib/log-coalescer');
 const loopLag = require('../services/loop-lag');
+const deviceSettings = require('../lib/device-settings'); // #150 delete+re-pair settings restore
 
 // Debounce window for marking a device offline on socket disconnect. Brief
 // flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
@@ -253,6 +255,25 @@ function checkDeviceAccess(deviceId) {
   return { allowed: true };
 }
 
+// v4 core-pass helpers (module scope; db is a ready singleton at require time).
+const _deviceExistsStmt = db.prepare('SELECT 1 FROM devices WHERE id = ?');
+function deviceExists(id) { return !!(id && _deviceExistsStmt.get(id)); }
+const _identityReadStmt = db.prepare('SELECT client_type, client_version, platform, contract_version FROM devices WHERE id = ?');
+const _persistIdentityStmt = db.prepare('UPDATE devices SET client_type = ?, client_version = ?, platform = ?, contract_version = ? WHERE id = ?');
+function persistIdentity(deviceId, data) {
+  if (!deviceId) return;
+  // FIX 3: capture-don't-act; degrades to legacy/unknown for old clients; NEVER breaks register.
+  // A1 change-detection: only WRITE when the identity actually changed vs stored. A genuine
+  // reconnect with unchanged identity (the common case, incl. flapping / re-pair churn) does a cheap
+  // read and NO write — no UPDATE, no WAL churn. First provision (stored NULLs) and a real change
+  // (e.g. new client_version after an OTA) still write.
+  try {
+    const i = liveness.captureIdentity(data);
+    if (!liveness.identityChanged(_identityReadStmt.get(deviceId), i)) return; // unchanged — skip the write
+    _persistIdentityStmt.run(i.client_type, i.client_version, i.platform, i.contract_version, deviceId);
+  } catch (e) { /* identity capture must never break registration */ }
+}
+
 module.exports = function setupDeviceSocket(io) {
   // Expose helpers for use by route handlers
   module.exports.lastScreenshots = lastScreenshots;
@@ -396,7 +417,7 @@ module.exports = function setupDeviceSocket(io) {
                   pendingOfflines.delete(existing.device_id);
                 }
                 evictPriorSocket(existing.device_id, socket.id);
-                db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
+                db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now'), offline_reason = NULL, offline_reason_at = NULL, offline_detail = NULL WHERE id = ?")
                   .run(getClientIp(socket), existing.device_id);
                 socket.emit('device:registered', { device_id: existing.device_id, device_token: newToken, status: 'online' });
                 // If device was already claimed by a user, tell the player it's paired
@@ -409,9 +430,11 @@ module.exports = function setupDeviceSocket(io) {
                 }
                 currentDeviceId = existing.device_id;
                 heartbeat.registerConnection(existing.device_id, socket.id);
+                heartbeat.recordReconnect(existing.device_id);   // FIX 2: churn signal
+                persistIdentity(existing.device_id, data);       // FIX 3: identity capture
                 socket.join(existing.device_id);
                 logDeviceStatus(existing.device_id, 'online');
-                emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online' });
+                emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online', liveness: heartbeat.livenessFor(existing.device_id) });
                 // Flush any commands/playlist-updates queued while this device was offline.
                 commandQueue.flushQueue(deviceNs, existing.device_id, buildPlaylistPayload);
                 // Send playlist
@@ -508,7 +531,7 @@ module.exports = function setupDeviceSocket(io) {
           }
           evictPriorSocket(device_id, socket.id);
           sessionSettle.accepted(device_id);   // #148 patch2: (re)arm the settle window on an accepted connection
-          db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
+          db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now'), offline_reason = NULL, offline_reason_at = NULL, offline_detail = NULL WHERE id = ?")
             .run(getClientIp(socket), device_id);
 
           // #143: past the validateDeviceToken gate above the stored token is
@@ -526,6 +549,14 @@ module.exports = function setupDeviceSocket(io) {
           }
 
           heartbeat.registerConnection(device_id, socket.id);
+          // #134: a same-socket re-register is a playlist REFRESH (~45-60s), NOT a reconnect and NOT
+          // a new identity. Match the existing !isPlaylistRefresh gates (:486/:605): don't count it as
+          // churn (A2 — else healthy refreshers cross DEGRADED_RECONNECTS and show Degraded) and don't
+          // re-write identity (A1 — else a sync UPDATE + WAL churn every ~45-60s per device).
+          if (!isPlaylistRefresh) {
+            heartbeat.recordReconnect(device_id);     // genuine reconnect only
+            persistIdentity(device_id, data);         // change-detected write (see persistIdentity)
+          }
           socket.join(device_id);
           socket.emit('device:registered', { device_id, device_token: tokenToSend, status: 'online' });
           // #143: a device paired/claimed server-side (user_id set) that RECONNECTS must be told
@@ -632,7 +663,22 @@ module.exports = function setupDeviceSocket(io) {
         currentDeviceId = id;
         authenticated = true;
 
+        // #150: relink the fingerprint to the NEW device row (the fingerprint block above
+        // leaves device_id NULL on a post-delete re-pair) so the settings key is reliable,
+        // then restore any settings this physical device had at its last deletion —
+        // orientation/name/playlist/etc come back automatically instead of resetting. Runs
+        // BEFORE the dashboard:device-added emit below so that emit carries restored values.
+        if (fingerprint) {
+          try {
+            db.prepare("INSERT INTO device_fingerprints (fingerprint, device_id, last_seen) VALUES (?, ?, strftime('%s','now')) ON CONFLICT(fingerprint) DO UPDATE SET device_id = excluded.device_id, last_seen = excluded.last_seen")
+              .run(fingerprint, id);
+            const restored = deviceSettings.applyToDevice(id, fingerprint);
+            if (restored) console.log(`[#150] restored saved settings for re-paired device ${id} (fp ${fingerprint.slice(0, 8)}…)`);
+          } catch (e) { console.warn(`[#150] settings restore failed for ${id}: ${e.message}`); }
+        }
+
         heartbeat.registerConnection(id, socket.id);
+        persistIdentity(id, data);   // FIX 3: capture v4 identity on first provision (degrades for old clients)
         socket.join(id);
         socket.emit('device:registered', { device_id: id, device_token: newToken, status: 'provisioning' });
 
@@ -657,8 +703,16 @@ module.exports = function setupDeviceSocket(io) {
 
     // Heartbeat with telemetry
     socket.on('device:heartbeat', (data) => {
+      const { device_id, telemetry } = data || {};
+      // v4 PRIMARY + FIX 1 — UNIFORM ACK. Emitted from THIS single shared handler for every client
+      // type (APK / .wgt / /player hit the same handler = uniform by construction), and BEFORE the
+      // auth guard so a KNOWN device's watchdog stays armed even mid-reconnect (before this socket
+      // finishes re-registering). Anonymous / never-authenticated sockets are NOT acked (degrade-safe
+      // covers them). Old clients simply ignore the ack — harmless.
+      if (liveness.ackableHeartbeat(currentDeviceId, device_id, deviceExists)) {
+        socket.emit('device:heartbeat-ack', {}); // cheap, to the emitting socket only
+      }
       if (!requireDeviceAuth()) return;
-      const { device_id, telemetry } = data;
       if (!device_id || device_id !== currentDeviceId) return;
 
       currentDeviceId = device_id;
@@ -697,6 +751,7 @@ module.exports = function setupDeviceSocket(io) {
         emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', {
           device_id,
           status: 'online',
+          liveness: heartbeat.livenessFor(device_id), // FIX 2: server-derived 3-state (healthy/degraded/offline)
           telemetry
         });
       }
@@ -783,6 +838,21 @@ module.exports = function setupDeviceSocket(io) {
       if (!device_id || device_id !== currentDeviceId) return;
       db.prepare("UPDATE devices SET ota_status = ?, ota_target_version = ?, ota_attempts = ?, ota_updated_at = strftime('%s','now') WHERE id = ?")
         .run(ota_status ?? 'none', ota_target_version ?? null, ota_attempts ?? 0, device_id);
+    });
+
+    // Exit-signal contract v1 — the device's best-effort "last gasp": it announces its manner of death
+    // (crashed | clean_exit) as (usually) its final act. We record it; when the device then goes Offline
+    // the annotation is applied (else 'silent'). ADDITIVE — never touches offline detection. Cleared on
+    // (re)online (the register UPDATEs) so a stale reason can't mislabel a later death. The same canonical
+    // shape also arrives via the beacon POST /api/device/exit for reliable-on-unload delivery.
+    socket.on('device:exit', (data) => {
+      if (!requireDeviceAuth() || !currentDeviceId) return;
+      const { device_id, reason, detail } = data || {};
+      if (device_id && device_id !== currentDeviceId) return;                 // forged/mismatched -> no-op
+      const e = liveness.sanitizeExitReason(reason, detail);                  // unknown -> null -> falls to 'silent'
+      if (!e) return;
+      db.prepare("UPDATE devices SET offline_reason = ?, offline_reason_at = strftime('%s','now'), offline_detail = ? WHERE id = ?")
+        .run(e.reason, e.detail, currentDeviceId);
     });
 
     // Play event logging (proof-of-play)
@@ -908,10 +978,14 @@ module.exports = function setupDeviceSocket(io) {
         const activeNow = heartbeat.getConnection(deviceId);
         if (activeNow && activeNow.socketId !== closingSocketId) return;
 
-        db.prepare("UPDATE devices SET status = 'offline', updated_at = strftime('%s','now') WHERE id = ?").run(deviceId);
+        // Exit-signal contract: resolve manner-of-death. If the device announced a reason before dying
+        // (offline_reason non-NULL, set by device:exit/beacon this session), keep it; else -> 'silent'
+        // (no signal arrived). COALESCE makes this a pure annotation — offline detection is unchanged.
+        db.prepare("UPDATE devices SET status = 'offline', updated_at = strftime('%s','now'), offline_reason = COALESCE(offline_reason, 'silent'), offline_reason_at = COALESCE(offline_reason_at, strftime('%s','now')) WHERE id = ?").run(deviceId);
         heartbeat.removeConnection(deviceId);
         logDeviceStatus(deviceId, 'offline');
-        emitToDeviceWorkspace(dashboardNs, deviceId, 'dashboard:device-status', { device_id: deviceId, status: 'offline' });
+        const _off = db.prepare("SELECT offline_reason, offline_detail, client_type FROM devices WHERE id = ?").get(deviceId) || {};
+        emitToDeviceWorkspace(dashboardNs, deviceId, 'dashboard:device-status', { device_id: deviceId, status: 'offline', liveness: 'offline', offline_reason: _off.offline_reason || 'silent', offline_detail: _off.offline_detail || null, client_type: _off.client_type || null });
 
         // If this device was leading a wall, reassign leadership to the next
         // online member so playback stays driven.

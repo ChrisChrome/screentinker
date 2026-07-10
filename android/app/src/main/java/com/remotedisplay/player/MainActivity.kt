@@ -46,6 +46,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var config: ServerConfig
     private lateinit var contentCache: ContentCache
+    private lateinit var downloadCoordinator: com.remotedisplay.player.data.DownloadCoordinator
     private lateinit var screenshotCapture: ScreenshotCapture
     private lateinit var touchInjector: TouchInjector
 
@@ -138,6 +139,13 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         contentCache = ContentCache(this)
+        // Coordinated background downloads (single-flight + bounded pool + backoff) — reconnect-safe.
+        downloadCoordinator = com.remotedisplay.player.data.DownloadCoordinator(
+            cache = contentCache,
+            serverUrl = { config.serverUrl },
+            socketAlive = { wsService?.isConnected() == true },
+            onAck = { cid, status -> ackContentOnce(cid, status) }
+        )
         screenshotCapture = ScreenshotCapture()
         touchInjector = TouchInjector()
 
@@ -185,8 +193,17 @@ class MainActivity : AppCompatActivity() {
             // #74/#75: clear the last frame when going idle (else a now-filtered item lingers on screen)
             onPlaylistEmpty = { if (::mediaPlayer.isInitialized) mediaPlayer.stop(); showStatus(getString(R.string.waiting_for_content)) },
             onRequestRefresh = { wsService?.requestPlaylistRefresh() },
-            onNothingScheduled = { if (::mediaPlayer.isInitialized) mediaPlayer.stop(); showStatus(getString(R.string.nothing_scheduled)) }
+            onNothingScheduled = { if (::mediaPlayer.isInitialized) mediaPlayer.stop(); showStatus(getString(R.string.nothing_scheduled)) },
+            // Screen-resilience: the defined "waiting for content" state — ONLY on a fresh device
+            // with nothing to show yet (never while content is on screen; that path keeps current).
+            onWaitingForContent = { if (::mediaPlayer.isInitialized) mediaPlayer.stop(); showStatus(getString(R.string.waiting_for_content)) }
         )
+        // Screen-resilience: an item is playable only when its content is actually available —
+        // a widget, a remote stream, or a fully-downloaded local file. A not-yet/failed download is
+        // skipped (kept in the background) instead of blanking the screen on a loading state.
+        playlistController.setContentReadyCheck { item ->
+            item.isWidget || item.isRemote || contentCache.isContentCached(item.contentId)
+        }
 
         // Setup media player
         mediaPlayer = MediaPlayerManager(
@@ -493,31 +510,23 @@ class MainActivity : AppCompatActivity() {
 
                     // Skip remote URL content - it streams directly
                     if (!remoteUrl.isNullOrEmpty()) {
-                        wsService?.sendContentAck(contentId, "ready")
+                        ackContentOnce(contentId, "ready")
                         continue
                     }
 
-                    if (!contentCache.isContentCached(contentId)) {
-                        Log.i("MainActivity", "Downloading content: $filename")
-                        var downloaded = false
-                        for (attempt in 1..3) {
-                            val file = contentCache.downloadContent(config.serverUrl, contentId, filename)
-                            if (file != null) {
-                                wsService?.sendContentAck(contentId, "ready")
-                                downloaded = true
-                                break
-                            }
-                            Log.w("MainActivity", "Download attempt $attempt failed for $filename")
-                            if (attempt < 3) Thread.sleep(2000L * attempt)
-                        }
-                        if (!downloaded) wsService?.sendContentAck(contentId, "failed")
-                    }
+                    // Background download is now COORDINATED: single-flight per contentId + a bounded
+                    // pool + failure backoff. So a watchdog/ConnectionGuard reconnect mid-fetch can't
+                    // spawn a duplicate racing the .part, orphan/pile up threads, or storm a failing
+                    // URL. ensure() is non-blocking and idempotent: it re-acks cached content (SEED-A),
+                    // defers when the socket is down (watchdog owns recovery), respects backoff, and
+                    // downloads at most once. It acks ready/failed itself (deduped via onAck).
+                    downloadCoordinator.ensure(contentId, filename)
                 }
 
-                // Start or resume playback after downloads complete — but ONLY in
-                // single-zone/fullscreen mode. In multi-zone, ZoneManager drives each
-                // zone; restarting the fullscreen controller here made it keep playing
-                // items behind the zones (wasted work + phantom audio for videos).
+                // Start/resume playback immediately — do NOT wait on downloads (they're async now).
+                // Screen-resilience plays whatever is cached and skips not-yet-ready items; the 3s
+                // recheck swaps new content in once its download completes. Single-zone only; in
+                // multi-zone, ZoneManager drives each zone.
                 handler.post {
                     if (zoneManager?.hasZones() != true) playlistController.startIfNeeded()
                 }
@@ -529,6 +538,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         wsService?.onContentDelete = { contentId ->
+            downloadCoordinator.forget(contentId) // drop in-flight/backoff state so a re-add re-downloads
             contentCache.deleteContent(contentId)
             playlistController.removeContent(contentId)
             // Update cached playlist to reflect deletion
@@ -655,6 +665,9 @@ class MainActivity : AppCompatActivity() {
 
         wsService?.onRegistered = { _ ->
             hideStatus()
+            // Root-2 (SEED-B): a disconnect may have dropped in-flight content-acks. Clear the
+            // de-dup set so the next playlist-update re-acks all content and the CMS re-syncs.
+            ackedContent.clear()
         }
 
         wsService?.onUnpaired = {
@@ -666,6 +679,20 @@ class MainActivity : AppCompatActivity() {
                 })
                 finish()
             }
+        }
+    }
+
+    // Root-2 content-ack de-dup. Re-acking content state (SEED-A) fixes the CMS "stuck downloading"
+    // label, but we must not re-ack the same (content,status) every 60s playlist refresh. This set
+    // is cleared on each (re)registration (see onRegistered) so a reconnect re-acks everything the
+    // server may have missed while we were disconnected (SEED-B), but is quiet within a session.
+    private val ackedContent = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    private fun ackContentOnce(contentId: String, status: String) {
+        if (ackedContent.add("$contentId:$status")) {
+            // a status change for this content supersedes the opposite one
+            ackedContent.remove("$contentId:${if (status == "ready") "failed" else "ready"}")
+            wsService?.sendContentAck(contentId, status)
         }
     }
 
@@ -704,22 +731,17 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // Local content - download if not cached
+        // Local content - play from cache. Screen-resilience: the controller only advances to
+        // items whose content is READY, so reaching here uncached is a rare race (e.g. the file
+        // was evicted between selection and play). NEVER blank or show a "Downloading…" screen —
+        // keep whatever is on screen and move on; the background download loop (onPlaylistUpdate)
+        // fetches it and it plays once fully + validly downloaded. Content update is a BACKGROUND
+        // operation; we only ever SWAP to fully-downloaded content.
         val file = contentCache.getCachedFile(item.contentId)
         if (file == null) {
-            Log.w("MainActivity", "Content not cached: ${item.contentId}, downloading...")
-            showStatus("Downloading ${item.filename}...")
-            thread {
-                val downloaded = contentCache.downloadContent(config.serverUrl, item.contentId, item.filename)
-                handler.post {
-                    if (downloaded != null) {
-                        playFile(item, downloaded)
-                    } else {
-                        showStatus("Download failed: ${item.filename}")
-                        handler.postDelayed({ playlistController.next() }, 3000)
-                    }
-                }
-            }
+            Log.i("MainActivity", "Content not ready at play time (${item.filename}) — keeping screen, advancing (bg download continues)")
+            downloadCoordinator.ensure(item.contentId, item.filename) // ensure it's being fetched (single-flight)
+            handler.post { playlistController.next() }
             return
         }
 
@@ -1025,6 +1047,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         remoteStreaming = false
+        if (::downloadCoordinator.isInitialized) downloadCoordinator.shutdown() // cancel in-flight downloads (no orphan/leak)
         zoneManager?.cleanup()
         if (::pipOverlay.isInitialized) pipOverlay.clear(null) // #109: tear down overlay WebView
         if (::mediaPlayer.isInitialized) {

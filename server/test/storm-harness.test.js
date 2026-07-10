@@ -64,8 +64,10 @@ test('storm: bloated-table sweep + flapper + OTA flood — loop stays responsive
   clearInterval(ticker);
 
   // 1) THE REAL INVARIANT — NO multi-second freeze. The old whole-table sort would
-  //    freeze the ticker for tens of seconds here.
-  assert.ok(maxGap < 300, `loop never froze — max event-loop gap ${maxGap}ms (was 40-48s pre-fix)`);
+  //    freeze the ticker for tens of seconds here (40-48s). The bar catches that while
+  //    tolerating shared-CI-runner noise — the intent is "not seconds", not a sub-300ms SLA
+  //    (a strict bar flakes under runner contention/GC, e.g. an observed 417ms on a healthy prune).
+  assert.ok(maxGap < 1500, `loop never froze — max event-loop gap ${maxGap}ms (was 40-48s pre-fix)`);
   // #146 P3.9: the exact tick count is environment-timing-sensitive; assert only that
   // the ticker sampled enough to have MEASURED a real gap (>=2), not a brittle count.
   assert.ok(ticks >= 2, `ticker sampled the run (${ticks} ticks) — max-gap measurement is meaningful`);

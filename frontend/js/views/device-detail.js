@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { on, off, requestScreenshot, startRemote, stopRemote, sendTouch, sendKey, sendCommand } from '../socket.js';
 import { showToast } from '../components/toast.js';
-import { esc } from '../utils.js';
+import { esc, livenessBadge } from '../utils.js';
 import { t, tn } from '../i18n.js';
 
 let currentDevice = null;
@@ -68,8 +68,10 @@ export function render(container, deviceId) {
     if (data.device_id !== deviceId) return;
     const badge = document.querySelector('.device-status-badge');
     if (badge) {
-      badge.className = `device-status-badge ${data.status}`;
-      badge.textContent = data.status;
+      const b = livenessBadge(data); // v4: 3-state liveness when present, else binary status
+      badge.className = `device-status-badge ${b.state}`;
+      badge.textContent = b.label;
+      badge.title = b.title || ''; // exit-reason hover (empty for non-offline / no-reason)
     }
     if (data.telemetry) updateTelemetryDisplay(data.telemetry);
   };
@@ -149,7 +151,7 @@ async function loadDevice(deviceId, activeTab = null) {
       <div class="device-header">
         <div class="device-header-left">
           <h1 id="deviceName">${device.name}</h1>
-          <span class="device-status-badge ${device.status}">${device.status}</span>
+          ${(() => { const b = livenessBadge(device); return `<span class="device-status-badge ${b.state}"${b.title ? ` title="${esc(b.title)}"` : ''}>${esc(b.label)}</span>`; })()}
           ${device.owner_name || device.owner_email ? `<span style="font-size:12px;color:var(--text-muted)">${t('device.owner_label', { owner: device.owner_name || device.owner_email })}</span>` : ''}
         </div>
         <div style="display:flex;gap:8px">
@@ -370,6 +372,7 @@ async function loadDevice(deviceId, activeTab = null) {
             <textarea id="deviceNotes" class="input" rows="3" placeholder="${t('device.form.notes_placeholder')}" style="resize:vertical">${esc(device.notes || '')}</textarea>
           </div>
           <button class="btn btn-secondary btn-sm" id="saveNotesBtn">${t('device.form.save_settings')}</button>
+          <button class="btn btn-secondary btn-sm" id="reAdoptBtn" style="margin-left:8px" title="${t('device.readopt.button_hint')}">${t('device.readopt.button')}</button>
         </div>
 
         <div style="margin-top:20px">
@@ -644,7 +647,100 @@ function showDevicePreview(device) {
   });
 }
 
-async function setupActions(device) {
+// #150 re-adopt fallback: browse the workspace's previously-removed device snapshots and
+// apply one onto THIS (usually blank, just-re-paired) device. Primary restore is the silent
+// fingerprint-match on re-pair; this is for factory-reset / new-hardware / changed-fingerprint.
+const ORIENT_LABELS = {
+  'landscape': 'device.form.orientation.landscape',
+  'portrait': 'device.form.orientation.portrait',
+  'landscape-flipped': 'device.form.orientation.landscape_flipped',
+  'portrait-flipped': 'device.form.orientation.portrait_flipped',
+};
+const orientLabel = (o) => t(ORIENT_LABELS[o] || ORIENT_LABELS.landscape);
+const fmtTs = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : '—');
+
+async function showReAdoptModal(device) {
+  let snapshots, playlists;
+  try {
+    [snapshots, playlists] = await Promise.all([
+      api.getRemovedDevices(),
+      api.getPlaylists().catch(() => []),   // best-effort: only used to label the restored playlist
+    ]);
+  } catch (err) { showToast(err.message || t('device.readopt.error'), 'error'); return; }
+
+  const plById = new Map((playlists || []).map(p => [p.id, p.name]));
+  const playlistLabel = (s) => !s.playlist_id
+    ? t('device.readopt.playlist_none')
+    : (plById.get(s.playlist_id) || t('device.readopt.playlist_removed'));
+
+  const rowsHtml = (snapshots || []).map((s, i) => {
+    const blockedBadge = s.blocked
+      ? `<span style="background:var(--danger,#dc2626);color:#fff;padding:1px 7px;border-radius:4px;font-size:11px;margin-left:8px;vertical-align:middle">${t('device.readopt.blocked')}</span>`
+      : '';
+    // Fingerprint is the key but not an operator-facing identifier — truncated + on-hover only.
+    const fpShort = (s.fingerprint || '').slice(0, 8);
+    return `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:12px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600">${esc(s.device_name || t('device.readopt.unnamed'))}${blockedBadge}</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:3px">
+            ${t('device.readopt.summary_orientation')}: ${esc(orientLabel(s.orientation))}
+            &nbsp;·&nbsp; ${t('device.readopt.summary_timezone')}: ${esc(s.timezone || 'UTC')}
+            &nbsp;·&nbsp; ${t('device.readopt.summary_playlist')}: ${esc(playlistLabel(s))}
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:3px" title="fp ${esc(fpShort)}…">
+            ${t('device.readopt.last_seen')}: ${esc(fmtTs(s.last_seen))} &nbsp;·&nbsp; ${t('device.readopt.removed')}: ${esc(fmtTs(s.removed_at))}
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm readopt-apply" data-i="${i}">${t('device.readopt.apply')}</button>
+      </div>`;
+  }).join('');
+
+  const emptyHtml = `<div style="text-align:center;color:var(--text-muted);padding:36px 12px">${t('device.readopt.empty')}</div>`;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:600px;width:95vw">
+      <div class="modal-header">
+        <h3>${t('device.readopt.title')}</h3>
+        <button class="btn-icon" id="readoptClose">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p style="color:var(--text-muted);font-size:13px;margin-top:0">${t('device.readopt.help', { name: esc(device.name || '') })}</p>
+        ${(snapshots && snapshots.length) ? rowsHtml : emptyHtml}
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('#readoptClose').onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+  overlay.querySelectorAll('.readopt-apply').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const s = snapshots[parseInt(btn.dataset.i, 10)];
+      let msg = t('device.readopt.confirm', { source: s.device_name || t('device.readopt.unnamed'), target: device.name || '' });
+      if (s.blocked) msg += '\n\n⚠ ' + t('device.readopt.confirm_blocked');   // explicit: target will go dark
+      if (!confirm(msg)) return;
+      btn.disabled = true;
+      try {
+        await api.reAdoptDevice(device.id, s.fingerprint);
+        showToast(t('device.readopt.success', { orientation: orientLabel(s.orientation) }), 'success');
+        close();
+        loadDevice(device.id);   // refresh so restored orientation/name/etc show immediately
+      } catch (err) {
+        // Server messages: 404 no snapshot, 403 cross-workspace, 400 bad request.
+        showToast(err.message || t('device.readopt.error'), 'error');
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+function setupActions(device) {
   // #104 Preview button
   document.getElementById('devicePreviewBtn')?.addEventListener('click', () => showDevicePreview(device));
 
@@ -669,9 +765,11 @@ async function setupActions(device) {
     }
   });
 
-  // Populate default content dropdown
-  try {
-    const content = await api.getContent();
+  // Populate default content dropdown (async, non-blocking — same .then() pattern as the
+  // playlist picker below). setupActions is a SYNCHRONOUS function; awaiting here made the whole
+  // file fail to parse ("Unexpected reserved word") AND would have deferred every listener below
+  // (save, #150 re-adopt, delete) until this fetch resolved. .then() keeps them registering immediately.
+  api.getContent().then(content => {
     const defaultSelect = document.getElementById('deviceDefaultContent');
     if (defaultSelect) {
       content.forEach(c => {
@@ -681,7 +779,7 @@ async function setupActions(device) {
         defaultSelect.appendChild(opt);
       });
     }
-  } catch {}
+  }).catch(() => {});
 
   // Save settings (notes + orientation + default content)
   // Debug logging toggle: sends a transient set_debug command to the device and
@@ -705,6 +803,10 @@ async function setupActions(device) {
       showToast(err.message, 'error');
     }
   });
+
+  // #150 re-adopt: apply a previously-removed device's saved settings onto THIS device (the
+  // fallback for when the fingerprint changed and automatic restore couldn't fire).
+  document.getElementById('reAdoptBtn')?.addEventListener('click', () => showReAdoptModal(device));
 
   // Publish / Discard from device detail
   const devicePublishBtn = document.getElementById('devicePublishBtn');

@@ -263,6 +263,9 @@ body {
 .status-dot.online { background: var(--success); box-shadow: 0 0 6px var(--success); }
 .status-dot.offline { background: var(--danger); }
 .status-dot.provisioning { background: var(--warning); animation: pulse 2s infinite; }
+/* v4 liveness (server-derived): healthy=green, degraded=amber+pulse (reconnecting), offline=red (above) */
+.status-dot.healthy { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.status-dot.degraded { background: var(--warning); box-shadow: 0 0 6px var(--warning); animation: pulse 2s infinite; }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -417,6 +420,19 @@ body {
   border-radius: 20px;
   font-size: 11px;
   font-weight: 500;
+}
+/* Device cards render the reused liveness pill (.device-status-badge from device-detail), which brings
+   its own bg/padding/shape — so neutralize the dark wrapper for those. Wall cards keep the dark pill
+   above for their "NxN wall" label (they share .device-card-status but have no .is-liveness). */
+.device-card-status.is-liveness {
+  background: none;
+  backdrop-filter: none;
+  padding: 0;
+  border-radius: 0;
+}
+/* Lift the list pill off the screenshot so it stays legible over any image. */
+.device-card-status.is-liveness .device-status-badge {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.6);
 }
 
 .device-card-select {
@@ -803,6 +819,9 @@ body {
 .device-status-badge.online { background: var(--success-dim); color: var(--success); }
 .device-status-badge.offline { background: var(--danger-dim); color: #fca5a5; }
 .device-status-badge.provisioning { background: var(--warning-dim); color: var(--warning); }
+/* v4 liveness (server-derived): healthy=green, degraded=amber (reconnecting), offline reuses .offline above */
+.device-status-badge.healthy { background: var(--success-dim); color: var(--success); }
+.device-status-badge.degraded { background: var(--warning-dim); color: var(--warning); }
 
 .tabs {
   display: flex;

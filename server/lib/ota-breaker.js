@@ -59,6 +59,13 @@ function cmpParsed(a, b) {
 }
 function cmp(a, b) { const pa = parseVer(a), pb = parseVer(b); return (!pa || !pb) ? null : cmpParsed(pa, pb); }
 
+// A '-patchN' suffix (e.g. 1.9.2-patch3) was the LEGACY release scheme — a shipped PRODUCTION patch,
+// not a prerelease. Semver parses it into `pre`, but for OTA it must count as RELEASED so the
+// superseded-prerelease guard below doesn't strand the old fleet: a 1.9.2-patchN device must still be
+// offered a newer stable core (1.9.3). Genuine prereleases (-beta/-rc/-alpha) keep prerelease
+// semantics. (Clean semver going forward emits no -patchN, so this only matters for the transition.)
+function isReleased(p) { return p.pre === null || /^patch\d+$/i.test(p.pre); }
+
 // decide(clientVersion, latestVersion, deviceId?, now?) ->
 //   { update_available, reason, retry_after_seconds?, log? }
 function decide(clientVersion, latestVersion, deviceId = null, now = Date.now()) {
@@ -69,7 +76,7 @@ function decide(clientVersion, latestVersion, deviceId = null, now = Date.now())
   const full = cmpParsed(pc, pl);
   if (full === 0) return { update_available: false, reason: 'up-to-date' };
   if (full > 0) return { update_available: false, reason: 'client-newer' };       // never offer a downgrade
-  if (pc.pre !== null && coreCmp(pc, pl) < 0) {                                    // superseded old-core prerelease (e.g. 1.9.1-beta4)
+  if (!isReleased(pc) && coreCmp(pc, pl) < 0) {                                    // GENUINE superseded old-core prerelease (e.g. 1.9.1-beta4) — a -patchN release is NOT one, so it still gets offered
     return { update_available: false, reason: 'superseded-prerelease', log: logOnce(clientVersion, `[ota] superseded prerelease '${clientVersion}' (older core than latest=${latestVersion}) — no offer`) };
   }
 

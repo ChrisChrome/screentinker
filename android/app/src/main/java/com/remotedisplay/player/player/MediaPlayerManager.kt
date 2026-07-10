@@ -46,6 +46,14 @@ class MediaPlayerManager(
                         onVideoComplete()
                     }
                 }
+                // Root-2: a corrupt/undecodable video used to freeze the playlist forever — only
+                // STATE_ENDED advanced, and an error goes to STATE_IDLE, so onVideoComplete never
+                // fired. Treat a playback error like a completion so the loop moves on instead of
+                // wedging on the broken item (mirrors the web/.wgt onerror -> advance).
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    Log.e("MediaPlayerManager", "Playback error (${error.errorCodeName}) — advancing: ${error.message}")
+                    onVideoComplete()
+                }
             })
         }
     }

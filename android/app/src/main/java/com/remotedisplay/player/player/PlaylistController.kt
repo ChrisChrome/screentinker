@@ -31,8 +31,13 @@ class PlaylistController(
     private val onItemChanged: (PlaylistItem?) -> Unit,
     private val onPlaylistEmpty: () -> Unit,
     private val onRequestRefresh: (() -> Unit)? = null,
-    private val onNothingScheduled: (() -> Unit)? = null
+    private val onNothingScheduled: (() -> Unit)? = null,
+    // Screen-resilience: the defined "content isn't downloaded yet" waiting state, shown ONLY when
+    // nothing has ever played (fresh device). Never used while content is on screen.
+    private val onWaitingForContent: (() -> Unit)? = null
 ) {
+    private companion object { const val CONTENT_RECHECK_MS = 3000L }
+
     private val items = mutableListOf<PlaylistItem>()
     private var currentIndex = -1
     private val handler = Handler(Looper.getMainLooper())
@@ -41,6 +46,14 @@ class PlaylistController(
     // #74/#75: per-item scheduling state
     @Volatile private var effectiveTimezone: String? = null
     private var retryRunnable: Runnable? = null
+
+    // Screen-resilience: an item is playable only when its content is actually AVAILABLE
+    // (widget / remote-stream / fully-downloaded local file). Injected by MainActivity (which owns
+    // the cache); the default keeps every item playable so behavior is unchanged until it's set.
+    private var contentReady: (PlaylistItem) -> Boolean = { true }
+    fun setContentReadyCheck(f: (PlaylistItem) -> Boolean) { contentReady = f }
+    // True while a valid item is rendered on screen — so we NEVER blank it for a pending download.
+    private var hasContentOnScreen = false
 
     // Video wall: followers don't self-advance — the leader's wall:sync drives the index.
     private var wallFollower = false
@@ -149,9 +162,13 @@ class PlaylistController(
                 }
             }
             // Current item was removed or nothing was playing - start from the first
-            // schedule-active item; idle if none are active right now.
-            val idx = firstActiveIndex()
-            if (idx >= 0) { currentIndex = idx; playCurrentItem() } else showNothingScheduled()
+            // schedule-active AND downloaded item. Distinguish the two idle reasons: daypart
+            // closed (nothing scheduled) => defined idle; scheduled-but-not-yet-downloaded =>
+            // keep current content / waiting, never blank.
+            val fp = PlaylistSelection.firstPlayableIndex(items.size) { playableNow(it) }
+            if (fp >= 0) { currentIndex = fp; playCurrentItem() }
+            else if (firstActiveIndex() < 0) showNothingScheduled()
+            else onContentNotReady()
         } else {
             currentIndex = 0
         }
@@ -174,11 +191,12 @@ class PlaylistController(
     fun start() {
         isRunning = true
         if (items.isEmpty()) { onPlaylistEmpty(); return }
-        // #74/#75: begin on the first schedule-active item; idle if none.
-        val idx = firstActiveIndex()
-        if (idx < 0) { showNothingScheduled(); return }
-        currentIndex = idx
-        playCurrentItem()
+        // #74/#75: begin on the first schedule-active item; daypart-closed => defined idle.
+        if (firstActiveIndex() < 0) { showNothingScheduled(); return }
+        // Screen-resilience: only start on an item whose content is downloaded; if the scheduled
+        // content isn't ready yet, keep current/wait (never blank on a loading state).
+        val idx = PlaylistSelection.firstPlayableIndex(items.size) { playableNow(it) }
+        if (idx >= 0) { currentIndex = idx; playCurrentItem() } else onContentNotReady()
     }
 
     fun startIfNeeded() {
@@ -200,17 +218,21 @@ class PlaylistController(
         isRunning = false
         cancelAdvance()
         cancelRetry()
+        hasContentOnScreen = false
     }
 
     fun next() {
         if (items.isEmpty()) return
         // Request a playlist refresh between plays so new content gets picked up
         onRequestRefresh?.invoke()
-        // #74/#75: advance to the next item the schedule allows now; idle if none.
-        val idx = nextActiveIndex(currentIndex)
-        if (idx < 0) { showNothingScheduled(); return }
-        currentIndex = idx
-        playCurrentItem()
+        // #74/#75: daypart closed (nothing scheduled now) => defined idle.
+        if (firstActiveIndex() < 0) { showNothingScheduled(); return }
+        // Screen-resilience: advance to the next schedule-active AND downloaded item. Unready items
+        // are SKIPPED (their background download continues), so a stalled/failed download of the
+        // next content never blanks the screen — we keep looping the content we already have. If
+        // NOTHING is downloaded yet, keep current content / show the waiting state, never blank.
+        val idx = PlaylistSelection.nextPlayableIndex(items.size, currentIndex) { playableNow(it) }
+        if (idx >= 0) { currentIndex = idx; playCurrentItem() } else onContentNotReady()
     }
 
     fun onVideoComplete() {
@@ -227,6 +249,7 @@ class PlaylistController(
         itemStartedAt = System.currentTimeMillis()
         Log.i("PlaylistController", "Playing: ${item.filename} (index $currentIndex)")
         onItemChanged(item)
+        hasContentOnScreen = true // a valid item is now rendered — protect it from being blanked
 
         // For images and widgets, auto-advance after duration. For videos, wait
         // for the completion callback. Wall followers never auto-advance — the
@@ -257,6 +280,40 @@ class PlaylistController(
         item.schedules.isEmpty() ||
             ScheduleEval.isItemActiveNow(item.schedules, System.currentTimeMillis(), effectiveTimezone)
 
+    // Playable NOW = schedule-active AND its content is downloaded/available.
+    private fun playableNow(i: Int): Boolean =
+        i in items.indices && scheduleAllows(items[i]) && contentReady(items[i])
+
+    // Screen-resilience: the scheduled item(s) exist but their content isn't downloaded yet.
+    // NEVER blank a screen that is already showing content — keep it and re-check soon (the
+    // background download finishes, or the watchdog restores connectivity). Only show the defined
+    // waiting/setup state on a fresh device that has never played anything.
+    private fun onContentNotReady() {
+        cancelAdvance()
+        when (PlaylistSelection.whenNonePlayable(hasContentOnScreen)) {
+            PlaylistSelection.NonePlayable.KEEP_CURRENT -> { /* leave current content on screen */ }
+            PlaylistSelection.NonePlayable.SHOW_WAITING -> {
+                hasContentOnScreen = false
+                (onWaitingForContent ?: onNothingScheduled ?: onPlaylistEmpty)()
+            }
+        }
+        scheduleContentRecheck()
+    }
+
+    // Re-evaluate playability shortly (a pending download may have finished / a daypart opened).
+    // Faster than the schedule re-check because a finished download should play promptly.
+    private fun scheduleContentRecheck() {
+        cancelRetry()
+        retryRunnable = Runnable {
+            if (isRunning && items.isNotEmpty()) {
+                if (firstActiveIndex() < 0) { showNothingScheduled(); return@Runnable }
+                val idx = PlaylistSelection.nextPlayableIndex(items.size, currentIndex) { playableNow(it) }
+                if (idx >= 0) { currentIndex = idx; playCurrentItem() } else onContentNotReady()
+            }
+        }
+        handler.postDelayed(retryRunnable!!, CONTENT_RECHECK_MS)
+    }
+
     private fun firstActiveIndex(): Int {
         for (i in items.indices) if (scheduleAllows(items[i])) return i
         return -1
@@ -275,6 +332,7 @@ class PlaylistController(
     // daypart may open. (Boundary re-evaluation otherwise happens on advance.)
     private fun showNothingScheduled() {
         cancelAdvance()
+        hasContentOnScreen = false // the daypart genuinely closed — a defined idle, not a blank-bug
         (onNothingScheduled ?: onPlaylistEmpty)()
         cancelRetry()
         retryRunnable = Runnable {

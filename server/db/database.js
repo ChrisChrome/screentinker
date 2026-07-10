@@ -88,6 +88,19 @@ const migrations = [
   'ALTER TABLE content ADD COLUMN team_id TEXT',
   // Device notes
   'ALTER TABLE devices ADD COLUMN notes TEXT',
+  // v4 core pass — client identity capture (capture-don't-act; degrades to legacy/unknown for old
+  // pre-v4 clients that send no identity block). No logic is built on these yet.
+  'ALTER TABLE devices ADD COLUMN client_type TEXT',
+  'ALTER TABLE devices ADD COLUMN client_version TEXT',
+  'ALTER TABLE devices ADD COLUMN platform TEXT',
+  'ALTER TABLE devices ADD COLUMN contract_version TEXT',
+  // Exit-signal contract v1 — manner-of-death annotation on Offline (additive; NEVER alters offline
+  // detection). offline_reason: 'crashed'|'clean_exit' (client-sent via device:exit / beacon) or
+  // 'silent' (server-inferred when no signal arrived). Cleared on (re)online so it's always this
+  // session's. offline_detail: optional crash message / lifecycle-hook name.
+  'ALTER TABLE devices ADD COLUMN offline_reason TEXT',
+  'ALTER TABLE devices ADD COLUMN offline_reason_at INTEGER',
+  'ALTER TABLE devices ADD COLUMN offline_detail TEXT',
   // Email settings on users
   "ALTER TABLE users ADD COLUMN email_alerts INTEGER DEFAULT 1",
   // Content folders
@@ -254,6 +267,26 @@ const migrations = [
   // settings_pin: 6-digit PIN for the in-app hidden settings menu, provisioned by
   // the server during pairing so each device gets a unique PIN (never a hardcoded default).
   "ALTER TABLE devices ADD COLUMN settings_pin TEXT",
+  // #150: fingerprint-keyed device settings that SURVIVE device-row deletion, so a
+  // delete + re-pair (MDM churn) restores orientation/name/playlist/etc for the SAME
+  // physical device instead of silently resetting to defaults. NO FK to devices -> it
+  // survives the delete cascade. workspace_id/device_name/last_seen/removed_at form the
+  // human-readable index the operator "re-adopt" flow browses when the fingerprint changed.
+  `CREATE TABLE IF NOT EXISTS device_settings (
+    fingerprint         TEXT PRIMARY KEY,
+    workspace_id        TEXT,
+    device_name         TEXT,
+    orientation         TEXT,
+    timezone            TEXT,
+    notes               TEXT,
+    default_content_id  TEXT,
+    layout_id           TEXT,
+    playlist_id         TEXT,
+    blocked             INTEGER,
+    team_id             TEXT,
+    last_seen           INTEGER,
+    removed_at          INTEGER
+  )`,
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.
