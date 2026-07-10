@@ -110,6 +110,11 @@ class SetupActivity : AppCompatActivity() {
             })
         }
 
+        // Default launcher / HOME: a kiosk MUST be the default launcher, else Android returns to the
+        // stock launcher and tears down + recreates the player on a loop (it never renders). Request
+        // the HOME role (clean system dialog on API 29+); fall back to the Home-app picker in Settings.
+        findViewById<Button>(R.id.enableLauncherBtn).setOnClickListener { promptSetDefaultLauncher() }
+
         // Launch-on-boot needs USE_FULL_SCREEN_INTENT, which Android 14+ auto-revokes
         // for non-calling apps — so the boot full-screen launcher silently fails until
         // the user grants it. Older versions auto-grant it, so only show the row where
@@ -214,9 +219,41 @@ class SetupActivity : AppCompatActivity() {
         overlayStatus.setTextColor(if (canOverlay) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
         enableOverlayBtn.visibility = if (canOverlay) View.GONE else View.VISIBLE
 
+        // Default launcher (HOME): kiosk foreground stability requires being the default launcher.
+        val isDefaultHome = isDefaultLauncher()
+        val launcherStatus = findViewById<TextView>(R.id.launcherStatus)
+        launcherStatus.text = if (isDefaultHome) "ON" else "OFF"
+        launcherStatus.setTextColor(if (isDefaultHome) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
+        findViewById<Button>(R.id.enableLauncherBtn).visibility = if (isDefaultHome) View.GONE else View.VISIBLE
+
         // Update continue button text
         val allGood = accessibilityEnabled && canInstall
         continueBtn.text = if (allGood) "Continue to Setup" else "Continue Anyway"
+    }
+
+    private fun isDefaultLauncher(): Boolean {
+        val ri = packageManager.resolveActivity(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+            PackageManager.MATCH_DEFAULT_ONLY
+        )
+        return ri?.activityInfo?.packageName == packageName
+    }
+
+    private fun promptSetDefaultLauncher() {
+        // Android 10+ (Q): request the HOME role — a clean one-tap system dialog.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val rm = getSystemService(android.app.role.RoleManager::class.java)
+                if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_HOME) &&
+                    !rm.isRoleHeld(android.app.role.RoleManager.ROLE_HOME)) {
+                    startActivityForResult(rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_HOME), 200)
+                    return
+                }
+            } catch (_: Exception) { /* fall through to the settings picker */ }
+        }
+        // Fallback: open the "Home app" picker in Settings (works on every version / OEM).
+        try { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) }
+        catch (_: Exception) { try { startActivity(Intent(Settings.ACTION_SETTINGS)) } catch (_: Exception) {} }
     }
 
     private fun isAccessibilityEnabled(): Boolean {

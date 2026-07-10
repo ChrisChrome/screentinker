@@ -18,6 +18,14 @@ object DebugLog {
     fun w(tag: String, msg: String) { Log.w(tag, msg); send(tag, "w", msg) }
     fun e(tag: String, msg: String) { Log.e(tag, msg); send(tag, "e", msg) }
 
+    /**
+     * Verbose diagnostics for hot paths (per-recheck cache probes, per-item download decisions).
+     * Emitted to logcat AND streamed to the dashboard ONLY while remote debug is enabled — completely
+     * silent otherwise, so it never spams logcat in production. Use for the deep "why isn't it
+     * playing / downloading" trace an operator turns on from device-detail live debug.
+     */
+    fun v(tag: String, msg: String) { if (!enabled) return; Log.i(tag, msg); send(tag, "i", msg) }
+
     private fun send(tag: String, level: String, msg: String) {
         if (!enabled) return
         try { sink?.invoke(tag, level, msg) } catch (_: Throwable) {}

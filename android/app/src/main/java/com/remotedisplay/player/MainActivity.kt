@@ -88,6 +88,17 @@ class MainActivity : AppCompatActivity() {
             bound = true
             setupServiceCallbacks()
             wsService?.connect()
+            // If the service is ALREADY connected+registered when we bind (MainActivity relaunched
+            // via CLEAR_TASK right after a re-pair/reclaim, so the onRegistered that clears the boot
+            // "Connecting to server…" status fired before this Activity existed), catch the UI up by
+            // pulling a fresh playlist — its update drives the real status (playing / waiting-for-
+            // content / nothing-scheduled), replacing the stale "Connecting to server…". Without this
+            // a fully-online device could sit on "Connecting to server…" indefinitely. We keep the
+            // boot status until the playlist arrives (no blank screen) rather than blindly hiding it.
+            if (wsService?.isConnected() == true && !playlistController.isPlaying) {
+                ackedContent.clear()
+                wsService?.requestPlaylistRefresh()
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -506,7 +517,11 @@ class MainActivity : AppCompatActivity() {
                     val contentId = if (item.isNull("content_id")) "" else item.optString("content_id", "")
                     if (contentId.isEmpty()) continue
                     val filename = item.optString("filename", "content")
-                    val remoteUrl = item.optString("remote_url", null)
+                    // org.json's optString(key, null) returns the STRING "null" when the value is JSON
+                    // null (not the fallback) — so a local item with "remote_url": null was being
+                    // misclassified as a remote stream, ack'd "ready", and NEVER downloaded, stranding
+                    // the screen on "waiting for content". Guard with isNull() like widget_id/content_id above.
+                    val remoteUrl = if (item.isNull("remote_url")) null else item.optString("remote_url", null)
 
                     // Skip remote URL content - it streams directly
                     if (!remoteUrl.isNullOrEmpty()) {
@@ -671,11 +686,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         wsService?.onUnpaired = {
-            Log.w("MainActivity", "Device removed from server, going to provisioning")
+            Log.w("MainActivity", "Device removed from server, going to provisioning for re-pair")
             config.clearPlaylistCache()
             handler.post {
                 startActivity(Intent(this, ProvisioningActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    // Tell provisioning this is a server-initiated re-pair (known-good URL) so it
+                    // shows a "waiting for re-pair" status + the code instead of the URL entry.
+                    putExtra("EXTRA_REPAIR", true)
                 })
                 finish()
             }

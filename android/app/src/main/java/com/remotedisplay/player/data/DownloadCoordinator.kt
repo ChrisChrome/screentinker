@@ -2,6 +2,7 @@ package com.remotedisplay.player.data
 
 import android.os.SystemClock
 import android.util.Log
+import com.remotedisplay.player.util.DebugLog
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
@@ -50,11 +51,12 @@ class DownloadCoordinator(
      */
     fun ensure(contentId: String, filename: String) {
         if (contentId.isEmpty()) return
-        if (cache.isContentCached(contentId)) { onAck(contentId, "ready"); return } // already have it — re-ack (SEED-A)
+        if (cache.isContentCached(contentId)) { DebugLog.v("DownloadCoordinator", "ensure($contentId): SEED-A cached -> ack ready"); onAck(contentId, "ready"); return } // already have it — re-ack (SEED-A)
         // Socket down => the WATCHDOG owns recovery; don't hammer downloads over a dead connection.
-        if (!socketAlive()) return
-        if (now() < (nextAttemptAt[contentId] ?: 0L)) return       // in failure backoff — don't storm
-        if (!inFlight.add(contentId)) return                        // single-flight: already downloading
+        if (!socketAlive()) { DebugLog.v("DownloadCoordinator", "ensure($contentId): socket not alive -> skip"); return }
+        if (now() < (nextAttemptAt[contentId] ?: 0L)) { DebugLog.v("DownloadCoordinator", "ensure($contentId): in backoff until ${nextAttemptAt[contentId]} -> skip"); return }       // in failure backoff — don't storm
+        if (!inFlight.add(contentId)) { DebugLog.v("DownloadCoordinator", "ensure($contentId): already inFlight -> skip"); return }                        // single-flight: already downloading
+        DebugLog.v("DownloadCoordinator", "ensure($contentId): dispatching download '$filename'")
         try {
             executor.execute { runDownload(contentId, filename) }
         } catch (e: Throwable) {

@@ -55,6 +55,9 @@ class WebSocketService : Service() {
         // #148: backoff before re-opening the single socket after a disconnect that Socket.IO
         // does NOT auto-reconnect (io server/client disconnect) — never a blind immediate re-open.
         private const val RECONNECT_AFTER_EVICT_MS = 3000L
+        // Fix 2: re-pair re-register backoff bounds (see handleServerRejection / scheduleRepairRegister).
+        private const val REPAIR_BACKOFF_MIN_MS = 3000L
+        private const val REPAIR_BACKOFF_MAX_MS = 60_000L
     }
 
     // Callbacks
@@ -220,6 +223,14 @@ class WebSocketService : Service() {
                         config.deviceToken = data.optString("device_token", "")
                     }
                     Log.i("WebSocketService", "Registered as: $newDeviceId")
+                    pairingCodeLive = true // server accepted this registration — any shown code is now pairable
+                    if (config.isPaired) {
+                        resetRepairBackoff() // normal authenticated reconnect — fully exit repair mode
+                    } else if (awaitingRepair) {
+                        // Re-pair code ISSUED (settle window cleared): stop retrying and keep the code on
+                        // screen until an admin claims it (device:paired) — don't re-register on reconnect.
+                        repairRetryPending = false; repairBackoffMs = 0L; repairHoldUntilMs = 0L
+                    }
                     handler.post { try { onRegistered?.invoke(newDeviceId) } catch (e: Throwable) { Log.e("WebSocketService", "onRegistered cb: ${e.message}") } }
                     startHeartbeat()
                 }
@@ -235,17 +246,11 @@ class WebSocketService : Service() {
                     watchdogAttempt = 0
                 }
 
-                safeOn("device:unpaired") {
-                    Log.w("WebSocketService", "Device not found on server - clearing credentials")
-                    config.clearDeviceCredentials()
-                    handler.post { try { onUnpaired?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onUnpaired cb: ${e.message}") } }
-                }
+                safeOn("device:unpaired") { handleServerRejection("device:unpaired (removed on server)") }
 
                 safeOn("device:auth-error") { args ->
                     val msg = (args.firstOrNull() as? JSONObject)?.optString("error", "Authentication failed") ?: "Authentication failed"
-                    Log.w("WebSocketService", "Device auth rejected: $msg — clearing credentials for re-pair")
-                    config.clearDeviceCredentials()
-                    handler.post { try { onUnpaired?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onUnpaired cb: ${e.message}") } }
+                    handleServerRejection("auth-error: $msg")
                 }
 
                 safeOn("device:paired") { args ->
@@ -253,6 +258,10 @@ class WebSocketService : Service() {
                     val id = data.optString("device_id", "")
                     val name = data.optString("name", "Display")
                     config.setPaired(true)
+                    pairingCodeLive = false
+                    resetRepairBackoff() // re-pair complete — exit the re-pair/hold state
+                    // Pairing code consumed — drop it so a future re-pair mints a fresh one.
+                    getSharedPreferences("remote_display", MODE_PRIVATE).edit().remove("pairing_code").apply()
                     config.deviceName = name
                     // Server-provisioned settings PIN — unique per device, stored encrypted.
                     // If the server doesn't send one (old server), ServerConfig generates a
@@ -432,7 +441,14 @@ class WebSocketService : Service() {
         } catch (e: Throwable) { Log.w("WebSocketService", "identity: ${e.message}") }
     }
 
-    private fun register() {
+    private fun register(fromRepairRetry: Boolean = false) {
+        // While awaiting re-pair, ONLY the scheduled retry may register. A reconnect's EVENT_CONNECT
+        // register() during the hold would hit the reclaim guard again and restart the churn — and
+        // once a pairing code is shown, the server keeps it valid, so re-registering is unnecessary.
+        if (awaitingRepair && !config.isPaired && !fromRepairRetry) {
+            Log.i("WebSocketService", "register suppressed — awaiting re-pair (hold ${repairHoldRemainingMs()}ms)")
+            return
+        }
         try {
             val data = JSONObject().apply {
                 if (config.isProvisioned && config.isPaired) {
@@ -442,11 +458,17 @@ class WebSocketService : Service() {
                         put("device_token", token)
                     }
                 } else {
-                    val pairingCode = (100000..999999).random().toString()
+                    // Reuse a stable pairing code across reconnects / re-pair prompts so an admin
+                    // isn't chasing a rotating number mid-pairing; only mint one when we don't have
+                    // one yet. Cleared on a successful device:paired so the NEXT pairing is fresh.
+                    val prefs = getSharedPreferences("remote_display", MODE_PRIVATE)
+                    var pairingCode = prefs.getString("pairing_code", "") ?: ""
+                    if (pairingCode.isEmpty()) {
+                        pairingCode = (100000..999999).random().toString()
+                        prefs.edit().putString("pairing_code", pairingCode).apply()
+                    }
                     put("pairing_code", pairingCode)
                     config.deviceId = ""
-                    getSharedPreferences("remote_display", MODE_PRIVATE)
-                        .edit().putString("pairing_code", pairingCode).apply()
                 }
                 try { put("device_info", deviceInfo.getDeviceInfo()) } catch (e: Throwable) { Log.w("WebSocketService", "device_info: ${e.message}") }
                 try { put("fingerprint", deviceInfo.getFingerprint()) } catch (e: Throwable) { Log.w("WebSocketService", "fingerprint: ${e.message}") }
@@ -461,6 +483,82 @@ class WebSocketService : Service() {
     fun getPairingCode(): String {
         return getSharedPreferences("remote_display", MODE_PRIVATE)
             .getString("pairing_code", "") ?: ""
+    }
+
+    // Fix 2 re-pair backoff. A server that keeps rejecting registration — notably the #150
+    // fingerprint reclaim-settle window ("retry after it has been offline for 300 seconds") — must
+    // NOT be answered with a tight re-register loop. Without this, every auth-error triggered an
+    // immediate re-register that hit the guard again ~20x/sec (a self-inflicted storm, worse than
+    // the stuck screen it replaced). Debounce to a SINGLE pending retry with exponential backoff.
+    @Volatile private var repairRetryPending = false
+    private var repairBackoffMs = 0L
+    // #150 reclaim-settle: when the server says "retry after it has been offline for N seconds",
+    // HOLD the re-pair screen for that whole window (all registration suppressed) instead of churning
+    // — the operator sees a stable "re-pairing available in Xs" countdown, and we retry exactly ONCE
+    // when it elapses. awaitingRepair spans from the first rejection until an actual device:paired
+    // (or a normal authenticated reconnect), so the "waiting for re-pair" screen never flickers.
+    @Volatile private var awaitingRepair = false
+    @Volatile private var repairHoldUntilMs = 0L
+    // register() stores the pairing code locally BEFORE emitting, so getPairingCode() is non-empty
+    // even for a registration the server then REJECTS (reclaim-settle). This flag tracks whether the
+    // server actually ACCEPTED it (device:registered) — only then is the code pairable and shown.
+    @Volatile private var pairingCodeLive = false
+
+    /** True from the first server rejection until the device is (re)paired — UI stays on re-pair. */
+    fun isAwaitingRepair(): Boolean = awaitingRepair
+    /** Milliseconds left in the reclaim-settle hold (0 once elapsed) — drives the UI countdown. */
+    fun repairHoldRemainingMs(): Long = maxOf(0L, repairHoldUntilMs - SystemClock.elapsedRealtime())
+    /** True only when the shown pairing code is server-accepted (pairable) — not a rejected/stale one. */
+    fun isPairingCodeLive(): Boolean = pairingCodeLive && !config.isPaired
+
+    // Pull the settle window out of the #150 reclaim message ("...offline for 300 seconds.").
+    private fun parseSettleSeconds(reason: String): Int =
+        Regex("offline for (\\d+) seconds").find(reason)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+
+    /**
+     * The server rejected this device mid-session (removed from the dashboard -> device:unpaired,
+     * or reclaim-settle / bad token -> device:auth-error). Clear credentials, surface the re-pair
+     * screen ONCE, honor any reclaim-settle window, and schedule ONE re-register.
+     *
+     * We never re-register inline (that stormed the reclaim guard) or disconnect/reconnect (that
+     * thrashed the socket). While awaitingRepair, ALL registration is suppressed except the single
+     * scheduled retry, so the screen is stable — no register/reject/register churn.
+     */
+    private fun handleServerRejection(reason: String) {
+        val settleSec = parseSettleSeconds(reason)
+        Log.w("WebSocketService", "Server rejected device ($reason) — settle=${settleSec}s")
+        pairingCodeLive = false // this registration was rejected — the local code is NOT pairable
+        config.clearDeviceCredentials()
+        if (settleSec > 0) repairHoldUntilMs = SystemClock.elapsedRealtime() + settleSec * 1000L
+        if (!awaitingRepair) {
+            awaitingRepair = true
+            handler.post { try { onUnpaired?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onUnpaired cb: ${e.message}") } }
+        }
+        scheduleRepairRegister()
+    }
+
+    private fun scheduleRepairRegister() {
+        if (repairRetryPending) return   // debounce: one pending retry per window kills the storm
+        repairRetryPending = true
+        val hold = repairHoldUntilMs - SystemClock.elapsedRealtime()
+        val delay = if (hold > 0) hold else {  // honor the reclaim-settle window verbatim; else back off
+            repairBackoffMs = if (repairBackoffMs <= 0L) REPAIR_BACKOFF_MIN_MS
+                              else minOf(repairBackoffMs * 2, REPAIR_BACKOFF_MAX_MS)
+            repairBackoffMs
+        }
+        Log.i("WebSocketService", "re-register for pairing in ${delay}ms")
+        handler.postDelayed({
+            repairRetryPending = false
+            if (socket?.connected() == true && !config.isPaired) register(fromRepairRetry = true)
+        }, delay)
+    }
+
+    /** Re-pair complete (device:paired, or a normal authenticated reconnect) — clear all repair state. */
+    private fun resetRepairBackoff() {
+        repairRetryPending = false
+        repairBackoffMs = 0L
+        awaitingRepair = false
+        repairHoldUntilMs = 0L
     }
 
     private var heartbeatCount = 0

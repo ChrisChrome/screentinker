@@ -33,7 +33,9 @@ class ContentCache internal constructor(
         // Match "<id>.<ext>" exactly: the trailing dot stops an id that PREFIXES another id from
         // cross-matching, and `.part` temps (partial/in-flight downloads) are never returned.
         val files = cacheDir.listFiles { _, name -> name.startsWith("$contentId.") && !name.endsWith(PART_SUFFIX) }
-        return files?.firstOrNull()?.takeIf { it.exists() && it.length() > 0 }
+        val hit = files?.firstOrNull()?.takeIf { it.exists() && it.length() > 0 }
+        com.remotedisplay.player.util.DebugLog.v("ContentCache", "getCachedFile($contentId): dir=${cacheDir.absolutePath} listFiles=${files?.size} -> ${hit?.name ?: "MISS"}")
+        return hit
     }
 
     fun isContentCached(contentId: String): Boolean {

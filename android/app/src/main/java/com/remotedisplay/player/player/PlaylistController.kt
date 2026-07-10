@@ -154,12 +154,15 @@ class PlaylistController(
             // Try to keep playing the current item if it's still in the list
             if (currentlyPlayingId != null) {
                 val newIndex = items.indexOfFirst { it.contentId == currentlyPlayingId }
-                if (newIndex >= 0) {
-                    // Current item still exists - don't interrupt, just update index
+                if (newIndex >= 0 && hasContentOnScreen) {
+                    // Current item still exists AND is genuinely on screen - don't interrupt, just update index.
                     currentIndex = newIndex
                     Log.i("PlaylistController", "Current item still in playlist at index $newIndex, not interrupting")
                     return
                 }
+                // #162: if the item is still present but nothing is actually rendered (hasContentOnScreen
+                // = false, e.g. content wasn't downloaded when we first tried), do NOT trust the stale
+                // "playing" state — fall through to (re)pick a playable item and start below.
             }
             // Current item was removed or nothing was playing - start from the first
             // schedule-active AND downloaded item. Distinguish the two idle reasons: daypart
@@ -205,8 +208,13 @@ class PlaylistController(
             onPlaylistEmpty()
             return
         }
-        if (isRunning && currentIndex >= 0 && currentIndex < items.size) {
-            // Already playing something valid - don't restart
+        // #162: isRunning + a valid index are NOT proof the player is actually rendering. After a
+        // restore, or an onContentNotReady (content still downloading when start() first ran),
+        // isRunning stays true with a seeded currentIndex but NOTHING on screen — and the old guard
+        // then blocked every retry, stranding the panel on "waiting for content" even after the
+        // content finished downloading. Only short-circuit when an item is genuinely on screen;
+        // otherwise fall through and (re)start so playback reliably begins/recovers.
+        if (isRunning && currentIndex >= 0 && currentIndex < items.size && hasContentOnScreen) {
             Log.i("PlaylistController", "Already playing ${items[currentIndex].filename}, not restarting")
             return
         }
