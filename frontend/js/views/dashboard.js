@@ -227,6 +227,13 @@ function renderGroupSection(group, devices, playlists) {
             ${GROUP_COMMANDS.map(c => `<option value="${c.type}" ${c.destructive ? 'style="color:var(--danger)"' : ''}>${t(CMD_LABEL_KEY[c.type])}</option>`).join('')}
           </select>
           ` : ''}
+          ${devices.length > 0 ? `
+          <label class="group-sync-label" style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);cursor:pointer;white-space:nowrap" title="${esc(t('dashboard.group_sync.hint'))}">
+            <input type="checkbox" class="group-sync-cb" data-group-id="${group.id}" ${group.sync_enabled ? 'checked' : ''}> ${t('dashboard.group_sync.label')}
+          </label>
+          ${group.sync_enabled ? `
+          <button class="btn group-resync-btn" data-group-id="${group.id}" style="padding:4px 10px;font-size:12px" title="${esc(t('dashboard.group_sync.resync_hint'))}">${t('dashboard.group_sync.resync')}</button>` : ''}
+          ` : ''}
           <button class="btn" data-group-manage="${group.id}" style="padding:4px 10px;font-size:12px" title="${t('dashboard.manage_tooltip')}">${t('dashboard.manage')}</button>
           <button class="btn" data-group-delete="${group.id}" style="padding:4px 8px;font-size:12px;color:var(--danger)" title="${t('dashboard.delete_group_tooltip')}">&#x2715;</button>
         </div>
@@ -792,6 +799,35 @@ function attachGroupHandlers(groupsWithDevices, allDevices) {
         showToast(err.message, 'error');
       }
       e.target.value = '';
+    });
+  });
+
+  // #group-sync: toggle synchronized playback for a group.
+  document.querySelectorAll('.group-sync-cb').forEach(cb => {
+    cb.addEventListener('change', async (e) => {
+      const groupId = e.target.dataset.groupId;
+      const enabled = e.target.checked;
+      try {
+        await api.updateGroup(groupId, { sync_enabled: enabled });
+        showToast(enabled ? t('dashboard.group_sync.toast_on') : t('dashboard.group_sync.toast_off'), 'success');
+        loadDashboard(); // re-render so the Resync button shows/hides
+      } catch (err) {
+        showToast(err.message, 'error');
+        e.target.checked = !enabled;
+      }
+    });
+  });
+
+  // #group-sync: manual "Resync now" — nudge all members to re-snap to the shared schedule.
+  document.querySelectorAll('.group-resync-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const groupId = e.currentTarget.dataset.groupId;
+      try {
+        await api.resyncGroup(groupId);
+        showToast(t('dashboard.group_sync.toast_resync'), 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
     });
   });
 

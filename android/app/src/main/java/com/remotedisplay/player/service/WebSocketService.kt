@@ -74,6 +74,9 @@ class WebSocketService : Service() {
     var onCommand: ((String, JSONObject?) -> Unit)? = null
     var onWallSync: ((JSONObject) -> Unit)? = null
     var onWallSyncRequest: ((JSONObject) -> Unit)? = null
+    var onGroupSync: ((JSONObject) -> Unit)? = null            // legacy leader-relay (unused by clock/schedule)
+    var onGroupSyncRequest: ((JSONObject) -> Unit)? = null     // legacy leader-relay (unused by clock/schedule)
+    var onGroupResync: (() -> Unit)? = null                    // #group-sync: server-nudged immediate re-align
     var onPipShow: ((JSONObject) -> Unit)? = null
     var onPipClear: ((JSONObject) -> Unit)? = null
     var onMuteChanged: ((JSONObject) -> Unit)? = null
@@ -240,10 +243,11 @@ class WebSocketService : Service() {
                 // markAlive already fired via safeOn (any inbound); a healthy ack also resets the
                 // reconnect backoff. Known ack-gap (reconnecting-not-yet-re-registered) is benign:
                 // arm-after-ack + any-inbound-refresh keep the watchdog from firing in that window.
-                safeOn("device:heartbeat-ack") {
+                safeOn("device:heartbeat-ack") { args ->
                     if (!livenessConfirmed) Log.i("WebSocketService", "v4 watchdog: ARMED (first heartbeat-ack)")
                     livenessConfirmed = true
                     watchdogAttempt = 0
+                    (args.firstOrNull() as? JSONObject)?.let { ingestClockSample(it.optLong("server_ms", 0L), it.optLong("client_ms", 0L)) }
                 }
 
                 safeOn("device:unpaired") { handleServerRejection("device:unpaired (removed on server)") }
@@ -337,6 +341,21 @@ class WebSocketService : Service() {
                 safeOn("wall:sync-request") { args ->
                     val data = args.firstOrNull() as? JSONObject ?: return@safeOn
                     handler.post { try { onWallSyncRequest?.invoke(data) } catch (e: Throwable) { Log.e("WebSocketService", "onWallSyncRequest cb: ${e.message}") } }
+                }
+
+                safeOn("group:sync") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    handler.post { try { onGroupSync?.invoke(data) } catch (e: Throwable) { Log.e("WebSocketService", "onGroupSync cb: ${e.message}") } }
+                }
+
+                safeOn("group:sync-request") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@safeOn
+                    handler.post { try { onGroupSyncRequest?.invoke(data) } catch (e: Throwable) { Log.e("WebSocketService", "onGroupSyncRequest cb: ${e.message}") } }
+                }
+
+                // #group-sync: server-nudged immediate re-align (dashboard "Resync now").
+                safeOn("group:resync") {
+                    handler.post { try { onGroupResync?.invoke() } catch (e: Throwable) { Log.e("WebSocketService", "onGroupResync cb: ${e.message}") } }
                 }
 
                 // #109: PiP overlay. Post to the main thread — the handlers build Views.
@@ -644,11 +663,36 @@ class WebSocketService : Service() {
         heartbeatRunnable = null
     }
 
+    // #group-sync clock discipline. The server is the time authority (see the heartbeat-ack). The
+    // offset is CACHED in prefs so schedule-based group sync stays aligned through an internet outage
+    // (RTC drift is tiny). synced_now = System.currentTimeMillis() + clockOffsetMs.
+    @Volatile private var clockOffsetMs: Long = Long.MIN_VALUE   // sentinel: not yet loaded from prefs
+    private var clockRttMs: Long = -1
+    private fun ensureClockLoaded() {
+        if (clockOffsetMs == Long.MIN_VALUE) {
+            clockOffsetMs = try { getSharedPreferences("remote_display", MODE_PRIVATE).getLong("clock_offset_ms", 0L) } catch (e: Throwable) { 0L }
+        }
+    }
+    fun syncedNowMs(): Long { ensureClockLoaded(); return System.currentTimeMillis() + clockOffsetMs }
+    private fun ingestClockSample(serverMs: Long, clientMs: Long) {
+        if (serverMs <= 0L || clientMs <= 0L) return
+        ensureClockLoaded()
+        val t4 = System.currentTimeMillis()
+        val rtt = (t4 - clientMs).coerceAtLeast(0)
+        if (rtt > 5000) return                                   // absurd RTT (GC/doze stall) — don't poison offset
+        val sample = serverMs - (clientMs + t4) / 2              // NTP-style: offset = server - (t1+t4)/2
+        clockOffsetMs = if (clockRttMs < 0 || kotlin.math.abs(sample - clockOffsetMs) > 1000) sample
+                        else Math.round(clockOffsetMs * 0.8 + sample * 0.2)   // EMA-smooth jitter
+        clockRttMs = rtt
+        try { getSharedPreferences("remote_display", MODE_PRIVATE).edit().putLong("clock_offset_ms", clockOffsetMs).apply() } catch (e: Throwable) {}
+    }
+
     private fun sendHeartbeat() {
         if (socket?.connected() != true) return
         try {
             val data = JSONObject().apply {
                 put("device_id", config.deviceId)
+                put("client_ms", System.currentTimeMillis())   // #group-sync: t1 for NTP-style clock discipline
                 try { put("telemetry", deviceInfo.getTelemetry()) } catch (e: Throwable) { Log.w("WebSocketService", "telemetry: ${e.message}") }
             }
             socket?.emit("device:heartbeat", data)
@@ -855,6 +899,28 @@ class WebSocketService : Service() {
         try {
             socket?.emit("wall:sync-request", JSONObject().apply { put("wall_id", wallId) })
         } catch (e: Throwable) { Log.w("WebSocketService", "emitWallSyncRequest: ${e.message}") }
+    }
+
+    // #group-sync: same payload as wall sync, keyed by group_id (server relays to group members).
+    fun emitGroupSync(groupId: String, currentIndex: Int, contentId: String?, positionSec: Float) {
+        if (socket?.connected() != true) return
+        try {
+            socket?.emit("group:sync", JSONObject().apply {
+                put("group_id", groupId)
+                put("device_id", config.deviceId)
+                put("current_index", currentIndex)
+                put("content_id", contentId ?: JSONObject.NULL)
+                put("position_sec", positionSec.toDouble())
+                put("sent_at", System.currentTimeMillis())
+            })
+        } catch (e: Throwable) { Log.w("WebSocketService", "emitGroupSync: ${e.message}") }
+    }
+
+    fun emitGroupSyncRequest(groupId: String) {
+        if (socket?.connected() != true) return
+        try {
+            socket?.emit("group:sync-request", JSONObject().apply { put("group_id", groupId) })
+        } catch (e: Throwable) { Log.w("WebSocketService", "emitGroupSyncRequest: ${e.message}") }
     }
 
     fun disconnect() {
