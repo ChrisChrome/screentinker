@@ -299,6 +299,17 @@ const migrations = [
   // sweep tick still drops the item.
   "ALTER TABLE content ADD COLUMN expires_at INTEGER",
   "ALTER TABLE content ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
+  // #160 Track-A capability flags reported by the panel (no device-owner dependency). Drive the
+  // dashboard's system-control gating + "what to grant" guidance. Older APKs omit them -> 0.
+  "ALTER TABLE devices ADD COLUMN can_write_settings INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE devices ADD COLUMN accessibility_enabled INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE devices ADD COLUMN overlay_granted INTEGER NOT NULL DEFAULT 0",
+  // #160: last-reported media volume / brightness / screen-off timeout so the dashboard sliders
+  // reflect reality ("remember" what they're set to). All nullable (older APKs omit them).
+  "ALTER TABLE devices ADD COLUMN media_volume REAL",
+  "ALTER TABLE devices ADD COLUMN system_brightness REAL",
+  "ALTER TABLE devices ADD COLUMN window_brightness REAL",
+  "ALTER TABLE devices ADD COLUMN screen_off_timeout_ms INTEGER",
   // Backfill a unique 6-digit PIN for already-paired devices that predate the
   // settings_pin column (their next reconnect re-sends device:paired with it, so
   // the existing fleet isn't locked out of the on-device menu). Idempotent: the

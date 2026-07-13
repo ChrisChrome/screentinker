@@ -67,8 +67,51 @@ class DeviceInfo(private val context: Context) {
                 put("can_install_silently", policy.canInstallSilently())
                 put("foreign_device_owner", policy.hasForeignDeviceOwner())
             } catch (_: Throwable) { put("tier", 0) }
+            // #160 Track-A capability flags (NO device-owner dependency) — let the dashboard gate the
+            // no-privilege system controls and show the operator exactly what's grantable per panel.
+            try {
+                put("can_write_settings", Settings.System.canWrite(context))
+                put("overlay_granted", Settings.canDrawOverlays(context))
+                put("accessibility_enabled", isAccessibilityEnabled())
+                // #160: current values so the dashboard sliders REFLECT reality instead of resetting
+                // to a default — "remember" what they're set to across dashboard reloads. Reading these
+                // needs no WRITE_SETTINGS (only writing does).
+                put("media_volume", getMediaVolumeFraction())
+                put("system_brightness", getSystemBrightnessFraction())
+                put("screen_off_timeout_ms", getScreenOffTimeout())
+                put("window_brightness", ServerConfig(context).windowBrightness)   // -1 = follow system
+            } catch (_: Throwable) { /* leave flags absent -> dashboard treats as false */ }
         }
     }
+
+    /** #160: current STREAM_MUSIC volume as a 0..1 fraction (for the dashboard volume slider). */
+    private fun getMediaVolumeFraction(): Double = try {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+        if (max > 0) am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC).toDouble() / max else 0.0
+    } catch (_: Throwable) { 0.0 }
+
+    /** #160: current system brightness as a 0..1 fraction (read-only; no permission needed). */
+    private fun getSystemBrightnessFraction(): Double = try {
+        val v = Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, -1)
+        if (v >= 0) v / 255.0 else 0.0
+    } catch (_: Throwable) { 0.0 }
+
+    /** #160: current screen-off timeout in ms (read-only). */
+    private fun getScreenOffTimeout(): Int = try {
+        Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 0)
+    } catch (_: Throwable) { 0 }
+
+    /** #160: is OUR accessibility service currently enabled (drives remote-control availability). */
+    private fun isAccessibilityEnabled(): Boolean = try {
+        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
+            as android.view.accessibility.AccessibilityManager
+        val mine = android.content.ComponentName(context,
+            com.remotedisplay.player.service.PowerAccessibilityService::class.java)
+        am.getEnabledAccessibilityServiceList(
+            android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+        ).any { it.resolveInfo.serviceInfo.let { si -> android.content.ComponentName(si.packageName, si.name) == mine } }
+    } catch (_: Throwable) { false }
 
     private fun getBatteryLevel(): Int {
         // Use broadcast intent method - more reliable on Android TV / Rockchip devices
