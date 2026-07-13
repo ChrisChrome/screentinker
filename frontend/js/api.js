@@ -30,6 +30,7 @@ export const api = {
   getDevices: () => request('/devices'),
   reorderDevices: (order) => request('/devices/reorder', { method: 'POST', body: JSON.stringify({ order }) }),
   getDevice: (id) => request(`/devices/${id}`),
+  getDeviceOwnerQR: () => request('/provision/device-owner-qr'),   // #161: device-owner provisioning
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),
   // #146 Item D: operator block/unblock — refuses the device at its next register with
@@ -53,10 +54,11 @@ export const api = {
   }),
 
   // Content
-  getContent: (folderId) => {
-    if (folderId === undefined) return request('/content');
+  getContent: (folderId, includeExpired = false) => {
+    const exp = includeExpired ? '&include_expired=1' : '';
+    if (folderId === undefined) return request(`/content${exp ? '?' + exp.slice(1) : ''}`);
     const q = folderId === null ? 'root' : encodeURIComponent(folderId);
-    return request(`/content?folder_id=${q}`);
+    return request(`/content?folder_id=${q}${exp}`);
   },
   getContentItem: (id) => request(`/content/${id}`),
   deleteContent: (id) => request(`/content/${id}`, { method: 'DELETE' }),

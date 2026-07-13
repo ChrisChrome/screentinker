@@ -734,6 +734,10 @@ commandQueue.startSweep();
 const { startScheduler } = require('./services/scheduler');
 startScheduler(io);
 
+// #157: auto-deactivate expired content + republish affected playlists
+const { startContentExpiry } = require('./services/content-expiry');
+startContentExpiry(io);
+
 // Start alert service
 const { startAlertService } = require('./services/alerts');
 startAlertService(io);
@@ -773,6 +777,59 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // Handle provisioning via WebSocket notification
 const { db } = require('./db/database');
 const originalProvisionRoute = require('./routes/provisioning');
+
+// #161: device-owner QR provisioning. Returns the AOSP provisioning payload (DPC component + APK
+// download URL + signing-cert checksum), a rendered QR data-URL, and the ADB one-liner — so an
+// operator can enroll a fresh/factory-reset panel by scanning (tap the setup-wizard welcome 6x) or
+// by cable. Checksum = URL-safe base64 SHA-256 of the SIGNING CERT (constant per key; env-overridable
+// if you re-sign). Auth-gated (operator only); the DPC component + public APK URL aren't secrets.
+const QRCode = require('qrcode');
+const { apkSignatureChecksumCached } = require('./lib/apk-signature');
+const DEVICE_ADMIN_COMPONENT = 'com.remotedisplay.player/.admin.STDeviceAdminReceiver';
+// Fallback only. The checksum is normally COMPUTED from the actual served APK at request time
+// (see below) so the QR is always correct for whatever build is on disk; this constant is used
+// only when the APK is absent/unparseable. Env override wins over the baked-in default.
+const DEVICE_ADMIN_SIGNATURE_CHECKSUM =
+  process.env.DEVICE_ADMIN_SIGNATURE_CHECKSUM || 's9ZOWAvn3qFYJxaaR0j41ZttQK1r6_XgaTMcB7rIqqI';
+app.get('/api/provision/device-owner-qr', requireAuth, async (req, res) => {
+  try {
+    const base = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+    const apkUrl = `${base}/download/apk`;
+    // Derive the signature checksum from the APK the device will actually download, so it can
+    // never drift from the served build. Fall back to the configured constant if the APK isn't
+    // present/parseable (in which case the QR would also be pointing at a missing download).
+    const apk = apkCache.get();
+    let checksum = DEVICE_ADMIN_SIGNATURE_CHECKSUM;
+    let checksumSource = 'fallback';
+    if (apk.exists && apk.path) {
+      const computed = await apkSignatureChecksumCached(apk.path, apk.mtime);
+      if (computed) { checksum = computed; checksumSource = 'apk'; }
+    }
+    const payload = {
+      'android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME': DEVICE_ADMIN_COMPONENT,
+      'android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION': apkUrl,
+      'android.app.extra.PROVISIONING_DEVICE_ADMIN_SIGNATURE_CHECKSUM': checksum,
+      'android.app.extra.PROVISIONING_SKIP_ENCRYPTION': true,
+      // Delivered to the player after enrollment so it self-configures the server URL (operator just
+      // reads the pairing code — no typing). Purely optional on the client: a build that ignores it,
+      // or a plain install, is unaffected.
+      'android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE': { server_url: base },
+    };
+    const qr = await QRCode.toDataURL(JSON.stringify(payload), { errorCorrectionLevel: 'M', margin: 2, width: 360 });
+    res.json({
+      component: DEVICE_ADMIN_COMPONENT,
+      apk_url: apkUrl,
+      signature_checksum: checksum,
+      checksum_source: checksumSource,   // 'apk' = computed from the served build; 'fallback' = constant
+      apk_present: !!apk.exists,
+      payload,
+      qr_data_url: qr,
+      adb_command: `adb shell dpm set-device-owner ${DEVICE_ADMIN_COMPONENT}`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to generate provisioning QR', detail: e.message });
+  }
+});
 
 // Override provision to also notify device via WS
 const { checkDeviceLimit } = require('./middleware/subscription');

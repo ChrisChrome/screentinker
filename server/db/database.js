@@ -277,6 +277,28 @@ const migrations = [
   // device an update (an MDM/operator owns its updates). Default 1 (self-update on).
   //   UPDATE devices SET ota_enabled = 0 WHERE id = '<device_id>';  (1 to re-enable)
   "ALTER TABLE devices ADD COLUMN ota_enabled INTEGER NOT NULL DEFAULT 1",
+  // #161: privilege tier reported by the player (0 unprivileged / 1 device-admin / 2 owner-or-
+  // delegated-install) + whether a foreign device owner (MDM) manages it. Drives dashboard gating
+  // of Tier-2 controls (reboot/kiosk/time) — shown only for owned panels.
+  "ALTER TABLE devices ADD COLUMN tier INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE devices ADD COLUMN foreign_device_owner INTEGER NOT NULL DEFAULT 0",
+  // #12 scheduled reboot: a device-local "HH:MM" wall-clock time (null = off). The
+  // scheduler fires a reboot command once per device-local day when the clock crosses
+  // this time. reboot_last_date (device-local YYYY-MM-DD) is the once-per-day guard so a
+  // 60s tick landing anywhere in the catch window fires exactly once. Group-level default
+  // lives on device_groups.reboot_schedule; a device's own value overrides the group's.
+  "ALTER TABLE devices ADD COLUMN reboot_schedule TEXT",
+  "ALTER TABLE devices ADD COLUMN reboot_last_date TEXT",
+  "ALTER TABLE device_groups ADD COLUMN reboot_schedule TEXT",
+  // #157 auto-deactivate expired content. expires_at = epoch-seconds after which the item
+  // stops serving (null = never expires, current behaviour). is_active is the stored flag
+  // the expiry sweep flips to 0 once expires_at passes — it's ALSO the sweep's once-only
+  // marker (already-processed) so a republish fires exactly once per expiry, not every tick.
+  // A manual archive later can reuse is_active. Publish-time filtering checks the LIVE
+  // condition (is_active=0 OR expires_at<=now), so a publish between expiry and the next
+  // sweep tick still drops the item.
+  "ALTER TABLE content ADD COLUMN expires_at INTEGER",
+  "ALTER TABLE content ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
   // Backfill a unique 6-digit PIN for already-paired devices that predate the
   // settings_pin column (their next reconnect re-sends device:paired with it, so
   // the existing fleet isn't locked out of the on-device menu). Idempotent: the

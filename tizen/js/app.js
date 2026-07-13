@@ -629,6 +629,7 @@
       // player's sig so it repaints (see the single-zone branch for the full rationale).
       if (stageOwner !== 'player') { zoneRenderer.clear(); player.invalidate(); }
       groupSync.exit();                 // wall and group are mutually exclusive
+      player.setScheduleDriven(false);  // #157: wall gates on wallFollower, not scheduleDriven
       wallController.apply(payload.wall_config);
       player.setTimezone(payload.timezone || null);
       player.load(payload.assignments || []);
@@ -642,6 +643,8 @@
     wallController.exit();   // never in wall mode here
     if (payload.group_sync) groupSync.apply(payload.group_sync.group_id);
     else groupSync.exit();
+    // #157: group-sync advances via its own tick, so suppress the solo deferred-rotation there.
+    player.setScheduleDriven(!!payload.group_sync);
     applyOrientation(payload.orientation || 'landscape');
     var layout = payload.layout;
     if (layout && Array.isArray(layout.zones) && layout.zones.length) { // B3: non-array zones would throw in zoneRenderer
@@ -714,6 +717,7 @@
   document.addEventListener('visibilitychange', onVisibility); // FIX B: suspend/resume fast-path
   startWatchdog();                                           // FIX B (hardened): server-silence liveness backstop
 
+  // @exit-signal-slice:start — v4-exit-signal-phase3.test.js evals the lines between these markers.
   // Exit-signal contract v1 — best-effort last gasp. crashed: window.onerror / unhandledrejection.
   // clean_exit: operator BACK-key exit (below) + pagehide(persisted=false, a real unload not a bfcache
   // suspend). Sends over BOTH the live socket (reliable when still connected, e.g. BACK-key / in-app
@@ -749,6 +753,7 @@
     if (ev && ev.persisted) return;   // bfcache suspend (may restore) — NOT a death; the watchdog owns it
     sendExitSignal('clean_exit', 'pagehide');
   });
+  // @exit-signal-slice:end
   if (serverUrl && deviceId && deviceToken) {
     // A2: render cached content IMMEDIATELY so a cold-start/offline TV isn't blank while the socket
     // connects (or if it can't). The socket's fresh device:playlist-update replaces it on connect.

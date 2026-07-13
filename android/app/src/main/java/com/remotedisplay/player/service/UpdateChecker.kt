@@ -283,6 +283,26 @@ class UpdateChecker(private val context: Context) {
         }
     }
 
+    // #161 device-owner tooling: push + install an ARBITRARY APK from an operator-supplied URL. Unlike
+    // the self-update path this does NOT require our signing key — a device owner can install any
+    // package, silently (installApk → tryPackageInstaller → USER_ACTION_NOT_REQUIRED on an owner). Off
+    // owner it degrades to the normal confirm-dialog install. Gated to admins server-side.
+    fun installFromUrl(url: String) {
+        Thread {
+            try {
+                val base = url.substringAfterLast('/').substringBefore('?').ifBlank { "app.apk" }
+                val fileName = "pushed-" + (if (base.endsWith(".apk")) base else "$base.apk")
+                val apkFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
+                if (apkFile.exists()) apkFile.delete()
+                val response = client.newCall(Request.Builder().url(url).build()).execute()
+                if (!response.isSuccessful) { Log.e(TAG, "installFromUrl: download failed ${response.code}"); return@Thread }
+                response.body?.byteStream()?.use { input -> apkFile.outputStream().use { input.copyTo(it) } }
+                Log.i(TAG, "Pushed APK downloaded: ${apkFile.name} (${apkFile.length()} bytes)")
+                handler.post { installApk(apkFile) }
+            } catch (e: Throwable) { Log.e(TAG, "installFromUrl: ${e.message}") }
+        }.start()
+    }
+
     private fun installApk(apkFile: File) {
         // Try silent session install first (no Play Protect dialog)
         try {
@@ -323,6 +343,17 @@ class UpdateChecker(private val context: Context) {
                 val params = android.content.pm.PackageInstaller.SessionParams(
                     android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL
                 )
+                // #161/#155: on a device owner (or delegated install scope) declare no user action so
+                // the install is truly silent — no STATUS_PENDING_USER_ACTION, no confirm dialog, no
+                // accessibility race. Below API 31 a device-owner install is silent by default, and off
+                // tier this is skipped so the existing dialog + accessibility-auto-confirm fallback runs.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    com.remotedisplay.player.admin.STPolicy(context).canInstallSilently()) {
+                    params.setRequireUserAction(
+                        android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED
+                    )
+                    Log.i(TAG, "Silent install (device owner / delegated scope): USER_ACTION_NOT_REQUIRED")
+                }
                 val sessionId = installer.createSession(params)
                 val session = installer.openSession(sessionId)
 
@@ -430,19 +461,8 @@ class UpdateChecker(private val context: Context) {
         }
     }
 
-    // #155/#161: true when an MDM / foreign device owner manages this device — i.e. a device
-    // admin belonging to ANOTHER package is active and we are NOT the device owner ourselves.
-    // A normal app can't read the device-owner component directly, so we use the public
-    // getActiveAdmins() signal: any active admin outside our package means a DPC owns the box.
-    // Errs safe (managed => stand down) on a signage panel. Never throws.
-    private fun isManagedByForeignDeviceOwner(): Boolean {
-        return try {
-            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
-                as? android.app.admin.DevicePolicyManager ?: return false
-            if (dpm.isDeviceOwnerApp(context.packageName)) return false // WE own it — not foreign
-            dpm.activeAdmins?.any { it.packageName != context.packageName } == true
-        } catch (_: Throwable) {
-            false
-        }
-    }
+    // #155/#161: true when an MDM / foreign device owner manages this device. Single source of truth
+    // now lives in STPolicy.hasForeignDeviceOwner() (same public getActiveAdmins() signal, errs safe).
+    private fun isManagedByForeignDeviceOwner(): Boolean =
+        com.remotedisplay.player.admin.STPolicy(context).hasForeignDeviceOwner()
 }

@@ -62,6 +62,14 @@
             android:screenOrientation="landscape"
             android:theme="@style/Theme.RemoteDisplay.Fullscreen" />
 
+        <!-- #device-owner: MDM-deploy-only guided screen to enable the accessibility service
+             (remote control). Self-guards to owner; a normal install never routes here. -->
+        <activity
+            android:name=".OwnerAccessibilityActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.RemoteDisplay.Fullscreen" />
+
         <!-- Provisioning/setup activity -->
         <activity
             android:name=".ProvisioningActivity"
@@ -121,6 +129,37 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- #161 device-owner foundation. Enrolled via `adb dpm set-device-owner` or QR provisioning.
+             Optional power-up: absent it the app runs fully at Tier 0/1 (STPolicy degrades safely). -->
+        <receiver
+            android:name=".admin.STDeviceAdminReceiver"
+            android:description="@string/device_admin_description"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- #device-owner: Android 10+ fully-managed provisioning handshake. REQUIRED for QR/NFC
+             enrollment on Android 12+ — without a GET_PROVISIONING_MODE / ADMIN_POLICY_COMPLIANCE
+             handler the platform aborts provisioning after install ("something went wrong").
+             System-only (BIND_DEVICE_ADMIN); translucent + finishes immediately (no visible UI). -->
+        <activity
+            android:name=".admin.ProvisioningActivity"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.app.action.GET_PROVISIONING_MODE" />
+                <action android:name="android.app.action.ADMIN_POLICY_COMPLIANCE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
 
         <!-- FileProvider for APK updates -->
         <provider

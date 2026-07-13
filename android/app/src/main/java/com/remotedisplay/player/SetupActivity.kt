@@ -49,6 +49,26 @@ class SetupActivity : AppCompatActivity() {
             return
         }
 
+        // #device-owner: a device owner self-configures the kiosk essentials (HOME launcher, kiosk
+        // lock-task, notifications) with no user taps, and silent-install makes "unknown sources"
+        // moot — so skip the entire manual first-run wizard. Accessibility stays optional (it can't
+        // be auto-enabled). Guarded on ownership, so a NORMAL install still gets the full wizard.
+        val ownerPolicy = com.remotedisplay.player.admin.STPolicy(this)
+        if (ownerPolicy.isDeviceOwner()) {
+            ownerPolicy.applyOnboardingPolicy()
+            prefs.edit().putBoolean("setup_complete", true).apply()
+            // Remote control needs the accessibility service, and it's the one thing no policy can
+            // enable — so on an MDM deploy, route the installer through the guided enable screen when
+            // it's still off (it auto-advances once on). Already on -> straight to pairing.
+            if (isAccessibilityEnabled()) {
+                proceedToNext()
+            } else {
+                startActivity(Intent(this, OwnerAccessibilityActivity::class.java))
+                finish()
+            }
+            return
+        }
+
         setContentView(R.layout.activity_setup)
 
         // App's UI is up — clear the boot "Starting display…" notification.

@@ -591,10 +591,12 @@ module.exports = function setupDeviceSocket(io) {
 
           if (device_info) {
             db.prepare(`UPDATE devices SET android_version = ?, app_version = ?, screen_width = ?, screen_height = ?, render_width = ?, render_height = ?,
-              ota_status = ?, ota_target_version = ?, ota_attempts = ?, ota_updated_at = strftime('%s','now') WHERE id = ?`)
+              ota_status = ?, ota_target_version = ?, ota_attempts = ?, tier = ?, foreign_device_owner = ?, ota_updated_at = strftime('%s','now') WHERE id = ?`)
               .run(device_info.android_version, device_info.app_version, device_info.screen_width, device_info.screen_height, device_info.render_width ?? null, device_info.render_height ?? null,
                 // #139 Phase 2: older APKs don't send these — default to a clean 'none' state.
                 device_info.ota_status ?? 'none', device_info.ota_target_version ?? null, device_info.ota_attempts ?? 0,
+                // #161: privilege tier (older APKs omit these — default Tier 0 / not-managed).
+                Number.isInteger(device_info.tier) ? device_info.tier : 0, device_info.foreign_device_owner ? 1 : 0,
                 device_id);
           }
 
@@ -852,6 +854,16 @@ module.exports = function setupDeviceSocket(io) {
       } catch (err) {
         console.error('Screenshot save error:', err);
       }
+    });
+
+    // #161 device-owner tooling: relay a remote-shell result back to the operator's dashboard.
+    socket.on('device:shell-result', (data) => {
+      if (!requireDeviceAuth()) return;
+      const { device_id, cmd, output, exit } = data || {};
+      if (!device_id || device_id !== currentDeviceId) return;
+      emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:shell-result', {
+        device_id, cmd: String(cmd || '').slice(0, 500), output: String(output || '').slice(0, 8000), exit,
+      });
     });
 
     // Content download acknowledgement

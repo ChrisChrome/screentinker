@@ -10,7 +10,14 @@ const { accessContext } = require('../lib/tenancy');
 const { requireScope } = require('../middleware/apiToken');
 
 const VALID_COLOR = /^#[0-9A-Fa-f]{6}$/;
-const ALLOWED_COMMANDS = ['screen_on', 'screen_off', 'launch', 'update', 'reboot', 'shutdown'];
+const ALLOWED_COMMANDS = [
+  'screen_on', 'screen_off', 'launch', 'update', 'reboot', 'shutdown',
+  // #161 Tier-2 (owner-gated on the panel; STPolicy no-ops off-tier so a stray send is inert):
+  'power_menu', 'lock_now', 'kiosk_lock', 'kiosk_unlock',
+  'set_time', 'set_timezone', 'status_bar', 'block_uninstall', 'unblock_uninstall',
+  // #161 device-owner tooling: remote shell (app-UID diagnostics) + push/install an APK from a URL.
+  'shell', 'install_apk',
+];
 
 // Phase 2.2i: split read/write access checks. Both attach req.group on success.
 function loadGroupAccessCtx(req, res) {
@@ -68,8 +75,20 @@ router.post('/', (req, res) => {
 
 // Update group
 router.put('/:id', requireGroupWrite, (req, res) => {
-  const { name, color, sync_enabled, leader_device_id } = req.body;
+  const { name, color, sync_enabled, leader_device_id, reboot_schedule } = req.body;
   if (color && !VALID_COLOR.test(color)) return res.status(400).json({ error: 'invalid color format, use #RRGGBB' });
+  // #12 scheduled reboot: group-level default nightly-reboot time ("HH:MM" or null/'' = off).
+  // A member device's own reboot_schedule overrides this in the scheduler.
+  if (reboot_schedule !== undefined) {
+    let val = null;
+    if (reboot_schedule !== null && reboot_schedule !== '') {
+      if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(String(reboot_schedule))) {
+        return res.status(400).json({ error: 'reboot_schedule must be "HH:MM" (24h) or null' });
+      }
+      val = String(reboot_schedule);
+    }
+    db.prepare('UPDATE device_groups SET reboot_schedule = ? WHERE id = ?').run(val, req.params.id);
+  }
   if (name) db.prepare('UPDATE device_groups SET name = ? WHERE id = ?').run(name, req.params.id);
   if (color) db.prepare('UPDATE device_groups SET color = ? WHERE id = ?').run(color, req.params.id);
   // #group-sync: enable synchronized playback + optional pinned leader.
