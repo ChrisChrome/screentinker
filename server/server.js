@@ -237,6 +237,14 @@ app.get('/agency', (req, res) => {
   res.sendFile(path.join(config.frontendDir, 'agency.html'));
 });
 
+// The integrations hub is a directory index. express.static below runs with index:false,
+// so a bare /integrations/ would otherwise fall through to the SPA catch-all (login page).
+// Serve it explicitly (the spoke pages are real .html files and static already handles them).
+app.get(['/integrations', '/integrations/'], (req, res) => {
+  if (req.path === '/integrations') return res.redirect(301, '/integrations/');
+  res.sendFile(path.join(config.frontendDir, 'integrations', 'index.html'));
+});
+
 // Serve frontend static files
 // JS/CSS/HTML: no-cache (always revalidate, uses ETag/304)
 // Images/fonts/icons: long cache for Cloudflare + browser
