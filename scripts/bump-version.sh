@@ -58,11 +58,15 @@ printf '%s\n' "$NEW" > VERSION
 sed -i -E "s/(\"version\"[[:space:]]*:[[:space:]]*)\"[0-9]+\.[0-9]+\.[0-9]+[^\"]*\"/\1\"$NEW\"/" server/package.json
 ( cd server && npm install --package-lock-only >/dev/null )
 
-# 3) android versionName + versionCode (+1). [0-9][^"]* matches a pre-release current
-#    value too (e.g. 1.9.1-beta1), so beta1->beta2 actually replaces it.
-sed -i -E "s/(versionName[[:space:]]*=[[:space:]]*)\"[0-9][^\"]*\"/\1\"$NEW\"/" android/app/build.gradle.kts
-CODE="$(grep -oE 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' android/app/build.gradle.kts | grep -oE '[0-9]+$')"
-sed -i -E "s/(versionCode[[:space:]]*=[[:space:]]*)[0-9]+/\1$((CODE + 1))/" android/app/build.gradle.kts
+# 3) android versionName + versionCode (+1). Since #168 both are env-overridable, so the
+#    build.gradle.kts values live as FALLBACK literals inside `?: "…"` at the end of each line
+#    (versionName = getenv(...) ?: prop ?: "1.9.4"; versionCode = (getenv(...) ?: … ?: "44").toInt()).
+#    Target that trailing `?: "literal"` (the LAST quoted token on the line) rather than the old
+#    `versionName = "X"` / `versionCode = N` forms, which no longer exist. [0-9][^"]* matches a
+#    pre-release current value too (e.g. 1.9.1-beta1) so beta1->beta2 replaces it.
+sed -i -E "s/(versionName.*\?:[[:space:]]*)\"[0-9][^\"]*\"/\1\"$NEW\"/" android/app/build.gradle.kts
+CODE="$(grep -E 'versionCode' android/app/build.gradle.kts | grep -oE '\?:[[:space:]]*\"[0-9]+\"' | grep -oE '[0-9]+' | tail -1)"
+sed -i -E "s/(versionCode.*\?:[[:space:]]*)\"[0-9]+\"/\1\"$((CODE + 1))\"/" android/app/build.gradle.kts
 
 # 4) tizen widget version. Skip the <?xml ...?> declaration line - its
 #    version="1.0" is the XML FORMAT version, not the app version, and it also
