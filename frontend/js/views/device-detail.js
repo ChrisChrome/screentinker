@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { on, off, requestScreenshot, startRemote, stopRemote, sendTouch, sendSwipe, sendKey, sendCommand } from '../socket.js';
 import { showToast } from '../components/toast.js';
-import { esc, livenessBadge } from '../utils.js';
+import { esc, livenessBadge, hydrateAuthImages } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showDeviceOwnerQRModal } from '../components/device-owner-qr-modal.js';
 
@@ -614,6 +614,9 @@ async function loadDevice(deviceId, activeTab = null) {
         <div style="font-size:10px;color:var(--text-muted);margin-top:4px">${t('device.terminal.push_apk_hint')}</div>
       </div>` : ''}
     `;
+    // Hydrate authenticated thumbnail images in the playlist tab
+    const pc = document.getElementById('playlistContainer');
+    if (pc) hydrateAuthImages(pc);
 
     // Global key/command handlers for remote
     window._sendKey = (keycode) => {
@@ -719,7 +722,7 @@ function renderPlaylist(assignments) {
             ${{clock:'&#128339;',weather:'&#9925;',rss:'&#128240;',text:'&#128221;',webpage:'&#127760;',social:'&#128172;'}[a.widget_type] || '&#9881;'}
           </div>`
         : a.thumbnail_path
-          ? `<img class="playlist-item-thumb" src="/api/content/${a.content_id}/thumbnail" alt="">`
+          ? `<img class="playlist-item-thumb" data-auth-src="/api/content/${a.content_id}/thumbnail" alt="">`
           : `<div class="playlist-item-thumb" style="display:flex;align-items:center;justify-content:center">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polygon points="5 3 19 12 5 21 5 3"/>
@@ -1019,7 +1022,9 @@ function setupActions(device) {
         await api.assignPlaylistToDevice(newPlaylistId, device.id);
         device.playlist_id = newPlaylistId;
         const assignments = await api.getAssignments(device.id);
-        document.getElementById('playlistContainer').innerHTML = renderPlaylist(assignments);
+        const pc = document.getElementById('playlistContainer');
+        pc.innerHTML = renderPlaylist(assignments);
+        hydrateAuthImages(pc);
         attachRemoveHandlers(device);
         showToast(t('device.toast.playlist_changed'));
       } catch (err) {
@@ -1406,7 +1411,7 @@ async function setupPlaylistActions(device) {
               ${content.map(c => `
                 <div class="assign-content-item" data-content-id="${c.id}" data-type="content">
                   ${c.thumbnail_path
-                    ? `<img src="/api/content/${c.id}/thumbnail" alt="">`
+                    ? `<img data-auth-src="/api/content/${c.id}/thumbnail" alt="">`
                     : c.remote_url
                       ? `<div style="aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;background:var(--bg-primary)">
                           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -1449,6 +1454,7 @@ async function setupPlaylistActions(device) {
         </div>
       `;
       document.body.appendChild(modal);
+      hydrateAuthImages(modal);
 
       // Tab switching
       modal.querySelectorAll('.assign-tab').forEach(tab => {
