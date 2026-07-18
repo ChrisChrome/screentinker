@@ -168,7 +168,7 @@ router.delete('/:id', (req, res) => {
   res.json({ success: true });
 });
 
-const KNOWN_WIDGET_TYPES = new Set(['clock','weather','rss','text','webpage','social','directory-board','directory-search']);
+const KNOWN_WIDGET_TYPES = new Set(['clock','weather','rss','text','webpage','social','directory-board','directory-search','diag-smoothness']);
 function renderWidgetHtml(type, config) {
   config = config || {};
   switch (type) {
@@ -180,6 +180,7 @@ function renderWidgetHtml(type, config) {
     case 'social': return renderSocial(config);
     case 'directory-board': return renderDirectoryBoard(config);
     case 'directory-search': return renderDirectorySearch(config);
+    case 'diag-smoothness': return renderDiagSmoothness(config);
     default: return '<html><body style="color:white;background:black;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><h1>Unknown widget</h1></body></html>';
   }
 }
@@ -219,6 +220,35 @@ router.get('/:id/data.json', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'no-store');
   res.json({ categories });
+});
+
+// Latest frame-rate telemetry per widget, reported by the diag-smoothness widget running on a device.
+// In-memory (diagnostic, not persisted) — a device page reads the snapshot for the widget it plays.
+const widgetTelemetry = new Map();
+// Public POST from the widget: it runs in a null-origin sandboxed iframe, so this must be no-auth +
+// CORS-open. The widget sends text/plain (a "simple" request → no CORS preflight); we JSON.parse it.
+router.post('/:id/telemetry', express.text({ type: '*/*', limit: '16kb' }), (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  let t = {};
+  try { t = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {}); } catch (e) { t = {}; }
+  t.receivedAt = Date.now();
+  // Key by the reporting device (player passes ?device=<id>) so multiple panels don't collide;
+  // fall back to a widget-scoped key for players that don't pass a device id yet.
+  const key = (t.device && String(t.device).slice(0, 64)) || ('w:' + req.params.id);
+  widgetTelemetry.set(key, t);
+  res.json({ ok: true });
+});
+// Public GET so the dashboard device page can display the snapshot. ?device=<id> reads that panel's
+// report; without it (or if that panel hasn't reported) falls back to the widget-scoped snapshot.
+router.get('/:id/telemetry', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-store');
+  const dev = req.query.device ? String(req.query.device) : null;
+  // Device-scoped request returns ONLY that device's report — NO widget-wide fallback, or one
+  // reporting panel's data would show on every other device's page (incl. offline ones). A request
+  // with no device id gets the widget-scoped snapshot (raw/debug view only).
+  const rec = dev ? (widgetTelemetry.get(dev) || null) : (widgetTelemetry.get('w:' + req.params.id) || null);
+  res.json(rec);
 });
 
 // Preview unsaved widget from config (used by editor Preview button)
@@ -449,9 +479,7 @@ function renderDirectoryBoard(c) {
     mask-image: linear-gradient(to bottom, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
     -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
   }
-  .track { position:absolute; top:0; left:0; right:0; will-change: transform; }
-  .block { padding:0 48px 24px; }
-  .block + .block { padding-top:24px; }
+  .track { position:absolute; top:0; left:0; right:0; }
 
   .category { padding:36px 0 16px; }
   .category h2 {
@@ -484,8 +512,6 @@ function renderDirectoryBoard(c) {
   body.light .entry { color:#1a1a2e; }
   body.light .entry.available, body.light .entry.available .id { color:#059669; }
 
-  .gap { height:120px; }
-
   @media (max-width: 1280px) {
     .header h1 { font-size:54px; }
     .header img.logo { max-height:120px; }
@@ -501,7 +527,6 @@ function renderDirectoryBoard(c) {
     <div class="bg-layer" id="bgLayer"></div>
     <header class="header" id="header"></header>
     <div class="scroller" id="scroller">
-      <div class="track" id="track"></div>
     </div>
     <footer class="footer" id="footer"></footer>
   </div>
@@ -512,9 +537,9 @@ function renderDirectoryBoard(c) {
   var SPEEDS = { slow: 20, medium: 45, fast: 75 };
 
   if (cfg.theme === 'light') document.body.classList.add('light');
-  var GAP_PX = 120; // MUST match the .gap element height (set inline below) — the scroll loop
-                    // translates by baseH+GAP_PX, so any mismatch jumps that many px each cycle.
+  var GAP_PX = 120; // blank space between the end of the directory and where it repeats (loop seam)
   var MIN_SCROLL_PX_SEC = 5; // anti-burn-in minimum when content fits
+  var REFRESH_MS = 60000;    // poll data.json this often; re-render ONLY when entries changed
 
   // ----- header -----
   var header = document.getElementById('header');
@@ -579,117 +604,166 @@ function renderDirectoryBoard(c) {
   var cols = cfg.columns || 'auto';
   if (['auto','1','2','3','4'].indexOf(String(cols)) === -1) cols = 'auto';
 
-  function buildBlock() {
-    var block = document.createElement('div');
-    block.className = 'block';
-    var cats = Array.isArray(cfg.categories) ? cfg.categories : [];
-    cats.forEach(function(cat){
-      var catEl = document.createElement('div');
-      catEl.className = 'category';
-      var h2 = document.createElement('h2');
-      h2.textContent = cat.name || '';
-      catEl.appendChild(h2);
-      var entries = document.createElement('div');
-      entries.className = 'entries';
-      entries.setAttribute('data-cols', String(cols));
-      (cat.entries || []).forEach(function(e){
-        var row = document.createElement('div');
-        row.className = 'entry' + (e.available ? ' available' : '');
-        var id = document.createElement('span');
-        id.className = 'id';
-        id.textContent = (e.identifier || '') + ':';
-        var text = document.createElement('div');
-        text.className = 'text';
-        var nm = document.createElement('span');
-        nm.className = 'nm';
-        nm.textContent = e.name || '';
-        text.appendChild(nm);
-        if (e.subtitle) {
-          var sub = document.createElement('span');
-          sub.className = 'sub';
-          sub.textContent = e.subtitle;
-          text.appendChild(sub);
-        }
-        row.appendChild(id);
-        row.appendChild(text);
-        entries.appendChild(row);
-      });
-      catEl.appendChild(entries);
-      block.appendChild(catEl);
-    });
-    return block;
-  }
-
-  var track = document.getElementById('track');
-  var baseBlock = buildBlock();
-  track.appendChild(baseBlock);
-
-  // ----- measure + clone enough copies to fill (seamless loop) -----
-  function setupScroll() {
-    // remove any previous clones (on resize)
-    while (track.children.length > 1) track.removeChild(track.lastChild);
-    var gap = document.createElement('div');
-    gap.className = 'gap';
-    gap.style.height = GAP_PX + 'px'; // MUST equal GAP_PX — the loop translates by baseH+GAP_PX;
-    track.appendChild(gap);           // a mismatch (was CSS 120 vs GAP_PX 100) jumps 20px each cycle.
-
-    var baseH = baseBlock.getBoundingClientRect().height;
-    var cycleH = baseH + GAP_PX; // distance to translate per loop
-    var viewH = scroller.getBoundingClientRect().height || window.innerHeight;
-
-    // Clone enough times so track fills scroller + at least one full cycle
-    // Minimum 1 clone (so we can loop). Target: track_height >= view + cycle.
-    var cloneCount = Math.max(1, Math.ceil((viewH + cycleH) / cycleH));
-    for (var i = 0; i < cloneCount; i++) {
-      track.appendChild(buildBlock());
-      if (i < cloneCount - 1) {
-        var g = document.createElement('div');
-        g.className = 'gap';
-        g.style.height = GAP_PX + 'px'; // keep every clone-gap == GAP_PX (seamless loop)
-        track.appendChild(g);
+  function buildCategoryEl(cat) {
+    var catEl = document.createElement('div');
+    catEl.className = 'category';
+    var h2 = document.createElement('h2');
+    h2.textContent = cat.name || '';
+    catEl.appendChild(h2);
+    var entries = document.createElement('div');
+    entries.className = 'entries';
+    entries.setAttribute('data-cols', String(cols));
+    (cat.entries || []).forEach(function(e){
+      var row = document.createElement('div');
+      row.className = 'entry' + (e.available ? ' available' : '');
+      var id = document.createElement('span');
+      id.className = 'id';
+      id.textContent = (e.identifier || '') + ':';
+      var text = document.createElement('div');
+      text.className = 'text';
+      var nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = e.name || '';
+      text.appendChild(nm);
+      if (e.subtitle) {
+        var sub = document.createElement('span');
+        sub.className = 'sub';
+        sub.textContent = e.subtitle;
+        text.appendChild(sub);
       }
-    }
-
-    // speed
-    var contentFits = baseH <= viewH;
-    var speedName = cfg.scroll_speed || 'medium';
-    var speedPxSec = SPEEDS[speedName] || SPEEDS.medium;
-    if (contentFits) speedPxSec = MIN_SCROLL_PX_SEC;
-
-    var duration = cycleH / speedPxSec;
-
-    // inject keyframes
-    var oldStyle = document.getElementById('scroll-kf');
-    if (oldStyle) oldStyle.remove();
-    var style = document.createElement('style');
-    style.id = 'scroll-kf';
-    style.textContent =
-      '@keyframes dir-scroll { from { transform: translateY(0); } to { transform: translateY(-' + cycleH + 'px); } }' +
-      '.track { animation: dir-scroll ' + duration + 's linear infinite; }';
-    document.head.appendChild(style);
+      row.appendChild(id);
+      row.appendChild(text);
+      entries.appendChild(row);
+    });
+    catEl.appendChild(entries);
+    return catEl;
   }
 
-  // wait for images (logo + bgs) to load before measuring, so heights are correct
+  var stage = scroller; // the clip window between header & footer
+  var N = 4;            // panels in the ring (2 tile the screen, 1 dwells below, 1 above)
+  var baseStyle = document.createElement('style');
+  baseStyle.textContent =
+    '.panel{ position:absolute; left:0; right:0; top:0; overflow:hidden; contain:paint; will-change:transform; backface-visibility:hidden; }' +
+    '.pcontent{ position:absolute; left:0; right:0; top:0; padding:0 48px; }';
+  document.head.appendChild(baseStyle);
+  var scrollStyle = document.createElement('style');
+  scrollStyle.id = 'dir-scroll-kf';
+  document.head.appendChild(scrollStyle);
+
+  // ----- scroll: a ring of compositor-animated, viewport-tall panels -----
+  // Animating one tall track fails on Firefox (it won't composite a transform bigger than ~1.1x the
+  // viewport / 4096px and falls back to a stuttering main-thread animation) and churns GPU tiles even
+  // on Chromium. Instead we run N panels, each exactly one stage-height tall (overflow:hidden +
+  // contain:paint clamp each compositor layer to that box). Each panel is a static window onto a full
+  // copy of the directory (positioned by a static inner translateY = -slice); the PANEL is slid
+  // rigidly upward by ONE CSS @keyframes animation, and the panels are phase-locked by negative
+  // animation-delay so two always tile the screen while one dwells off-screen below and one above.
+  // There is NO per-frame JS — "scrolling" is the compositor sliding pre-rasterized viewport-sized
+  // textures, so nothing on the main thread (GC, extensions, the host player) can stutter it. On each
+  // off-screen wrap a panel jumps its slice N screens ahead (content already built — nothing to load
+  // when it reappears) and, if a data refresh is pending, rebuilds its content THEN, safely off-screen.
+  var panels = [];       // [{el, content, version, slice}]
+  var Sh = 0;            // panel / stage height
+  var C = 0;             // looped directory height (one full copy)
+  var speedPxSec = 0;
+  var contentVersion = 0;
+  var pending = null;    // a queued data refresh, picked up per-panel while off-screen
+
+  function fillContent(el) { // full directory + a clone of the top (>= one screen) for the within-panel wrap
+    var arr = Array.isArray(cfg.categories) ? cfg.categories : [];
+    arr.forEach(function(c){ el.appendChild(buildCategoryEl(c)); });
+    var full = el.scrollHeight; // == C (one full directory)
+    var i = 0, guard = arr.length * 4 + 1;
+    while ((el.scrollHeight - full) < Sh + 4 && arr.length && i < guard) {
+      el.appendChild(buildCategoryEl(arr[i % arr.length])); i++;
+    }
+    return full;
+  }
+
+  function globalScroll() { return speedPxSec * ((document.timeline.currentTime || 0) / 1000); }
+  function mod(a, n) { return n > 0 ? ((a % n) + n) % n : 0; }
+  function setSlice(p, off) { p.slice = off; p.content.style.transform = 'translate3d(0,' + (-off) + 'px,0)'; }
+
+  function seedSlices() { // four consecutive screens, matching the lanes' physical phase (delays 0..-3T)
+    var base = globalScroll();
+    var laneStart = [2 * Sh, 1 * Sh, 0, -1 * Sh];
+    panels.forEach(function(p, i){ setSlice(p, mod(base + laneStart[i % 4], C)); });
+  }
+
+  function onWrap(p) { // fires as a panel wraps to the bottom (off-screen); rebuild + advance N screens
+    if (pending && p.version !== pending.version) {
+      p.content.replaceChildren();
+      C = fillContent(p.content); // all panels share the same data => same C
+      p.version = pending.version;
+    }
+    setSlice(p, mod(p.slice + N * Sh, C));
+  }
+
+  function setup() {
+    layoutScroller();
+    Sh = stage.getBoundingClientRect().height || window.innerHeight;
+    stage.replaceChildren();
+    panels = [];
+    for (var i = 0; i < N; i++) {
+      var el = document.createElement('div'); el.className = 'panel'; el.setAttribute('data-lane', i);
+      el.style.height = Sh + 'px';
+      var content = document.createElement('div'); content.className = 'pcontent';
+      el.appendChild(content);
+      stage.appendChild(el);
+      panels.push({ el: el, content: content, version: contentVersion, slice: 0 });
+    }
+    C = fillContent(panels[0].content);
+    for (var j = 1; j < N; j++) fillContent(panels[j].content);
+    speedPxSec = (C <= Sh) ? MIN_SCROLL_PX_SEC : (SPEEDS[cfg.scroll_speed] || SPEEDS.medium);
+    var T = Sh / speedPxSec, dur = N * T;
+    var kf = '@keyframes dir-pan { from { transform: translate3d(0,' + (2 * Sh) + 'px,0); } to { transform: translate3d(0,' + (-2 * Sh) + 'px,0); } }';
+    kf += '.panel{ animation: dir-pan ' + dur + 's linear infinite; }';
+    for (var k = 0; k < N; k++) kf += '.panel[data-lane="' + k + '"]{ animation-delay: ' + (-k * T).toFixed(4) + 's; }';
+    scrollStyle.textContent = kf;
+    seedSlices();
+    panels.forEach(function(p){ p.el.addEventListener('animationiteration', function(){ onWrap(p); }); });
+  }
+
+  // wait for images (logo + bgs) to load before the first layout, so heights are correct
   var pendingImgs = Array.from(document.images).filter(function(i){ return !i.complete; });
   if (pendingImgs.length === 0) {
-    setupScroll();
+    setup();
   } else {
-    var done = 0;
+    var built = false, build = function(){ if (!built) { built = true; setup(); } };
     pendingImgs.forEach(function(i){
-      var onDone = function(){ done++; if (done === pendingImgs.length) setupScroll(); };
-      i.addEventListener('load', onDone, { once:true });
-      i.addEventListener('error', onDone, { once:true });
+      i.addEventListener('load', build, { once:true });
+      i.addEventListener('error', build, { once:true });
     });
-    // hard timeout so we never hang
-    setTimeout(function(){ if (document.getElementById('scroll-kf') == null) setupScroll(); }, 5000);
+    setTimeout(build, 5000); // hard timeout so we never hang
   }
 
-  // re-layout on resize (debounced)
+  // re-layout on resize (debounced) — rebuild the ring; globalScroll() keeps the same content position
   var rT;
   window.addEventListener('resize', function(){
     clearTimeout(rT);
-    rT = setTimeout(function(){ layoutScroller(); setupScroll(); }, 250);
+    rT = setTimeout(setup, 250);
   });
+
+  // ----- live data refresh: poll data.json; re-render ONLY when the entries changed -----
+  // Mirrors the directory-search poll. data.json is THIS board's own feed (relative URL,
+  // CORS-open, no-store). Diff the categories signature and rebuild IN PLACE only on a real
+  // change, so an unchanged poll never touches the running scroll (no periodic reset).
+  var lastSig = JSON.stringify(cfg.categories || []);
+  setInterval(function(){
+    if (document.hidden) return;
+    fetch('data.json', { cache: 'no-store' })
+      .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function(data){
+        var cats = data && Array.isArray(data.categories) ? data.categories : [];
+        var sig = JSON.stringify(cats);
+        if (sig === lastSig) return;      // unchanged -> leave the scroll running untouched
+        lastSig = sig;
+        cfg.categories = cats;
+        contentVersion++;                 // queue it; each panel adopts it on its next off-screen wrap
+        pending = { version: contentVersion };
+      })
+      .catch(function(){ /* transient error -> keep last-good board */ });
+  }, REFRESH_MS);
 
   // ----- pixel shift (anti-burn-in): every 5 min, shift .page 0-3px random dir -----
   var page = document.getElementById('page');
@@ -987,6 +1061,117 @@ function renderDirectorySearch(c) {
 })();
 </script>
 </body></html>`;
+}
+
+// diag-smoothness: a self-contained frame-cadence tester for the ACTUAL panel. Two GPU-composited
+// animations (a vertical scroll like the board + a fast sweep) plus a big on-screen HUD (FPS, refresh
+// estimate, long-frame count, worst stall, SMOOTH/STALLING verdict) — so a stutter can be read off the
+// panel screen with no console. If this stalls on real signage hardware, the hardware is the cause.
+function renderDiagSmoothness(config) {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Smoothness Diagnostic</title><style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:#0a0d13;color:#cbd4e4;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;height:100vh}
+  .bar{position:absolute;top:0;left:0;right:0;padding:1.4vh 2vw;border-bottom:1px solid #20293a;background:#0f1420;z-index:5}
+  .bar h1{font-size:2.2vh;font-weight:700;letter-spacing:.02em}
+  .bar p{font-size:1.7vh;color:#6d7789;margin-top:.4vh}
+  .bar b{color:#54a6ff}
+  .stage{position:absolute;top:0;left:0;right:0;bottom:0}
+  .col{position:absolute;top:0;left:0;width:52%;height:100%;overflow:hidden;border-right:1px solid #20293a}
+  .roll{position:absolute;left:0;right:0;top:0;will-change:transform;animation:roll 30s linear infinite}
+  @keyframes roll{from{transform:translate3d(0,0,0)}to{transform:translate3d(0,-50%,0)}}
+  .row{display:flex;align-items:center;gap:1.4vw;padding:1.5vh 2vw;border-bottom:1px solid #20293a;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:2.6vh}
+  .row .n{color:#54a6ff;min-width:3.2em;font-variant-numeric:tabular-nums}
+  .row:nth-child(3n) .n{color:#37d391}
+  .sweep{position:absolute;top:0;right:0;width:48%;height:100%;background:repeating-linear-gradient(90deg,#0f1420 0 3vw,#182234 3vw 6vw)}
+  .marker{position:absolute;top:0;bottom:0;width:.5vw;background:#f5b451;box-shadow:0 0 3vw #f5b451;will-change:transform;animation:sweep 2s linear infinite}
+  @keyframes sweep{from{transform:translateX(0)}to{transform:translateX(calc(48vw - .5vw))}}
+  .tag{position:absolute;top:1.5vh;font-family:ui-monospace,monospace;font-size:1.6vh;color:#6d7789;z-index:2}
+  .col .tag{left:1.5vw;background:#0a0d13;padding:.4vh .8vw;border-radius:4px}
+  .sweep .tag{right:1.5vw}
+  .hud{position:absolute;left:50%;bottom:3vh;transform:translateX(-50%);background:rgba(12,16,24,.94);border:1px solid #20293a;border-radius:14px;padding:2.2vh 2.4vw;min-width:64vw;z-index:6;box-shadow:0 1.4vh 4vh rgba(0,0,0,.55)}
+  .verdict{display:flex;align-items:center;gap:1.4vw;margin-bottom:1.8vh}
+  .dot{width:1.8vh;height:1.8vh;border-radius:50%;background:#6d7789}
+  .verdict.smooth .dot{background:#37d391;box-shadow:0 0 0 .6vh rgba(55,211,145,.16)}
+  .verdict.stall .dot{background:#ff5d5d;box-shadow:0 0 0 .6vh rgba(255,93,93,.18)}
+  .verdict .txt{font-size:3.4vh;font-weight:750;letter-spacing:.01em}
+  .verdict.smooth .txt{color:#37d391}.verdict.stall .txt{color:#ff5d5d}
+  .verdict .sub{font-size:1.9vh;color:#6d7789;font-weight:400;margin-left:auto;text-align:right}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1.2vw;margin-bottom:1.4vh}
+  .stat{background:#121826;border:1px solid #20293a;border-radius:10px;padding:1.2vh 1vw}
+  .stat .k{font-size:1.4vh;text-transform:uppercase;letter-spacing:.08em;color:#6d7789}
+  .stat .v{font-family:ui-monospace,Menlo,monospace;font-size:4vh;font-variant-numeric:tabular-nums;margin-top:.4vh}
+  .stat .v small{font-size:1.8vh;color:#6d7789}
+  .log{font-family:ui-monospace,Menlo,monospace;font-size:1.7vh;color:#6d7789;height:2.4vh;overflow:hidden}
+  .log b{color:#ff5d5d}
+  </style></head><body>
+  <div class="bar"><h1>Panel Smoothness Diagnostic</h1><p>Two GPU-composited animations, zero app logic. If the scroll or the yellow bar <b>skips</b> — or the HUD reads STALLING — this <b>panel/hardware</b> is dropping frames.</p></div>
+  <div class="stage">
+    <div class="col"><div class="tag">TEST 1 &middot; vertical scroll</div><div class="roll" id="roll"></div></div>
+    <div class="sweep"><div class="tag">TEST 2 &middot; fast sweep</div><div class="marker"></div></div>
+    <div class="hud">
+      <div class="verdict" id="verdict"><span class="dot"></span><span class="txt" id="vtxt">measuring&hellip;</span><span class="sub" id="vsub">collecting frames</span></div>
+      <div class="grid">
+        <div class="stat"><div class="k">FPS now</div><div class="v" id="fps">&ndash;</div></div>
+        <div class="stat"><div class="k">Refresh est.</div><div class="v" id="hz">&ndash;<small> Hz</small></div></div>
+        <div class="stat"><div class="k">Long frames</div><div class="v" id="long">0<small> &gt;50ms</small></div></div>
+        <div class="stat"><div class="k">Worst stall</div><div class="v" id="worst">0<small> ms</small></div></div>
+      </div>
+      <div class="log" id="log">no stalls yet &middot; a healthy panel shows 0 long frames</div>
+    </div>
+  </div>
+  <script>
+  (function(){
+    var roll=document.getElementById('roll'),half='',i;
+    for(i=1;i<=26;i++){ half+='<div class="row"><span class="n">'+(100+i)+'</span><span class="t">Directory line '+i+'</span></div>'; }
+    roll.innerHTML=half+half;
+    var last=0,worst=0,longCount=0,recent=[],dts=[],started=0,lastPaint=0;
+    var elFps=document.getElementById('fps'),elHz=document.getElementById('hz'),elLong=document.getElementById('long'),
+        elWorst=document.getElementById('worst'),elLog=document.getElementById('log'),verdict=document.getElementById('verdict'),
+        vtxt=document.getElementById('vtxt'),vsub=document.getElementById('vsub');
+    function median(a){ var b=a.slice().sort(function(x,y){return x-y}); return b[Math.floor(b.length/2)]||0; }
+    function paint(ts){
+      var med=median(dts)||16.7;
+      elFps.innerHTML=(1000/med).toFixed(0);
+      elHz.innerHTML=(1000/med).toFixed(0)+'<small> Hz</small>';
+      elLong.innerHTML=longCount+'<small> &gt;50ms</small>';
+      elWorst.innerHTML=worst.toFixed(0)+'<small> ms</small>';
+      if(recent.length) elLog.innerHTML=recent.join(' \\u00b7 ');
+      var el=ts-started;
+      if(el>4000){
+        if(longCount===0){ verdict.className='verdict smooth'; vtxt.innerHTML='SMOOTH'; vsub.innerHTML='0 long frames &mdash; this panel animates cleanly'; }
+        else { verdict.className='verdict stall'; vtxt.innerHTML='STALLING'; vsub.innerHTML=longCount+' long frame'+(longCount>1?'s':'')+' &mdash; this panel is dropping frames'; }
+      } else { vsub.innerHTML='collecting frames&hellip; '+(el/1000).toFixed(0)+'s'; }
+    }
+    function frame(ts){
+      if(!started) started=ts;
+      if(last){ var dt=ts-last; dts.push(dt); if(dts.length>180) dts.shift();
+        if(dt>50){ longCount++; if(dt>worst) worst=dt;
+          recent.unshift('<b>'+dt.toFixed(0)+'ms</b> @ '+((ts-started)/1000).toFixed(0)+'s'); if(recent.length>3) recent.pop(); }
+      }
+      last=ts;
+      if(ts-lastPaint>250){ lastPaint=ts; paint(ts); }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+    // the player appends ?device=<id> to the render URL so telemetry can be keyed to THIS panel.
+    var DEVID=''; try{ var mm=(location.search||'').match(/[?&](?:device|d)=([^&]+)/); if(mm) DEVID=decodeURIComponent(mm[1]); }catch(e){}
+    // report the snapshot back to the server (relative 'telemetry' -> /api/widgets/<id>/telemetry).
+    // text/plain keeps it a CORS-simple request (no preflight) from the null-origin sandboxed iframe.
+    function report(){
+      try{
+        var med=median(dts)||16.7, now=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+        var payload={device:DEVID,fps:Math.round(1000/med),refreshHz:Math.round(1000/med),longFrames:longCount,worstStallMs:Math.round(worst),
+          elapsedS:started?Math.round((now-started)/1000):0,
+          verdict:(started&&(now-started>4000))?(longCount?'STALLING':'SMOOTH'):'measuring',
+          recent:recent.slice(0,3).map(function(s){return s.replace(/<[^>]+>/g,'');}),
+          vp:window.innerWidth+'x'+window.innerHeight,dpr:window.devicePixelRatio||1,ua:(navigator.userAgent||'').slice(0,180)};
+        fetch('telemetry',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(payload),keepalive:true})['catch'](function(){});
+      }catch(e){}
+    }
+    setInterval(report,2500);
+  })();
+  </script></body></html>`;
 }
 
 module.exports = router;
