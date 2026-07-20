@@ -301,6 +301,14 @@ app.get('/player/player-media-health.js', (req, res) => {
   res.sendFile(path.join(__dirname, 'lib', 'player-media-health.js'));
 });
 
+// Transition runtime bundle (renderer.js + params.js + shader sources) built from shared/Transitions.
+// If this ever fails to load, the player simply hard-cuts (never blank) — it's a progressive enhancement.
+app.get('/player/transitions.js', (req, res) => {
+  res.type('application/javascript').setHeader('Cache-Control', 'public, max-age=300');
+  try { res.send(require('./lib/transition-bundle').bundle()); }
+  catch (e) { res.status(500).send('/* transition bundle unavailable */'); }
+});
+
 // Serve web player at /player (same no-cache for JS/HTML). The index.html
 // route above intercepts the HTML requests; everything else still falls
 // through to this static handler (debug-overlay.js, sw.js, manifest, etc).
@@ -736,6 +744,12 @@ app.use('/uploads/content', (req, res, next) => {
   res.setHeader('Cache-Control', 'public, max-age=2592000, immutable'); // 30 days
   next();
 }, express.static(config.contentDir));
+
+// Media proxy for remote (URL-referenced) playlist items — public by construction (players are
+// unauthenticated browsers). Takes an itemId, never a caller URL: it fetches the item's stored
+// remote_url through the SSRF guard so a WebGL transition can read the bytes same-origin. Must sit
+// before the SPA catch-all (app.get('*')) or that would swallow /media/proxy/*.
+app.use('/media', require('./routes/media'));
 
 // Setup WebSockets
 const setupWebSockets = require('./ws');
