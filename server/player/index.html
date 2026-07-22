@@ -494,6 +494,12 @@
     let lastWallSync = null;
     let currentVideoEl = null;
     let currentItemStartedAt = 0;
+    // Bumped on every renderContent dispatch; a buffered (async warm-play) render captures it at start
+    // and bails if it changes. MUST be declared here with the other top-level state — the cold-start
+    // cached-playlist restore calls renderContent (→ renderSeq++) during initial script execution, which
+    // is long before line ~2400 where the buffered-video code lives. A `let` down there left renderSeq in
+    // the temporal dead zone on that early path → "can't access 'renderSeq' before initialization".
+    let renderSeq = 0;
     // Followers in a video wall must stay silent — N copies of the same audio
     // slightly out of sync produce a flanged echo across the wall. Only the
     // leader is allowed to make sound. This helper is the single source of
@@ -2405,10 +2411,10 @@
     // frame as the wipe's `to`, run the GL wipe, then mount + resume the real <video> FROM that same
     // frame (zero jump). Every failure path (no from-frame, un-decodable, no runtime, context loss, or
     // the decode watchdog) hard-cuts straight to mount+play — never a blank.
-    // Bumped on every renderContent dispatch. A buffered render captures the value at start and bails if
-    // it changes — the warm-play is async (first-frame wait + the wipe), and a playlist push mid-window
-    // must not let a stale clip tear down the newer content that already took over.
-    let renderSeq = 0;
+    // renderSeq (declared with the top-level state) is bumped on every renderContent dispatch. A buffered
+    // render captures the value at start and bails if it changes — the warm-play is async (first-frame wait
+    // + the wipe), and a playlist push mid-window must not let a stale clip tear down the newer content that
+    // already took over.
     function renderVideoBuffered(item) {
       const src = item.remote_url || `${config.serverUrl}/uploads/content/${item.filepath}`;
       const from = currentTexturableFrame();            // capture the outgoing frame NOW, before any teardown
