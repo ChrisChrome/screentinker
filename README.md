@@ -1,5 +1,16 @@
 # ScreenTinker — Open-Source, Self-Hosted Digital Signage Software
 
+<p align="center">
+  <img src="frontend/assets/dashboard-preview.png" alt="ScreenTinker dashboard showing online displays with playlist assignments" width="800">
+</p>
+
+<p align="center">
+  <a href="https://screentinker.com">Live demo</a> ·
+  <a href="https://screentinker.com/docs">API reference</a> ·
+  <a href="https://screentinker.com/guides/self-hosted-digital-signage.html">Self-hosting guide</a> ·
+  <a href="https://discord.gg/utTdsrqq4Z">Discord</a>
+</p>
+
 ScreenTinker is a free, open-source **digital signage CMS** you can self-host on your own server — or run in our managed cloud. Manage TVs, video walls, and kiosks across multiple locations from one dashboard, with remote control, scheduling, playlists, and analytics. Built for retail, QSR menu boards, offices, lobbies, education, and any environment where you need centralized control over remote screens. Multi-tenant, MIT-licensed, single-developer maintained with direct contact access.
 
 **Runs on any screen** — Android TV, Fire TV, Samsung Tizen, LG webOS, Amazon Vega OS, Raspberry Pi, Windows, ChromeOS, or any web browser. No per-device player licence, no hardware lock-in.
@@ -546,13 +557,11 @@ scripts/          Device setup scripts + admin recovery
 
 ## Support
 
-ScreenTinker is built and maintained by one developer. If the project is useful to you and you want to support continued development:
+ScreenTinker is free and MIT licensed, and it stays that way. If it's useful to you and you want to help keep development going, you can chip in:
 
-- **[Donate via Wise](https://wise.com/pay/business/bytetinkerllc?utm_source=quick_pay)** — directly help fund continued development (ByteTinker LLC)
-- Star the repo on GitHub
-- Open [issues](https://github.com/screentinker/screentinker/issues) with feedback or bug reports
-- Drop into the [Discord](https://discord.gg/utTdsrqq4Z) and say hi
-- Contribute back if you've extended something useful
+- ⭐ Star the repo, honestly this helps more than you'd think
+- 💬 Report bugs or ideas in [Discord](https://discord.gg/utTdsrqq4Z) or [issues](https://github.com/screentinker/screentinker/issues)
+- ☕ [Donate via Wise](https://wise.com/pay/business/bytetinkerllc?utm_source=quick_pay) (ByteTinker LLC)
 
 GitHub Sponsors integration is also planned. Direct contact: [dan@bytetinker.net](mailto:dan@bytetinker.net) or via Discord.
 

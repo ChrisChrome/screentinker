@@ -10,7 +10,7 @@ info:
     **scoped personal access token** presented as `Authorization: Bearer st_...`. The
     dashboard's session JWT is also accepted, but this contract targets token consumers.
 
-    ## Scope ladder (read < write < full)
+    ## Scope ladder (read &#60; write &#60; full)
     Tokens carry one of three scopes; higher scopes subsume lower ones:
     - `read`  — all `GET` endpoints.
     - `write` — all resource mutations (`POST` / `PUT` / `PATCH` / `DELETE`).
