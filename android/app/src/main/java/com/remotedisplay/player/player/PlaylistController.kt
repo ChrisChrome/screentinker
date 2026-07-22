@@ -36,7 +36,10 @@ class PlaylistController(
     private val onNothingScheduled: (() -> Unit)? = null,
     // Screen-resilience: the defined "content isn't downloaded yet" waiting state, shown ONLY when
     // nothing has ever played (fresh device). Never used while content is on screen.
-    private val onWaitingForContent: (() -> Unit)? = null
+    private val onWaitingForContent: (() -> Unit)? = null,
+    // Proof-of-play: emitted on each item show ("play_start") and when it's left ("play_end"),
+    // so the caller can forward device:play-event to the server (populates play_logs / Reports).
+    private val onPlayLog: ((event: String, item: PlaylistItem, completed: Boolean) -> Unit)? = null
 ) {
     private companion object {
         const val CONTENT_RECHECK_MS = 3000L
@@ -48,6 +51,9 @@ class PlaylistController(
 
     private val items = mutableListOf<PlaylistItem>()
     private var currentIndex = -1
+    // Proof-of-play: the item we last emitted a play_start for (so we can close it with play_end
+    // on the next show). Only set for loggable items (never wall followers).
+    private var loggedItem: PlaylistItem? = null
     private val handler = Handler(Looper.getMainLooper())
     private var advanceRunnable: Runnable? = null
     private var isRunning = false
@@ -286,6 +292,9 @@ class PlaylistController(
         hasContentOnScreen = false
         pendingItems = null
         pendingSuccessorId = null
+        // Proof-of-play: close the open row so its duration is recorded on shutdown/screen-off.
+        loggedItem?.let { onPlayLog?.invoke("play_end", it, true) }
+        loggedItem = null
     }
 
     fun next() {
@@ -331,6 +340,14 @@ class PlaylistController(
         Log.i("PlaylistController", "Playing: ${item.filename} (index $currentIndex)")
         onItemChanged(item)
         hasContentOnScreen = true // a valid item is now rendered — protect it from being blanked
+
+        // Proof-of-play (parity with the web player): close the outgoing item and open this one.
+        // Wall followers don't log — the leader's single row represents the whole wall.
+        if (!wallFollower) {
+            loggedItem?.let { prev -> if (prev !== item) onPlayLog?.invoke("play_end", prev, true) }
+            onPlayLog?.invoke("play_start", item, false)
+            loggedItem = item
+        }
 
         // For images and widgets, auto-advance after duration. For videos, wait
         // for the completion callback. Wall followers never auto-advance — the

@@ -219,7 +219,15 @@ class MainActivity : AppCompatActivity() {
             onNothingScheduled = { if (::mediaPlayer.isInitialized) mediaPlayer.stop(); showStatus(getString(R.string.nothing_scheduled)) },
             // Screen-resilience: the defined "waiting for content" state — ONLY on a fresh device
             // with nothing to show yet (never while content is on screen; that path keeps current).
-            onWaitingForContent = { if (::mediaPlayer.isInitialized) mediaPlayer.stop(); showStatus(getString(R.string.waiting_for_content)) }
+            onWaitingForContent = { if (::mediaPlayer.isInitialized) mediaPlayer.stop(); showStatus(getString(R.string.waiting_for_content)) },
+            // Proof-of-play: forward play_start/play_end to the server (device:play-event) so this
+            // device shows Total Plays / Hours in Reports. Widgets have no content_id, so key on the
+            // widget id instead — keeping play_start and play_end consistent so the row's duration closes.
+            onPlayLog = { event, item, completed ->
+                val cid = item.contentId.ifEmpty { item.widgetId ?: "" }
+                if (event == "play_start") wsService?.sendPlayStart(cid, item.filename, item.durationSec)
+                else wsService?.sendPlayEnd(cid, item.filename, completed)
+            }
         )
         // Screen-resilience: an item is playable only when its content is actually available —
         // a widget, a remote stream, or a fully-downloaded local file. A not-yet/failed download is

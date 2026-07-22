@@ -1095,6 +1095,38 @@ class WebSocketService : Service() {
         } catch (e: Throwable) { Log.w("WebSocketService", "sendPlaybackState: ${e.message}") }
     }
 
+    // Proof-of-play — parity with the web player's device:play-event (server/player/index.html).
+    // Without these, Android devices never populate the play_logs table, so Reports show
+    // Total Plays / Hours / proof-of-play as all zero for them. play_start INSERTs a row on show;
+    // play_end fills its duration on advance. Matches the server handler in ws/deviceSocket.js.
+    fun sendPlayStart(contentId: String, contentName: String, durationSec: Int) {
+        if (socket?.connected() != true) return
+        try {
+            val data = JSONObject().apply {
+                put("device_id", config.deviceId)
+                put("event", "play_start")
+                put("content_id", if (contentId.isEmpty()) JSONObject.NULL else contentId)
+                put("content_name", contentName)
+                put("duration_sec", if (durationSec > 0) durationSec else JSONObject.NULL)
+            }
+            socket?.emit("device:play-event", data)
+        } catch (e: Throwable) { Log.w("WebSocketService", "sendPlayStart: ${e.message}") }
+    }
+
+    fun sendPlayEnd(contentId: String, contentName: String, completed: Boolean) {
+        if (socket?.connected() != true) return
+        try {
+            val data = JSONObject().apply {
+                put("device_id", config.deviceId)
+                put("event", "play_end")
+                put("content_id", if (contentId.isEmpty()) JSONObject.NULL else contentId)
+                put("content_name", contentName)
+                put("completed", completed)
+            }
+            socket?.emit("device:play-event", data)
+        } catch (e: Throwable) { Log.w("WebSocketService", "sendPlayEnd: ${e.message}") }
+    }
+
     // Video-wall senders. Guarded on socket.connected() like sendPlaybackState, so a
     // pre-register tick is a no-op (the server would reject it as unauthenticated).
     fun emitWallSync(wallId: String, currentIndex: Int, contentId: String?, positionSec: Float) {

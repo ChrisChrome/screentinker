@@ -49,6 +49,11 @@ function PlaylistPlayer(stageEl, getBase, getDeviceId) {
   // #157 deferred rotation-out: when a removed-but-live item should finish before we swap in the list.
   this._deferredRotation = false;
   this._deferredSuccessorId = null;
+  // Proof-of-play (parity with the web/Android players): onPlayEvent is a hook set by app.js that
+  // forwards device:play-event to the server (populates play_logs / Reports). _loggedItem is the item
+  // we last emitted play_start for, so we can close it with play_end on the next show.
+  this.onPlayEvent = null;
+  this._loggedItem = null;
 }
 
 // #157 continuity helpers (mirror the web/Android players).
@@ -203,6 +208,8 @@ PlaylistPlayer.prototype.stop = function () {
   if (this.timer) { clearTimeout(this.timer); this.timer = null; }
   this._releasePreloadImage();   // #187: drop any warmed next-image bitmap on teardown
   this.clearStage();
+  // Proof-of-play: close the open row so its duration is recorded on teardown.
+  if (this._loggedItem) { this._logPlay('play_end', this._loggedItem, true); this._loggedItem = null; }
 };
 
 PlaylistPlayer.prototype.clearStage = function () {
@@ -279,6 +286,8 @@ PlaylistPlayer.prototype.setTimezone = function (tz) { this.timezone = tz || nul
 PlaylistPlayer.prototype.setWallFollower = function (b) { this.wallFollower = !!b; };
 PlaylistPlayer.prototype.invalidate = function () { this.sig = ''; };
 PlaylistPlayer.prototype.getIndex = function () { return this.index; };
+PlaylistPlayer.prototype.getItemCount = function () { return this.items.length; };
+PlaylistPlayer.prototype.isWallFollower = function () { return !!this.wallFollower; };
 PlaylistPlayer.prototype.getCurrentItem = function () { return this.items[this.index] || null; };
 PlaylistPlayer.prototype.getCurrentVideo = function () { return this.currentVideoEl; };
 PlaylistPlayer.prototype.getItemStartedAt = function () { return this.itemStartedAt; };
@@ -341,6 +350,23 @@ PlaylistPlayer.prototype.nothingScheduled = function () {
   this.timer = setTimeout(function () { self.startPlayback(); }, 30000);
 };
 
+// Proof-of-play: build + forward a device:play-event payload via the onPlayEvent hook (set by app.js).
+// Widgets carry no content_id, so key on widget_id — keeping play_start/play_end consistent so the
+// row's duration closes. Mirrors server/player/index.html and the Android WebSocketService.
+PlaylistPlayer.prototype._logPlay = function (event, item, completed) {
+  if (typeof this.onPlayEvent !== 'function' || !item) return;
+  var cid = item.content_id || item.widget_id || '';
+  var payload = {
+    device_id: this.getDeviceId(),
+    event: event,
+    content_id: cid || null,
+    content_name: item.filename || 'Unknown'
+  };
+  if (event === 'play_start') payload.duration_sec = (item.duration_sec > 0 ? item.duration_sec : null);
+  else payload.completed = !!completed;
+  try { this.onPlayEvent(payload); } catch (e) {}
+};
+
 PlaylistPlayer.prototype.playCurrent = function () {
   if (this.timer) { clearTimeout(this.timer); this.timer = null; }
   if (!this.items.length) { this.idle(); return; }
@@ -349,6 +375,15 @@ PlaylistPlayer.prototype.playCurrent = function () {
   this.currentVideoEl = null;        // set by renderVideo when applicable
 
   var item = this.items[this.index];
+
+  // Proof-of-play (parity with the web/Android players): close the outgoing item and open this one.
+  // Wall followers don't log — the leader's single row represents the whole wall.
+  if (!this.wallFollower) {
+    if (this._loggedItem && this._loggedItem !== item) this._logPlay('play_end', this._loggedItem, true);
+    this._logPlay('play_start', item, false);
+    this._loggedItem = item;
+  }
+
   // Scheduled playlists cycle even with one active item so windows re-evaluate.
   // A wall FOLLOWER also behaves "single": it holds the leader's current item
   // (looping, no auto-advance) and only switches when wall:sync says the index moved.
@@ -362,10 +397,13 @@ PlaylistPlayer.prototype.playCurrent = function () {
     && !(item.widget_id && !item.content_id)
     && mime.indexOf('video/') !== 0
     && mime.indexOf('image/') === 0;
+  // Widgets also buffer-swap (renderWidget reveals the new iframe on load, then clears), so they skip
+  // the pre-dispatch clearStage too — kills the black flash on directory-board/widget reloads.
+  var isWidget = !!(item.widget_id && !item.content_id);
   // Skip the pre-dispatch clearStage for an image (it decode-gates + swaps inside renderImage) AND for a
   // landscape video that will composite into a wipe (renderVideoBuffered needs the outgoing frame to
   // capture as `from`, then clears inside its own mount). Everything else clears up front as before.
-  if (!isImage && !this._videoWillComposite(item)) this.clearStage();
+  if (!isImage && !isWidget && !this._videoWillComposite(item)) this.clearStage();
 
   try {
     if (mime === 'video/youtube') return this.renderYouTube(item, single);
@@ -750,7 +788,7 @@ PlaylistPlayer.prototype.renderVideo = function (item, single) {
   var v = pre || document.createElement('video');
   this.currentVideoEl = v; // wall: leader reads currentTime; follower drift-corrects this
   this.fit(v, item);
-  v.autoplay = true; v.muted = true; v.setAttribute('playsinline', '');
+  v.autoplay = true; v.muted = true; v.setAttribute('playsinline', ''); // warm muted so autoplay is guaranteed
   v.loop = single; // single item loops; multi advances on end
   v.onended = function () { if (!single) self.advance(); };
   v.onerror = function () { self.skipSoon(); };
@@ -758,6 +796,12 @@ PlaylistPlayer.prototype.renderVideo = function (item, single) {
   v.style.cssText = ''; // clear the offscreen-hide style if reused
   this.stage.appendChild(v);
   var p = v.play(); if (p && p.catch) p.catch(function () {});
+  // Audio parity (#129): honor per-item mute. Warm-play stays muted so autoplay can't be blocked,
+  // then apply the real state once playing (Tizen is a privileged app, so unmuted playback is fine).
+  // Wall followers stay muted — only the audio leader is unmuted by the dashboard/remote.
+  var applyMute = function () { try { v.muted = self.wallFollower ? true : !!item.muted; } catch (e) {} };
+  v.addEventListener('playing', applyMute, { once: true });
+  if (!v.paused && v.readyState >= 2) applyMute(); // a reused preload may already be playing
   // Safety net: if 'ended' never fires (rare), advance after the known
   // content duration (or the assignment duration) + a buffer.
   if (!single) {
@@ -776,8 +820,27 @@ PlaylistPlayer.prototype.renderYouTube = function (item, single) {
 };
 
 PlaylistPlayer.prototype.renderWidget = function (item, single) {
+  var self = this;
   var src = this.getBase() + '/api/widgets/' + item.widget_id + '/render' + (this.getDeviceId() ? '?device=' + encodeURIComponent(this.getDeviceId()) : '');
-  this.renderFrame(src, single ? 0 : this.durationMs(item));
+  // Anti-flash (#directory-board, parity with the web player): build the new iframe hidden ON TOP of the
+  // current content and reveal it on load, THEN drop everything else — so a widget/directory-board
+  // reload never black-flashes the stage (playCurrent skipped the pre-clear for widgets).
+  var f = document.createElement('iframe');
+  f.setAttribute('frameborder', '0');
+  f.setAttribute('allowfullscreen', '');
+  f.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;border:0;opacity:0';
+  var revealed = false;
+  var reveal = function () {
+    if (revealed) return; revealed = true;
+    var kids = self.stage.children;
+    for (var i = kids.length - 1; i >= 0; i--) { if (kids[i] !== f) self.stage.removeChild(kids[i]); }
+    f.style.opacity = '1';
+  };
+  f.addEventListener('load', reveal, { once: true });
+  setTimeout(reveal, 4000); // fallback: reveal even if a blocked widget never fires load
+  f.src = src;
+  this.stage.appendChild(f);
+  if (!single) this.schedule(this.durationMs(item));
 };
 
 PlaylistPlayer.prototype.renderFrame = function (src, advanceMs, allow, vertical) {

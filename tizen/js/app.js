@@ -410,6 +410,44 @@
     socket.on('device:remote-start', function () { startStreaming(); });
     socket.on('device:remote-stop', function () { stopStreaming(); });
 
+    // Dashboard remote control (parity with the web player) — touch injection + D-pad/volume/mute keys
+    // + real-time per-item mute. All wrapped so a malformed payload can never wedge the socket.
+    socket.on('device:remote-touch', function (data) {
+      try {
+        if (!data) return;
+        var x = (data.x || 0) * elStage.offsetWidth, y = (data.y || 0) * elStage.offsetHeight;
+        var el = document.elementFromPoint(x, y);
+        if (el && el.click) el.click();
+      } catch (e) {}
+    });
+    socket.on('device:remote-key', function (data) {
+      try {
+        if (!data) return;
+        var v = player.getCurrentVideo();
+        var n = player.getItemCount();
+        switch (data.keycode) {
+          case 'KEYCODE_DPAD_RIGHT': player.advance(); break;
+          case 'KEYCODE_DPAD_LEFT':  if (n > 0) player.gotoIndex((player.getIndex() - 1 + n) % n); break;
+          case 'KEYCODE_DPAD_CENTER':
+          case 'KEYCODE_ENTER':      if (v) { if (v.paused) v.play(); else v.pause(); } break;
+          case 'KEYCODE_VOLUME_UP':  if (v && !player.isWallFollower()) { v.volume = Math.min(1, v.volume + 0.1); v.muted = false; } break;
+          case 'KEYCODE_VOLUME_DOWN': if (v) { v.volume = Math.max(0, v.volume - 0.1); } break;
+          case 'KEYCODE_MENU':       if (v && !(player.isWallFollower() && v.muted)) { v.muted = !v.muted; } break;
+          case 'KEYCODE_HOME':       if (n > 0) player.gotoIndex(0); break;
+          case 'KEYCODE_BACK':       toggleInfoOverlay(); break;
+          case 'KEYCODE_POWER':      if (document.getElementById('screenOffOverlay')) clearScreenOff(); else showScreenOff(); break;
+        }
+      } catch (e) {}
+    });
+    // #129 real-time per-item mute — apply immediately if the toggled item is the one on screen now.
+    socket.on('device:mute-changed', function (data) {
+      try {
+        var item = player.getCurrentItem();
+        var v = player.getCurrentVideo();
+        if (data && item && data.content_id && item.content_id === data.content_id && v) v.muted = !!data.muted;
+      } catch (e) {}
+    });
+
     // ---- video wall sync (mirrors the web player) ----
     // Leader broadcasts position; followers align index + drift-correct their video.
     socket.on('wall:sync', function (d) { wallController.onSync(d); });
@@ -476,6 +514,31 @@
   function clearScreenOff() {
     var o = document.getElementById('screenOffOverlay');
     if (o && o.parentNode) o.parentNode.removeChild(o);
+  }
+  // Diagnostic info overlay (parity with the web player). Toggled by the dashboard remote BACK key —
+  // NOT the physical TV BACK (10009), which still exits to setup. A quick on-site troubleshooting panel.
+  function toggleInfoOverlay() {
+    var existing = document.getElementById('infoOverlay');
+    if (existing) { if (existing.parentNode) existing.parentNode.removeChild(existing); return; }
+    var item = (typeof player !== 'undefined' && player) ? player.getCurrentItem() : null;
+    var o = document.createElement('div');
+    o.id = 'infoOverlay';
+    o.style.cssText = 'position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,0.82);color:#e6e6e6;' +
+      'font:16px/1.7 sans-serif;padding:6vh 6vw;box-sizing:border-box';
+    function row(k, val) {
+      return '<div><span style="color:#8ab4f8;display:inline-block;min-width:210px">' + k + '</span>' +
+        (val == null || val === '' ? '—' : String(val)) + '</div>';
+    }
+    o.innerHTML = '<h2 style="margin:0 0 14px;color:#fff">ScreenTinker — Tizen Player</h2>' +
+      row('Device ID', deviceId) +
+      row('Server', serverUrl) +
+      row('App version', APP_VERSION) +
+      row('Connection', (socket && socket.connected) ? 'online' : 'offline') +
+      row('Orientation', (player && player.orientation) || 'landscape') +
+      row('Now playing', item ? (item.filename || item.widget_id || item.content_id) : 'idle') +
+      row('Playlist position', player ? ((player.getIndex() + 1) + ' / ' + player.getItemCount()) : '—') +
+      row('Screen', (screen.width + '×' + screen.height));
+    document.body.appendChild(o);
   }
   // #109: report PiP show/clear over the existing device:log channel (tag 'pip') so it
   // surfaces in the dashboard device log. Used as the PipOverlay log callback.
@@ -587,6 +650,10 @@
 
   // ---- playback ----
   var player = new PlaylistPlayer(elStage, function () { return serverUrl.replace(/\/+$/, ''); }, function () { return deviceId || ''; });
+  // Proof-of-play: forward the player's device:play-event to the server (populates play_logs / Reports).
+  player.onPlayEvent = function (payload) {
+    try { if (socket && socket.connected && deviceId) socket.emit('device:play-event', payload); } catch (e) {}
+  };
   // Multi-zone layout renderer (matches the Android player). app.js picks the renderer
   // per playlist-update from payload.layout; the two never run at once.
   var zoneRenderer = new ZoneRenderer(elStage, function () { return serverUrl.replace(/\/+$/, ''); }, function () { return deviceId || ''; });
