@@ -360,6 +360,8 @@ app.use('/api/auth/register', rateLimit(60000, 5)); // 5 registrations per minut
 // 6-digit code. Cap attempts/min here; the per-user lockout (lib/totp-lockout) sits
 // on top in the handler.
 app.use('/api/auth/totp/verify', rateLimit(60000, 10));
+// Email-verification resend: cap so it can't be used to spray mail at an address.
+app.use('/api/auth/resend-verification', rateLimit(60000, 5));
 // Admin password-reset endpoint: even if an admin's session is compromised,
 // cap the blast radius to 20 resets/min/IP. Express matches the longest
 // path prefix first, so this fires before /api/auth catches the request.
@@ -646,6 +648,8 @@ require('./lib/session-settle').startSweep();        // #148 patch2: evict idle 
 require('./lib/content-ack-limiter').startSweep();   // #146 Item E: evict idle content-ack buckets
 const apkCache = require('./lib/apk-cache');
 apkCache.start();                                    // #146 Item C: resolve APK path/size/mtime once + refresh on interval (no per-request fs)
+const wgtCache = require('./lib/wgt-cache');
+wgtCache.start();                                    // Tizen SSSP URL-Launcher: resolve .wgt path/size/mtime once + refresh on interval
 const { getBand } = require('./services/loop-lag');  // #146 Item C: critical-band download shed
 app.get('/api/update/check', (req, res) => {
   const currentVersion = req.query.version;
@@ -958,6 +962,61 @@ app.get('/download/apk', (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="ScreenTinker.apk"');
   res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(apk.path, (err) => { if (err) release(); });
+});
+
+// ==================== Tizen SSSP URL-Launcher install ====================
+// One-URL native install for Samsung signage panels (SSSP), the same flow Fusion/OptiSigns
+// use: on the panel, enter this server's /tizen URL under URL Launcher / Custom App. The panel
+// fetches /tizen/sssp_config.xml, reads the version + size, downloads /tizen/ScreenTinker.wgt,
+// and installs it as a native app (auto-updating when <ver> bumps on the next release).
+//
+// The served .wgt must be signed with a Samsung PARTNER distributor certificate to install on
+// retail/commercial panels — mount the signed build at /data/ScreenTinker.wgt. A dev-mode panel
+// accepts a self-signed build. See tizen/README.md.
+function tizenNotAvailable(res) {
+  return res.status(404).send('<!DOCTYPE html><html><head><title>Tizen Player Not Available</title>'
+    + '<style>body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#0f172a;color:#e2e8f0}div{text-align:center;max-width:520px;padding:24px}h1{color:#f87171;font-size:24px}code{background:#1e293b;padding:2px 8px;border-radius:4px;font-size:14px}p{line-height:1.6;color:#94a3b8}</style></head>'
+    + '<body><div><h1>Tizen App Not Available</h1><p>No signed <code>ScreenTinker.wgt</code> is hosted on this instance. Mount one at <code>/data/ScreenTinker.wgt</code>, or point the panel’s URL Launcher at the web player: <a href="/player" style="color:#3b82f6">/player</a>.</p></div></body></html>');
+}
+
+// The manifest the panel fetches. Dynamic so <size> always matches the exact bytes we serve.
+app.get('/tizen/sssp_config.xml', (req, res) => {
+  const wgt = wgtCache.get();
+  if (!wgt.exists) return tizenNotAvailable(res);
+  res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.send(wgtCache.ssspConfigXml(wgt));
+});
+
+// The widget package. Named <widgetname>.wgt from the manifest so the panel resolves it here.
+app.get('/tizen/ScreenTinker.wgt', (req, res) => {
+  const wgt = wgtCache.get();
+  if (!wgt.exists) return tizenNotAvailable(res);
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', 'attachment; filename="ScreenTinker.wgt"');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(wgt.path);
+});
+
+// Human-facing landing (a panel appends /sssp_config.xml itself, so it never lands here).
+app.get(['/tizen', '/tizen/'], (req, res) => {
+  const wgt = wgtCache.get();
+  const base = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+  const ready = wgt.exists;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send('<!DOCTYPE html><html><head><meta charset="utf-8"><title>ScreenTinker on Samsung (Tizen)</title>'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<style>body{font-family:-apple-system,system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:40px 20px;line-height:1.6}'
+    + '.w{max-width:640px;margin:0 auto}h1{color:#34d399}code{background:#1e293b;padding:2px 8px;border-radius:4px;font-size:14px}'
+    + 'ol{padding-left:20px}li{margin:8px 0}.mut{color:#94a3b8;font-size:14px}.pill{display:inline-block;background:#1e293b;border-radius:20px;padding:4px 12px;font-size:13px;color:#94a3b8}</style></head>'
+    + '<body><div class="w"><h1>ScreenTinker — Samsung Signage (Tizen)</h1>'
+    + (ready ? `<p class="pill">Ready · v${wgt.version} · ${(wgt.size/1024/1024).toFixed(2)} MB</p>` : '<p class="pill">No signed .wgt hosted yet</p>')
+    + '<p>On the Samsung signage panel, go to <b>URL Launcher / Custom App</b> and enter:</p>'
+    + `<p><code>${base}/tizen</code></p>`
+    + '<p>The panel installs the ScreenTinker player as a native app, then shows a 6-digit pairing code to claim in your dashboard.</p>'
+    + '<p class="mut">Requires a Samsung Partner-signed build on retail panels. No signed build? Point URL Launcher at '
+    + `<code>${base}/player</code> to run the web player instead.</p>`
+    + '</div></body></html>');
 });
 
 // SPA fallback for app routes. Unmatched /api/ paths return 404 so misrouted

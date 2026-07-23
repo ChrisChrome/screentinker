@@ -183,4 +183,33 @@ function sendSignupEmails(user, req) {
   }
 }
 
-module.exports = { sendSignupEmails };
+// Email-verification message. Unlike the welcome/admin-notify pair above this is NOT
+// hosted-only — a self-hoster with SMTP configured should still verify their own users.
+// sendEmail() self-gates on isConfigured() and never throws, so an unconfigured instance
+// simply no-ops (and the caller has already decided not to hard-gate in that case).
+function verifyEmailBody(name, url) {
+  const text = `Hi ${name},
+
+Confirm your email address to finish setting up your ScreenTinker account:
+
+${url}
+
+This link expires in 24 hours. If you didn't create this account, you can ignore this email.`;
+  const html = `<p>Hi ${htmlEscape(name)},</p>
+<p>Confirm your email address to finish setting up your ScreenTinker account:</p>
+<p><a href="${htmlEscape(url)}" style="display:inline-block;background:#2563eb;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Verify my email</a></p>
+<p style="color:#666;font-size:13px">Or paste this link into your browser:<br>${htmlEscape(url)}<br><br>This link expires in 24 hours. If you didn't create this account, you can ignore this email.</p>`;
+  return { text, html };
+}
+
+async function sendVerificationEmail(user, token, req) {
+  // Same public-origin resolution as workspace invites: APP_URL pins the canonical origin
+  // in prod; otherwise derive from the (proxy-aware) request. The link hits the API GET
+  // route, which flips the flag and redirects into the app.
+  const base = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+  const url = `${base}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+  const { text, html } = verifyEmailBody(user.name || user.email, url);
+  return sendEmail({ to: user.email, subject: 'Verify your email for ScreenTinker', text, html });
+}
+
+module.exports = { sendSignupEmails, sendVerificationEmail };

@@ -183,6 +183,16 @@ export const api = {
   setTokenTargets: (id, target_playlist_ids) => request('/tokens/' + id + '/targets', { method: 'PUT', body: JSON.stringify({ target_playlist_ids }) }), // #73: re-designate agency token playlists
   setTokenUploadFolder: (id, upload_folder_id) => request('/tokens/' + id + '/upload-folder', { method: 'PUT', body: JSON.stringify({ upload_folder_id }) }), // #158: rebind agency token upload folder (null = root)
 
+  // TOTP 2FA (#100) — opt-in per-user, local accounts only. See routes/auth.js.
+  totpStatus: () => request('/auth/totp/status'),
+  totpSetup: () => request('/auth/totp/setup', { method: 'POST' }),
+  totpEnable: (code) => request('/auth/totp/enable', { method: 'POST', body: JSON.stringify({ code }) }),
+  totpDisable: (code) => request('/auth/totp/disable', { method: 'POST', body: JSON.stringify({ code }) }),
+  totpRegenRecovery: (code) => request('/auth/totp/recovery-codes/regenerate', { method: 'POST', body: JSON.stringify({ code }) }),
+
+  // Email verification (signup). Resend is generic (never reveals whether the address exists).
+  resendVerification: (email) => request('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }),
+
   // Current user
   getMe: () => request('/auth/me'),
   updateMe: (data) => request('/auth/me', { method: 'PUT', body: JSON.stringify(data) }),

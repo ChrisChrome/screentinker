@@ -81,6 +81,39 @@ or **Public** distributor certificate from the Tizen **Certificate Manager**
 `./build-wgt.sh <thatProfile>`. The self-signed author cert is not committed (it
 lives in `~/tizen-studio-data`, password `screentinker`).
 
+### C) SSSP URL-Launcher native install (one URL, like Fusion `fus.app/tizen`)
+The slick "add the screen to Wi-Fi → **URL Launcher / Custom App** → type a URL → you're in"
+flow. The panel fetches `<url>/sssp_config.xml`, reads the version + byte size, downloads
+`ScreenTinker.wgt` from the same folder, and **installs it as a native app** — auto-reinstalling
+whenever `<ver>` bumps on the next release.
+
+**The ScreenTinker server hosts this for you.** Drop a signed build at `/data/ScreenTinker.wgt`
+(same convention as `/data/ScreenTinker.apk`) and it's served at:
+- `GET /tizen/sssp_config.xml` — manifest, generated dynamically so `<size>` always matches the
+  exact `.wgt` bytes (a mismatch fails the install).
+- `GET /tizen/ScreenTinker.wgt` — the package.
+- `GET /tizen` — a human landing page with the install steps.
+
+On the panel, under **URL Launcher / Custom App**, enter: `https://<your-instance>/tizen`
+
+To host on a **CDN/bucket** instead (not the ST server), `./build-wgt.sh` also drops a static
+`sssp_config.xml` next to the `.wgt`; upload both to one folder and point the panel at that folder.
+Env `TIZEN_WGT_VER` overrides the reported version; the default is the app version.
+
+> **Signing (the one real prerequisite):** the URL-Launcher / `sssp_config.xml` path **always**
+> requires a **Samsung Partner distributor certificate** — a public/self-signed build fails here
+> with `error -3: invalid certificate chain`, `error -4: invalid signature`, or
+> `install failed[118012]`, and a normal distributor cert is DUID-locked. Get the Partner cert via
+> **TV Seller Office** (developer side; your Samsung **Ascend** channel/B2B contact is the fastest
+> route to approval), re-sign `build-wgt.sh` with that profile, and one URL installs on every panel.
+>
+> **Developer Mode does NOT bypass this.** Dev Mode only enables the **SDB** install path
+> (`sdb connect` + `tizen install`), which *does* accept a self-signed build on the panel's DUID —
+> a separate, manual path, not the URL flow. So without the Partner cert you can (a) SDB-install
+> the self-signed `.wgt` on a dev-mode panel to prove the app runs on real Tizen hardware, or
+> (b) use URL-Launcher **web** mode (Path A → `/player`) for the type-a-URL feel without a native
+> install. The `sssp_config.xml` native install specifically waits on the Partner cert.
+
 ## Validated (2026-06-09)
 - **Protocol**: headless test against the live server passed end-to-end —
   `register(pairing_code) → device:registered → pair → reconnect(device_id+token)

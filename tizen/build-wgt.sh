@@ -45,3 +45,21 @@ else
   zip -r -X "$OUT" $FILES -x '*.DS_Store' '_*' >/dev/null
   echo "Built $OUT ($(du -h "$OUT" | cut -f1), UNSIGNED — sign before installing on a TV)."
 fi
+
+# SSSP URL-Launcher manifest. Host this + the .wgt in the SAME folder, then enter that folder's
+# URL in a Samsung panel's URL Launcher / Custom App to natively install (the panel fetches
+# <url>/sssp_config.xml, reads size+ver, downloads ScreenTinker.wgt). The ScreenTinker server
+# also generates this dynamically at /tizen/sssp_config.xml — this static copy is for hosting the
+# .wgt on a CDN/bucket instead. <size> must equal the FINAL (signed) .wgt's byte length, so
+# regenerate this whenever the .wgt is (re-)signed — the size changes.
+WGT_SIZE=$(wc -c < "$OUT" | tr -d ' ')
+cat > sssp_config.xml <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<widget>
+	<ver>${VER:-1.0.0}</ver>
+	<size>${WGT_SIZE}</size>
+	<widgetname>ScreenTinker</widgetname>
+	<webtype>tizen</webtype>
+</widget>
+EOF
+echo "Wrote sssp_config.xml (ver ${VER:-1.0.0}, size ${WGT_SIZE} bytes)."

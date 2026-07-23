@@ -53,6 +53,9 @@ async function newUser() {
 }
 async function enroll(token) {
   const s = await jfetch('/api/auth/totp/setup', post(token, {}));
+  // #100: setup returns the otpauth URI, the raw secret, and a server-rendered QR data URL.
+  assert.match(s.body.otpauth_uri, /^otpauth:\/\/totp\//);
+  assert.match(s.body.qr_data_url, /^data:image\/png;base64,/);
   const e = await jfetch('/api/auth/totp/enable', post(token, { code: authenticator.generate(s.body.secret) }));
   return { secret: s.body.secret, recovery: e.body.recovery_codes };
 }

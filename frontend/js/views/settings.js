@@ -58,6 +58,12 @@ export async function render(container) {
       ` : `
       <p style="color:var(--text-muted);font-size:12px;margin-top:16px">${t('settings.sso_note', { provider: esc(user.auth_provider || 'SSO') })}</p>
       `}
+
+      <!-- Two-factor authentication (#100). Populated by load2FA() from /auth/totp/status. -->
+      <div id="twoFactorBlock" style="border-top:1px solid var(--border);margin-top:20px;padding-top:16px">
+        <h4 style="font-size:14px;margin-bottom:8px">${t('settings.2fa_title')}</h4>
+        <p style="color:var(--text-muted);font-size:12px">…</p>
+      </div>
     </div>
 
     <div class="settings-section">
@@ -467,7 +473,143 @@ export async function render(container) {
     }));
   }
 
+  // ==================== Two-factor authentication (#100) ====================
+  // Drives the merged TOTP backend (/api/auth/totp/*). Re-renders #twoFactorBlock
+  // for each state: SSO note / disabled+enroll / recovery-codes / enabled+manage.
+  async function load2FA() {
+    const block = document.getElementById('twoFactorBlock');
+    if (!block) return;
+    const head = `<h4 style="font-size:14px;margin-bottom:8px">${t('settings.2fa_title')}</h4>`;
+    const muted = 'color:var(--text-muted);font-size:12px';
+    const paint = (inner) => { block.innerHTML = head + inner; };
+
+    let status;
+    try { status = await api.totpStatus(); }
+    catch (e) { paint(`<p style="${muted}">${esc(e.message)}</p>`); return; }
+
+    if (!status.eligible) {
+      const provider = (JSON.parse(localStorage.getItem('user') || '{}').auth_provider) || 'SSO';
+      paint(`<p style="${muted}">${t('settings.2fa_sso_note', { provider: esc(provider) })}</p>`);
+      return;
+    }
+    if (status.enabled) return showEnabled(status.recovery_codes_remaining);
+    return showDisabled();
+
+    function showDisabled() {
+      paint(`
+        <p style="${muted};margin-bottom:12px">${t('settings.2fa_desc')}
+          <span style="color:var(--text-secondary);margin-left:6px">${t('settings.2fa_status_off')}</span></p>
+        <button class="btn btn-primary btn-sm" id="enable2faBtn">${t('settings.2fa_enable')}</button>`);
+      document.getElementById('enable2faBtn').addEventListener('click', startEnroll);
+    }
+
+    async function startEnroll() {
+      let data;
+      try { data = await api.totpSetup(); } catch (e) { showToast(e.message, 'error'); return; }
+      const qr = data.qr_data_url
+        ? `<img src="${data.qr_data_url}" alt="TOTP QR" width="200" height="200" style="border-radius:8px;background:#fff;padding:6px">`
+        : `<p style="${muted}">${t('settings.2fa_setup_manual')}</p>`;
+      paint(`
+        <p style="${muted};margin-bottom:10px">${t('settings.2fa_setup_scan')}</p>
+        <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">
+          <div>${qr}</div>
+          <div style="flex:1;min-width:220px">
+            <p style="${muted}">${t('settings.2fa_setup_manual')}</p>
+            <code style="display:block;word-break:break-all;background:var(--bg-primary);border:1px solid var(--border);border-radius:6px;padding:8px;margin:6px 0 14px;font-family:monospace;font-size:13px">${esc(data.secret)}</code>
+            <label style="${muted}">${t('settings.2fa_setup_confirm')}</label>
+            <input type="text" id="enroll2faCode" class="input" inputmode="numeric" autocomplete="one-time-code" placeholder="${t('settings.2fa_code_placeholder')}" maxlength="6" style="letter-spacing:4px;text-align:center;font-family:monospace;margin:6px 0">
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button class="btn btn-primary btn-sm" id="enroll2faVerify">${t('settings.2fa_verify_enable')}</button>
+              <button class="btn btn-secondary btn-sm" id="enroll2faCancel">${t('settings.2fa_cancel')}</button>
+            </div>
+          </div>
+        </div>`);
+      const codeEl = document.getElementById('enroll2faCode');
+      codeEl.focus();
+      const doEnable = async () => {
+        const code = codeEl.value.trim();
+        if (!code) { showToast(t('settings.2fa_code_required'), 'error'); return; }
+        try {
+          const r = await api.totpEnable(code);
+          showToast(t('settings.2fa_enabled_toast'), 'success');
+          showRecoveryCodes(r.recovery_codes);
+        } catch (e) { showToast(e.message, 'error'); codeEl.select(); }
+      };
+      document.getElementById('enroll2faVerify').addEventListener('click', doEnable);
+      codeEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') doEnable(); });
+      document.getElementById('enroll2faCancel').addEventListener('click', load2FA);
+    }
+
+    function showRecoveryCodes(codes) {
+      const list = codes.map((c) => `<div>${esc(c)}</div>`).join('');
+      const text = codes.join('\n');
+      paint(`
+        <p style="font-weight:600;margin-bottom:4px">${t('settings.2fa_recovery_title')}</p>
+        <p style="${muted};margin-bottom:12px">${t('settings.2fa_recovery_warning')}</p>
+        <div style="font-family:monospace;font-size:14px;letter-spacing:1px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;padding:14px;display:grid;grid-template-columns:repeat(2,1fr);gap:6px 24px">${list}</div>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" id="copyRecovery">${t('settings.2fa_recovery_copy')}</button>
+          <button class="btn btn-secondary btn-sm" id="dlRecovery">${t('settings.2fa_recovery_download')}</button>
+          <button class="btn btn-primary btn-sm" id="doneRecovery">${t('settings.2fa_recovery_done')}</button>
+        </div>`);
+      document.getElementById('copyRecovery').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(text); showToast(t('settings.2fa_recovery_copy'), 'success'); } catch { /* field is selectable */ }
+      });
+      document.getElementById('dlRecovery').addEventListener('click', () => {
+        const blob = new Blob([text + '\n'], { type: 'text/plain' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'screentinker-recovery-codes.txt';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      });
+      document.getElementById('doneRecovery').addEventListener('click', load2FA);
+    }
+
+    function showEnabled(remaining) {
+      paint(`
+        <p style="margin-bottom:12px">
+          <span style="color:var(--success);font-weight:600">✓ ${t('settings.2fa_status_on')}</span>
+          <span style="${muted};margin-left:10px">${t('settings.2fa_recovery_remaining', { n: remaining })}</span></p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" id="regen2faBtn">${t('settings.2fa_recovery_regenerate')}</button>
+          <button class="btn btn-danger btn-sm" id="disable2faBtn">${t('settings.2fa_disable')}</button>
+        </div>
+        <div id="twoFactorAction" style="margin-top:12px"></div>`);
+      document.getElementById('disable2faBtn').addEventListener('click', () => promptCode({
+        prompt: t('settings.2fa_disable_prompt'), confirm: t('settings.2fa_disable_confirm'), danger: true,
+        run: async (code) => { await api.totpDisable(code); showToast(t('settings.2fa_disabled_toast'), 'success'); load2FA(); },
+      }));
+      document.getElementById('regen2faBtn').addEventListener('click', () => promptCode({
+        prompt: t('settings.2fa_regen_prompt'), confirm: t('settings.2fa_regen_confirm'),
+        run: async (code) => { const r = await api.totpRegenRecovery(code); showRecoveryCodes(r.recovery_codes); },
+      }));
+    }
+
+    function promptCode({ prompt, confirm, danger, run }) {
+      const box = document.getElementById('twoFactorAction');
+      box.innerHTML = `
+        <p style="${muted};margin-bottom:6px">${prompt}</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input type="text" id="twoFactorActionCode" class="input" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="${t('settings.2fa_code_placeholder')}" maxlength="12" style="max-width:170px;letter-spacing:3px;text-align:center;font-family:monospace">
+          <button class="btn btn-sm ${danger ? 'btn-danger' : 'btn-primary'}" id="twoFactorActionConfirm">${confirm}</button>
+          <button class="btn btn-secondary btn-sm" id="twoFactorActionCancel">${t('settings.2fa_cancel')}</button>
+        </div>`;
+      const codeEl = document.getElementById('twoFactorActionCode');
+      codeEl.focus();
+      const go = async () => {
+        const code = codeEl.value.trim();
+        if (!code) { showToast(t('settings.2fa_code_required'), 'error'); return; }
+        try { await run(code); } catch (e) { showToast(e.message, 'error'); codeEl.select(); }
+      };
+      document.getElementById('twoFactorActionConfirm').addEventListener('click', go);
+      codeEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+      document.getElementById('twoFactorActionCancel').addEventListener('click', () => { box.innerHTML = ''; });
+    }
+  }
+
   loadTokens();
+  load2FA();
 
   // #73: agency scope reveals a playlist picker (the token's allowlist). Loaded lazily once.
   const tokScopeSel = document.getElementById('tokScope');

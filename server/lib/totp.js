@@ -15,7 +15,13 @@ const ISSUER = 'ScreenTinker';
 authenticator.options = { window: 1 }; // accept ±1 step (±30s) for clock skew
 
 function generateSecret() { return authenticator.generateSecret(); }            // base32 plaintext
-function keyuri(email, secret) { return authenticator.keyuri(email, ISSUER, secret); } // otpauth:// for the QR
+// otpauth:// URI for the QR. `instance` (the dashboard host, e.g. alpha.screentinker.com)
+// is folded into the issuer so an authenticator app can tell apart accounts on more than
+// one ScreenTinker — it shows "ScreenTinker (host)" instead of a bare, ambiguous "ScreenTinker".
+function keyuri(email, secret, instance) {
+  const issuer = instance ? `${ISSUER} (${instance})` : ISSUER;
+  return authenticator.keyuri(email, issuer, secret);
+}
 function encryptSecret(secret) { return secretbox.encrypt(secret); }            // for storage
 function decryptSecret(enc) { return secretbox.decrypt(enc); }                  // for verification
 

@@ -118,6 +118,31 @@ export async function render(container) {
             </button>
           </div>
 
+          <!-- TOTP 2FA challenge (hidden until /login returns mfa_required) -->
+          <div id="mfaForm" style="display:none">
+            <h2 style="font-size:16px;font-weight:600;margin-bottom:6px">${t('auth.mfa_title')}</h2>
+            <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">${t('auth.mfa_prompt')}</p>
+            <div class="form-group">
+              <label>${t('auth.mfa_code_label')}</label>
+              <input type="text" id="mfaCode" class="input" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false"
+                     placeholder="123456" maxlength="12" style="letter-spacing:6px;text-align:center;font-family:monospace;font-size:18px">
+            </div>
+            <button class="btn btn-primary" id="mfaVerifyBtn" style="width:100%;justify-content:center;padding:10px">${t('auth.mfa_verify')}</button>
+            <button class="btn btn-secondary" id="mfaBackBtn" style="width:100%;justify-content:center;padding:10px;margin-top:8px">${t('auth.back_to_signin')}</button>
+            <p style="color:var(--text-muted);font-size:11px;text-align:center;margin-top:12px">${t('auth.mfa_recovery_hint')}</p>
+          </div>
+
+          <!-- Email-verification notice (hidden until a verification_required response) -->
+          <div id="verifyNotice" style="display:none;text-align:center">
+            <div style="font-size:42px;line-height:1;margin-bottom:10px">✉️</div>
+            <h2 style="font-size:18px;font-weight:600;margin-bottom:8px">${t('auth.verify_title')}</h2>
+            <p style="color:var(--text-secondary);font-size:13px;margin-bottom:6px">${t('auth.verify_body')}</p>
+            <p style="font-weight:600;font-size:14px;margin-bottom:16px"><span id="verifyEmail"></span></p>
+            <button class="btn btn-secondary" id="verifyResendBtn" style="width:100%;justify-content:center;padding:10px">${t('auth.verify_resend')}</button>
+            <button class="btn btn-secondary" id="verifyBackBtn" style="width:100%;justify-content:center;padding:10px;margin-top:8px">${t('auth.back_to_signin')}</button>
+          </div>
+
+          <div id="ssoBlock">
           ${config.googleEnabled || config.microsoftEnabled ? `
           <div style="display:flex;align-items:center;gap:12px;margin:20px 0">
             <hr style="flex:1;border-color:var(--border)">
@@ -151,10 +176,11 @@ export async function render(container) {
             ${t('auth.signin_microsoft')}
           </button>
           ` : ''}
+          </div>
         </div>
 
         <!-- Support Access (collapsible) -->
-        <details style="margin-top:16px">
+        <details id="supportDetails" style="margin-top:16px">
           <summary style="font-size:11px;color:var(--text-muted);cursor:pointer;text-align:center">${t('auth.support_access')}</summary>
           <div style="margin-top:8px">
             <input type="text" id="supportToken" class="input" placeholder="${t('auth.support_token_placeholder')}" style="font-family:monospace">
@@ -181,6 +207,11 @@ function setupHandlers(config, isSetup) {
     el.textContent = msg;
     el.style.display = 'block';
   };
+
+  // Outcome of clicking the email-verification link (server GET /verify-email redirects here).
+  const hashQuery = new URLSearchParams((location.hash.split('?')[1]) || '');
+  if (hashQuery.get('verified') === '1') showToast(t('auth.verify_ok'), 'success');
+  else if (hashQuery.get('verify_error') === '1') showToast(t('auth.verify_failed'), 'error');
 
   // Support token login
   document.getElementById('supportLoginBtn')?.addEventListener('click', async () => {
@@ -232,10 +263,73 @@ function setupHandlers(config, isSetup) {
       });
       const data = await res.json();
       if (!res.ok) { showError(data.error); return; }
+      // Unverified account (hosted hard-gate): no session — prompt to check email.
+      if (data.verification_required) { showVerifyNotice(data.email || email); return; }
+      // #100: TOTP-enabled accounts get no session yet — a second step verifies a code.
+      if (data.mfa_required) { showMfaChallenge(data.mfa_token); return; }
       onAuthSuccess(data);
     } catch (err) {
       showError(t('auth.error_login_failed'));
     }
+  }
+
+  // "Check your email" panel shown when signup/login returns verification_required (hosted).
+  function showVerifyNotice(email) {
+    // The server refused a session — make sure no stale token from a prior login lingers,
+    // else the router would treat this browser as authenticated and bounce it into the app.
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    ['localAuthForm', 'registerForm', 'mfaForm', 'ssoBlock', 'supportDetails'].forEach((id) => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    document.getElementById('verifyNotice').style.display = 'block';
+    document.getElementById('verifyEmail').textContent = email || '';
+    const errEl = document.getElementById('loginError'); if (errEl) errEl.style.display = 'none';
+    document.getElementById('verifyBackBtn').addEventListener('click', () => window.location.reload());
+    document.getElementById('verifyResendBtn').addEventListener('click', async () => {
+      try {
+        await fetch('/api/auth/resend-verification', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+        showToast(t('auth.verify_resent'), 'success'); // always generic (server never leaks existence)
+      } catch (e) {
+        showToast(t('auth.verify_resend_failed'), 'error');
+      }
+    });
+  }
+
+  // Swap the card to the 6-digit challenge and exchange mfa_token + code for a session.
+  function showMfaChallenge(mfaToken) {
+    ['localAuthForm', 'registerForm', 'ssoBlock', 'supportDetails'].forEach((id) => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    const form = document.getElementById('mfaForm');
+    form.style.display = 'block';
+    const errEl = document.getElementById('loginError'); if (errEl) errEl.style.display = 'none';
+    const codeEl = document.getElementById('mfaCode');
+    codeEl.value = '';
+    codeEl.focus();
+
+    const verify = async () => {
+      const code = codeEl.value.trim();
+      if (!code) { showError(t('auth.mfa_code_required')); return; }
+      try {
+        const res = await fetch('/api/auth/totp/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mfa_token: mfaToken, code })
+        });
+        const data = await res.json();
+        if (!res.ok) { showError(data.error || t('auth.mfa_invalid')); codeEl.select(); return; }
+        onAuthSuccess(data);
+      } catch (err) {
+        showError(t('auth.error_login_failed'));
+      }
+    };
+    document.getElementById('mfaVerifyBtn').addEventListener('click', verify);
+    codeEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') verify(); });
+    document.getElementById('mfaBackBtn').addEventListener('click', () => { window.location.reload(); });
   }
 
   async function doRegister(isFirstUser) {
@@ -253,6 +347,8 @@ function setupHandlers(config, isSetup) {
       });
       const data = await res.json();
       if (!res.ok) { showError(data.error); return; }
+      // Hosted signup requires confirming the email before a session is issued.
+      if (data.verification_required) { showVerifyNotice(data.email || email); return; }
       onAuthSuccess(data);
     } catch (err) {
       showError(t('auth.error_registration_failed'));
@@ -323,6 +419,11 @@ function setupHandlers(config, isSetup) {
 }
 
 function onAuthSuccess(data) {
+  // Defensive: only a response that actually carries a session token logs the user in. A
+  // tokenless response (e.g. verification_required / mfa_required) must never be stored as a
+  // session — otherwise isAuthenticated() would pass on the string "undefined" and the router
+  // would bounce an un-authenticated browser into the app / setup wizard.
+  if (!data || !data.token) return;
   localStorage.setItem('token', data.token);
   localStorage.setItem('user', JSON.stringify(data.user));
   window.location.hash = '#/';

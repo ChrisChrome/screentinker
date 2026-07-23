@@ -10,7 +10,10 @@ const { resolveTenancy } = require('../lib/tenancy');
 const { logActivity, getClientIp } = require('../services/activity');
 const totp = require('../lib/totp');
 const totpLockout = require('../lib/totp-lockout');
-const { sendSignupEmails } = require('../services/signupEmails');
+const QRCode = require('qrcode');
+const { sendSignupEmails, sendVerificationEmail } = require('../services/signupEmails');
+const emailVerify = require('../lib/emailVerify');
+const emailSvc = require('../services/email');
 const { deleteUserCascade, OrgHasOtherMembersError } = require('../lib/user-deletion');
 const config = require('../config');
 
@@ -111,12 +114,20 @@ router.post('/register', (req, res) => {
   const plan = (isFirstUser && config.selfHosted) ? 'enterprise' : 'pro'; // Start on Pro trial
   const trialStarted = isFirstUser && config.selfHosted ? null : Math.floor(Date.now() / 1000);
 
-  db.prepare(`
-    INSERT INTO users (id, email, name, password_hash, auth_provider, role, plan_id, trial_started, trial_plan)
-    VALUES (?, ?, ?, ?, 'local', ?, ?, ?, ?)
-  `).run(id, email.toLowerCase(), name || email.split('@')[0], passwordHash, role, plan, trialStarted, trialStarted ? 'pro' : null);
+  // Email verification: require it for a normal local signup only when we can actually send
+  // the mail. The bootstrap (first) user is never gated — a fresh install must not lock out
+  // its own admin — and neither is an instance with no email transport configured (a self-host
+  // that can't send would otherwise strand every signup). email_verified column DEFAULTs to 1,
+  // so we only ever write 0 here on the require-verification path.
+  const requireVerify = !isFirstUser && emailSvc.isConfigured();
+  const emailVerified = requireVerify ? 0 : 1;
 
-  const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, stripe_customer_id, stripe_subscription_id, subscription_status, subscription_ends FROM users WHERE id = ?').get(id);
+  db.prepare(`
+    INSERT INTO users (id, email, name, password_hash, auth_provider, role, plan_id, trial_started, trial_plan, email_verified)
+    VALUES (?, ?, ?, ?, 'local', ?, ?, ?, ?, ?)
+  `).run(id, email.toLowerCase(), name || email.split('@')[0], passwordHash, role, plan, trialStarted, trialStarted ? 'pro' : null, emailVerified);
+
+  const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, stripe_customer_id, stripe_subscription_id, subscription_status, subscription_ends, email_verified FROM users WHERE id = ?').get(id);
   // #12: org-on-create. Per-request createOrg overrides the deployment default
   // (config.autoCreateOrgOnSignup). The first user is always given an org so a
   // fresh install is never left headless. When neither applies, the user is
@@ -125,12 +136,25 @@ router.post('/register', (req, res) => {
   const createOrgForUser = isFirstUser
     || (createOrg !== undefined ? !!createOrg : config.autoCreateOrgOnSignup);
   const workspaceId = ensureDefaultOrgForUser(user, { allowCreate: createOrgForUser });
-  const token = generateToken(user, workspaceId);
-
-  res.status(201).json({ token, user, current_workspace_id: workspaceId });
 
   // Welcome + admin-notify emails (hosted instance only, idempotent, async).
   sendSignupEmails(user, req);
+
+  // Verification email (issue a token first) whenever this signup needs to confirm its address.
+  if (requireVerify) {
+    const vtoken = emailVerify.issue(user.id);
+    sendVerificationEmail(user, vtoken, req);
+  }
+
+  // Hosted (SELF_HOSTED unset) HARD-BLOCKS an unverified local signup: no session until they
+  // click the link. Self-host is a soft nudge — fall through and issue the session; the client
+  // shows a "verify your email" banner (user.email_verified === 0) with a resend button.
+  if (requireVerify && !config.selfHosted) {
+    return res.status(201).json({ verification_required: true, email: user.email });
+  }
+
+  const token = generateToken(user, workspaceId);
+  res.status(201).json({ token, user, current_workspace_id: workspaceId });
 });
 
 // Login
@@ -147,6 +171,20 @@ router.post('/login', (req, res) => {
   if (!bcrypt.compareSync(password, user.password_hash)) {
     logFailedLogin(email, getClientIp(req), 'Wrong password');
     return res.status(401).json({ error: 'Invalid email or password' });
+  }
+
+  // Email verification gate. Unverified LOCAL accounts are asked to confirm on login — this
+  // covers both new signups AND existing users who predate the feature (grandfathered locals are
+  // email_verified=0). Gated ONLY where we can actually send the mail (isConfigured), so an
+  // instance with no email transport never locks anyone out. Existing users never received a
+  // signup email, so (re)send one here (guarded against re-mailing a still-valid token). HOSTED
+  // hard-blocks — no session, no MFA step; self-host is a soft nudge (login proceeds, client
+  // shows a banner). SSO + platform admins are grandfathered to 1, so this never trips for them.
+  if (!user.email_verified && emailSvc.isConfigured()) {
+    ensureVerificationEmail(user, req);
+    if (!config.selfHosted) {
+      return res.json({ verification_required: true, email: user.email });
+    }
   }
 
   // #100: password OK. If TOTP is enabled, DON'T issue a session yet - return an
@@ -171,6 +209,39 @@ function issueSession(req, res, user, extra = {}) {
   const { password_hash, totp_secret_enc, totp_last_step, ...safeUser } = user;
   res.json({ token, user: safeUser, current_workspace_id: workspaceId, ...extra });
 }
+
+// ==================== Email verification (signup) ====================
+// (Re)send a verification email for an unverified user, UNLESS a still-valid token is already
+// pending — so a login-gated user isn't re-mailed on every attempt. Callers have already checked
+// emailSvc.isConfigured(). `user` is a SELECT * row (carries email_verify_expires).
+function ensureVerificationEmail(user, req) {
+  const now = Math.floor(Date.now() / 1000);
+  if (user.email_verify_expires && user.email_verify_expires > now) return; // valid token still out
+  const token = emailVerify.issue(user.id);
+  sendVerificationEmail(user, token, req);
+}
+
+// The emailed link lands here (GET, unauthenticated — the user isn't logged in yet). We flip
+// the flag and redirect into the app with a flash flag, so there's no separate frontend route.
+router.get('/verify-email', (req, res) => {
+  const ok = emailVerify.consume(req.query.token);
+  return res.redirect(ok ? '/app#/login?verified=1' : '/app#/login?verify_error=1');
+});
+
+// Resend the verification email. Unauthenticated (the hosted gate blocks the session, so the
+// user has no token) and rate-limited in server.js. Always returns a generic success so it
+// never reveals whether an address exists or is already verified.
+router.post('/resend-verification', (req, res) => {
+  const email = String(req.body?.email || '').toLowerCase().trim();
+  if (email) {
+    const user = db.prepare("SELECT * FROM users WHERE email = ? AND auth_provider = 'local'").get(email);
+    if (user && !user.email_verified) {
+      const token = emailVerify.issue(user.id);
+      sendVerificationEmail(user, token, req);
+    }
+  }
+  res.json({ ok: true });
+});
 
 // ==================== TOTP MFA (#100) ====================
 // Opt-in per-user, LOCAL accounts only (SSO IdPs own MFA). Enrollment is a two-step
@@ -214,15 +285,26 @@ router.get('/totp/status', requireAuth, (req, res) => {
   });
 });
 
-// Step 1: mint a pending secret + return the otpauth:// URI (frontend renders the QR).
-router.post('/totp/setup', requireAuth, (req, res) => {
+// Step 1: mint a pending secret + return the otpauth:// URI + a ready-to-render QR
+// data URL (drawn server-side with the already-bundled `qrcode` lib, same as the
+// device-owner provisioning QR). The raw secret is also returned for manual entry.
+router.post('/totp/setup', requireAuth, async (req, res) => {
   const u = db.prepare('SELECT auth_provider, totp_enabled, email FROM users WHERE id = ?').get(req.user.id);
   if (u.auth_provider !== 'local') return res.status(400).json({ error: 'TOTP is only for password accounts; your identity provider manages MFA.' });
   if (u.totp_enabled) return res.status(409).json({ error: 'TOTP already enabled. Disable it first to re-enroll.' });
   const secret = totp.generateSecret();
   db.prepare("UPDATE users SET totp_secret_enc = ?, totp_enabled = 0, updated_at = strftime('%s','now') WHERE id = ?")
     .run(totp.encryptSecret(secret), req.user.id);
-  res.json({ otpauth_uri: totp.keyuri(u.email, secret), secret });
+  // Fold the instance host into the QR label so users with accounts on more than one
+  // ScreenTinker can tell them apart in their authenticator app (#100). trust-proxy is set,
+  // so req.get('host') is the public host even behind Cloudflare/nginx.
+  const host = (req.get('host') || '').replace(/[^A-Za-z0-9.:-]/g, '').slice(0, 60);
+  const otpauth_uri = totp.keyuri(u.email, secret, host || undefined);
+  let qr_data_url = null;
+  // QR is a convenience — if it fails, the client still has otpauth_uri + secret for manual entry.
+  try { qr_data_url = await QRCode.toDataURL(otpauth_uri, { errorCorrectionLevel: 'M', margin: 1, width: 240 }); }
+  catch (e) { /* fall through with qr_data_url = null */ }
+  res.json({ otpauth_uri, secret, qr_data_url });
 });
 
 // Step 2: confirm a code from the user's app, THEN enable + issue recovery codes (once).
@@ -324,8 +406,8 @@ router.post('/google', async (req, res) => {
       const trialStarted = isFirst && config.selfHosted ? null : Math.floor(Date.now() / 1000);
 
       db.prepare(`
-        INSERT INTO users (id, email, name, auth_provider, provider_id, avatar_url, role, plan_id, trial_started, trial_plan)
-        VALUES (?, ?, ?, 'google', ?, ?, ?, ?, ?, ?)
+        INSERT INTO users (id, email, name, auth_provider, provider_id, avatar_url, role, plan_id, trial_started, trial_plan, email_verified)
+        VALUES (?, ?, ?, 'google', ?, ?, ?, ?, ?, ?, 1)
       `).run(id, email.toLowerCase(), name || '', googleId, picture || '', role, plan, trialStarted, trialStarted ? 'pro' : null);
 
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
@@ -407,8 +489,8 @@ router.post('/microsoft', async (req, res) => {
       const trialStarted = isFirst && config.selfHosted ? null : Math.floor(Date.now() / 1000);
 
       db.prepare(`
-        INSERT INTO users (id, email, name, auth_provider, provider_id, role, plan_id, trial_started, trial_plan)
-        VALUES (?, ?, ?, 'microsoft', ?, ?, ?, ?, ?)
+        INSERT INTO users (id, email, name, auth_provider, provider_id, role, plan_id, trial_started, trial_plan, email_verified)
+        VALUES (?, ?, ?, 'microsoft', ?, ?, ?, ?, ?, 1)
       `).run(id, email, name, microsoftId, role, plan, trialStarted, trialStarted ? 'pro' : null);
 
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
@@ -522,6 +604,9 @@ router.get('/me', requireAuth, resolveTenancy, (req, res) => {
 
   res.json({
     ...req.user,
+    // Read straight from the row (the JWT predates this field) so the client's verify banner
+    // reflects live state after reload. Fail-open to verified if somehow absent.
+    email_verified: db.prepare('SELECT email_verified FROM users WHERE id = ?').get(req.user.id)?.email_verified ?? 1,
     hide_billing: config.hideBilling, // #116: client hides the Subscription nav + guards #/billing
     current_workspace_id: req.workspaceId,
     current_workspace: req.workspace ? { id: req.workspace.id, name: req.workspace.name, organization_id: req.workspace.organization_id } : null,

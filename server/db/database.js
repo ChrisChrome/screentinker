@@ -363,6 +363,19 @@ const migrations = [
   // -> self-loop + black screen. New writes are floored in routes/assignments.js; this
   // fixes existing rows. Idempotent — a no-op once clean.
   'UPDATE playlist_items SET duration_sec = 10 WHERE duration_sec IS NULL OR duration_sec < 1',
+  // Email verification on signup. New local signups are INSERTed with an explicit value
+  // (routes/auth.js). DEFAULT 0 means EXISTING local users predate verification and are asked
+  // to confirm on their first login after this ships. email_verify_hash = SHA-256 of the emailed
+  // token (single-use), email_verify_expires = unix ts. See lib/emailVerify.js.
+  'ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN email_verify_hash TEXT',
+  'ALTER TABLE users ADD COLUMN email_verify_expires INTEGER',
+  // Grandfather two categories of existing rows to verified (idempotent, safe to re-run):
+  //   - SSO accounts: their identity provider already verified the address.
+  //   - platform admins: never risk locking an existing operator out of their own instance.
+  // Every other existing local user stays 0 -> prompted on first login.
+  "UPDATE users SET email_verified = 1 WHERE auth_provider != 'local'",
+  "UPDATE users SET email_verified = 1 WHERE role = 'platform_admin'",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.

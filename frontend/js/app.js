@@ -480,6 +480,7 @@ function route() {
 function updateSidebarUser() {
   const user = getCurrentUser();
   if (!user) return;
+  updateVerifyBanner(user);
 
   // Show admin nav only for platform admins (legacy 'superadmin' or Phase 1 renamed 'platform_admin')
   const adminNav = document.getElementById('adminNavItem');
@@ -521,6 +522,33 @@ function updateSidebarUser() {
     window.location.hash = '#/login';
     window.location.reload();
   });
+}
+
+// Soft-nudge banner for a logged-in but unverified local user (self-host path — hosted never
+// issues a session while unverified, so this only appears there). Sits above #app so it persists
+// across view swaps. Only shown when email_verified is explicitly 0 (undefined on stale caches
+// stays hidden). Cleared automatically once the account verifies.
+function updateVerifyBanner(user) {
+  const existing = document.getElementById('verifyBanner');
+  const unverified = user && user.email_verified === 0 && user.auth_provider === 'local';
+  if (!unverified) { if (existing) existing.remove(); return; }
+  if (existing) return;
+  const appEl = document.getElementById('app');
+  if (!appEl || !appEl.parentNode) return;
+  const b = document.createElement('div');
+  b.id = 'verifyBanner';
+  b.style.cssText = 'background:var(--warning,#f59e0b);color:#1a1200;padding:9px 16px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap';
+  b.innerHTML = `<span>✉️ ${t('auth.verify_banner')}</span>`;
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-sm';
+  btn.style.cssText = 'background:#1a1200;color:#fff;padding:4px 12px';
+  btn.textContent = t('auth.verify_banner_resend');
+  btn.addEventListener('click', async () => {
+    try { await api.resendVerification(user.email); showToast(t('auth.verify_resent'), 'success'); }
+    catch { showToast(t('auth.verify_resend_failed'), 'error'); }
+  });
+  b.appendChild(btn);
+  appEl.parentNode.insertBefore(b, appEl);
 }
 
 // Initialize

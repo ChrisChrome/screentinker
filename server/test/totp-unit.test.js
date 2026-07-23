@@ -83,3 +83,16 @@ test('#100 recovery codes: stored hashed, never plaintext; input normalized', ()
   const messy = ' ' + plain[0].toLowerCase().slice(0, 5) + '-' + plain[0].toLowerCase().slice(5) + ' ';
   assert.equal(totp.hashRecoveryCode(messy), hashes[0], 'normalized input matches');
 });
+
+test('keyuri: bare issuer by default; folds the instance host in so multi-instance accounts are distinguishable', () => {
+  const secret = totp.generateSecret();
+
+  const plain = totp.keyuri('user@x.com', secret);
+  assert.match(plain, /^otpauth:\/\/totp\//);
+  assert.match(plain, /issuer=ScreenTinker(&|$)/, 'bare "ScreenTinker" issuer when no instance given');
+
+  const scoped = totp.keyuri('user@x.com', secret, 'alpha.screentinker.com');
+  const decoded = decodeURIComponent(scoped);
+  assert.ok(decoded.includes('ScreenTinker (alpha.screentinker.com)'), 'issuer carries the host');
+  assert.notEqual(scoped, plain, 'a different instance yields a different label');
+});
