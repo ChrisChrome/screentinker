@@ -82,7 +82,8 @@ function accessContext(userId, role, workspace) {
 
 function resolveTenancy(req, res, next) {
   if (!req.user) {
-    // Should not happen when chained after requireAuth, but tolerate optionalAuth flows.
+    // Should not happen when chained after requireAuth; defensive for any future
+    // caller that runs this resolver without an authenticated user.
     return next();
   }
 

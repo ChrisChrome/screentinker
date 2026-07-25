@@ -150,24 +150,10 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// Optional auth - sets req.user if token present, continues either way
-function optionalAuth(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    try {
-      const token = authHeader.split(' ')[1];
-      const decoded = verifyToken(token);
-      if (decoded.mfa_pending) return next(); // #100: pre-TOTP token is not a session
-      req.user = decoded.recovery
-        ? recoveryUser(decoded)
-        : db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id FROM users WHERE id = ?').get(decoded.id);
-      req.jwtWorkspaceId = decoded.current_workspace_id || null;
-    } catch (err) {
-      // Token invalid, continue without user
-    }
-  }
-  next();
-}
+// (optionalAuth removed: it was exported but never mounted on any route, and it carried
+// its own copy of the token-resolution logic - a different user column list, no forced-
+// password-change check. A "set req.user if a token happens to be present" middleware is
+// reintroducible on top of resolveSessionUser in a few lines if a route ever needs one.)
 
 // Phase 2.1: role rename. Phase 1 renamed 'superadmin' to 'platform_admin' and
 // dropped the in-between 'admin' role. These two guards are widened to accept
@@ -226,4 +212,4 @@ function requireSuperAdmin(req, res, next) {
 // Preferred alias for new code.
 const requirePlatformAdmin = requireSuperAdmin;
 
-module.exports = { generateToken, generateMfaPendingToken, verifyToken, verifyMfaPendingToken, resolveSessionUser, SessionError, MFA_TOKEN_AUDIENCE, requireAuth, optionalAuth, requireAdmin, requireSuperAdmin, requirePlatformAdmin, isPlatformRole, isPlatformStaff, PLATFORM_ROLES, PLATFORM_STAFF, ELEVATED_ROLES };
+module.exports = { generateToken, generateMfaPendingToken, verifyToken, verifyMfaPendingToken, resolveSessionUser, SessionError, MFA_TOKEN_AUDIENCE, requireAuth, requireAdmin, requireSuperAdmin, requirePlatformAdmin, isPlatformRole, isPlatformStaff, PLATFORM_ROLES, PLATFORM_STAFF, ELEVATED_ROLES };
