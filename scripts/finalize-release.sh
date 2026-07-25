@@ -32,12 +32,35 @@ gh release download "$TAG" -p ScreenTinker.wgt --clobber
 
 echo "==> Assembling complete tarball (source + apk + wgt)"
 OUT="screentinker-$VERSION.tar.gz"
+# NOTE: `tar` archives DOTFILES too, so anything secret sitting under server/ ships
+# unless it is excluded by name. server/.env (Graph credentials) is gitignored, which
+# is precisely why it never showed up in a diff - the exclude list is the only thing
+# standing between it and a public release asset. Keep .env* and the local tooling
+# configs here, and see the audit gate below, which is the real backstop.
 tar czf "$OUT" \
   --exclude='node_modules' --exclude='.git' --exclude='.github' \
   --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db.*' \
   --exclude='server/uploads' --exclude='server/certs' --exclude='server/test' \
+  --exclude='.env' --exclude='.env.*' --exclude='*/.env' --exclude='*/.env.*' \
+  --exclude='.mcp.json' --exclude='*/.mcp.json' \
+  --exclude='*.jks' --exclude='*.keystore' --exclude='*.pem' --exclude='*.key' \
+  --exclude='.jwt_secret' --exclude='*/.jwt_secret' \
   server frontend scripts VERSION README.md LICENSE .env.example \
   ScreenTinker.apk ScreenTinker.wgt
+
+# Secret gate. The exclude list above fails OPEN - a new secret file added under
+# server/ ships unless someone remembers to add it. This gate fails CLOSED: it
+# inspects what is actually IN the archive and refuses to upload if anything
+# credential-shaped made it in. .env.example is deliberately shipped and allowed.
+echo "==> Auditing $OUT for credential-shaped files"
+BAD="$(tar tzf "$OUT" | grep -E '(^|/)(\.env|\.env\..*|\.mcp\.json|\.jwt_secret)$|\.(jks|keystore|pem|key|p12|pfx)$' || true)"
+if [ -n "$BAD" ]; then
+  echo "ERROR: refusing to upload - the archive contains credential-shaped files:" >&2
+  printf '  %s\n' $BAD >&2
+  echo "       Add an --exclude for each, then re-run." >&2
+  exit 1
+fi
+echo "    clean ($(tar tzf "$OUT" | wc -l) files)"
 
 echo "==> Uploading APK + complete tarball to $TAG"
 gh release upload "$TAG" "$OUT" ScreenTinker.apk --clobber
