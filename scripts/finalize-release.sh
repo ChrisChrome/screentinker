@@ -37,30 +37,47 @@ OUT="screentinker-$VERSION.tar.gz"
 # is precisely why it never showed up in a diff - the exclude list is the only thing
 # standing between it and a public release asset. Keep .env* and the local tooling
 # configs here, and see the audit gate below, which is the real backstop.
-tar czf "$OUT" \
+# Exclude EVERY .env* / key-shaped file, then explicitly re-add the single legitimate
+# one (.env.example, the config template self-hosters need). Doing it in that order
+# means a new secret file is excluded by default rather than shipped by default - the
+# exclusion is broad and the allowance is a named exception, not a glob that has to be
+# gotten exactly right.
+TMPTAR="${OUT%.gz}"
+tar cf "$TMPTAR" \
   --exclude='node_modules' --exclude='.git' --exclude='.github' \
   --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db.*' \
   --exclude='server/uploads' --exclude='server/certs' --exclude='server/test' \
-  --exclude='.env' --exclude='.env.*' --exclude='*/.env' --exclude='*/.env.*' \
+  --exclude='.env*' --exclude='*/.env*' \
   --exclude='.mcp.json' --exclude='*/.mcp.json' \
   --exclude='*.jks' --exclude='*.keystore' --exclude='*.pem' --exclude='*.key' \
   --exclude='.jwt_secret' --exclude='*/.jwt_secret' \
-  server frontend scripts VERSION README.md LICENSE .env.example \
+  server frontend scripts VERSION README.md LICENSE \
   ScreenTinker.apk ScreenTinker.wgt
+tar rf "$TMPTAR" .env.example      # the one .env* that is meant to ship
+gzip -f "$TMPTAR"                  # -> $OUT
 
 # Secret gate. The exclude list above fails OPEN - a new secret file added under
 # server/ ships unless someone remembers to add it. This gate fails CLOSED: it
 # inspects what is actually IN the archive and refuses to upload if anything
 # credential-shaped made it in. .env.example is deliberately shipped and allowed.
 echo "==> Auditing $OUT for credential-shaped files"
-BAD="$(tar tzf "$OUT" | grep -E '(^|/)(\.env|\.env\..*|\.mcp\.json|\.jwt_secret)$|\.(jks|keystore|pem|key|p12|pfx)$' || true)"
+# Match broadly, then subtract the single documented exception. Anything new that looks
+# like a credential is caught by default; only .env.example is allowed through.
+BAD="$(tar tzf "$OUT" \
+  | grep -E '(^|/)(\.env|\.env\..*|\.mcp\.json|\.jwt_secret)$|\.(jks|keystore|pem|key|p12|pfx)$' \
+  | grep -vE '(^|/)\.env\.example$' || true)"
 if [ -n "$BAD" ]; then
   echo "ERROR: refusing to upload - the archive contains credential-shaped files:" >&2
   printf '  %s\n' $BAD >&2
   echo "       Add an --exclude for each, then re-run." >&2
   exit 1
 fi
-echo "    clean ($(tar tzf "$OUT" | wc -l) files)"
+# The template MUST be present - its absence is a silent regression for self-hosters.
+if ! tar tzf "$OUT" | grep -qx '.env.example'; then
+  echo "ERROR: .env.example is missing from the archive (over-broad exclude?)." >&2
+  exit 1
+fi
+echo "    clean ($(tar tzf "$OUT" | wc -l) files, .env.example present)"
 
 echo "==> Uploading APK + complete tarball to $TAG"
 gh release upload "$TAG" "$OUT" ScreenTinker.apk --clobber
