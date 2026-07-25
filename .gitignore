@@ -52,3 +52,6 @@ video/
 
 # Generated: transition demo (rebuild with `node shared/Transitions/build-demo.js`)
 shared/Transitions/demo.html
+audit/
+.mcp.json
+**/.mcp.json
