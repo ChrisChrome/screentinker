@@ -1,6 +1,6 @@
 {
   "name": "screentinker",
-  "version": "1.9.14",
+  "version": "1.9.15",
   "description": "ScreenTinker - Digital Signage Management Server",
   "main": "server.js",
   "scripts": {
