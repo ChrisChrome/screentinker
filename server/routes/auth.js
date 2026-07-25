@@ -5,7 +5,7 @@ const https = require('https');
 const { v4: uuidv4 } = require('uuid');
 const { OAuth2Client } = require('google-auth-library');
 const { db } = require('../db/database');
-const { generateToken, generateMfaPendingToken, verifyToken, requireAuth, requireAdmin, requireSuperAdmin, isPlatformRole, isPlatformStaff, PLATFORM_ROLES } = require('../middleware/auth');
+const { generateToken, generateMfaPendingToken, verifyMfaPendingToken, requireAuth, requireAdmin, requireSuperAdmin, isPlatformRole, isPlatformStaff, PLATFORM_ROLES } = require('../middleware/auth');
 const { resolveTenancy } = require('../lib/tenancy');
 const { logActivity, getClientIp } = require('../services/activity');
 const totp = require('../lib/totp');
@@ -351,7 +351,9 @@ router.post('/totp/verify', (req, res) => {
   const { mfa_token, code } = req.body;
   if (!mfa_token || !code) return res.status(400).json({ error: 'mfa_token and code required' });
   let decoded;
-  try { decoded = verifyToken(mfa_token); } catch { return res.status(401).json({ error: 'mfa session expired' }); }
+  // verifyMfaPendingToken is the ONLY accessor that accepts the pre-TOTP audience; a full
+  // session token presented here is rejected by it (audience mismatch).
+  try { decoded = verifyMfaPendingToken(mfa_token); } catch { return res.status(401).json({ error: 'mfa session expired' }); }
   if (!decoded.mfa_pending || !decoded.id) return res.status(401).json({ error: 'invalid mfa token' });
   if (totpLockout.isLocked(decoded.id)) return res.status(429).json({ error: 'Too many invalid codes. Try again later.' });
 

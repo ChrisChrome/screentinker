@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const config = require('../config');
 const VERSION = require('../version');
-const { PLATFORM_ROLES } = require('../middleware/auth');
+const { PLATFORM_ROLES, resolveSessionUser } = require('../middleware/auth');
 const loopLag = require('../services/loop-lag');
 // #146 P3.8: soak observability — internal limiter/maintenance states.
 const flapLimiter = require('../lib/flap-limiter');
@@ -61,19 +61,35 @@ function formatUptime(seconds) {
   return `${m}m`;
 }
 
+// These three routes take the session token from the query string / Authorization header
+// and resolve it themselves rather than sitting behind requireAuth. resolveSessionUser is
+// the SAME resolver requireAuth uses, so they inherit every check it makes (pre-TOTP
+// refusal, live user row, forced password change). Each keeps the exact status/body it
+// returned before for the invalid-token case.
+function denySession(res, err) {
+  if (err && err.code === 'mfa_required') return res.status(401).json({ error: 'mfa_required' });
+  if (err && err.code === 'password_change_required') return res.status(403).json({ error: 'password_change_required' });
+  return res.status(401).json({ error: 'Invalid token' });
+}
+
 // Full database backup (superadmin only)
 router.get('/backup', (req, res) => {
   const token = req.query.token;
   if (!token) return res.status(401).json({ error: 'Token required' });
 
+  let session;
   try {
-    const jwt = require('jsonwebtoken');
-    const config = require('../config');
-    const decoded = jwt.verify(token, config.jwtSecret);
-    const user = db.prepare('SELECT role FROM users WHERE id = ?').get(decoded.id);
-    if (!user || !PLATFORM_ROLES.includes(user.role)) return res.status(403).json({ error: 'Platform admin only' });
-  } catch {
-    return res.status(401).json({ error: 'Invalid token' });
+    session = resolveSessionUser(token);
+  } catch (err) {
+    // An unknown user id stays indistinguishable from "not a platform admin" (as before),
+    // so this endpoint never confirms whether a given id exists.
+    if (err.code === 'user_not_found') return res.status(403).json({ error: 'Platform admin only' });
+    return denySession(res, err);
+  }
+  // A break-glass identity has no users row, so it could never pass the role check here
+  // before; keep it that way rather than letting the synthetic role claim decide.
+  if (session.viaRecovery || !PLATFORM_ROLES.includes(session.user.role)) {
+    return res.status(403).json({ error: 'Platform admin only' });
   }
 
   const dbPath = require('../config').dbPath;
@@ -88,16 +104,19 @@ router.get('/export', (req, res) => {
   let userId;
   let workspaceId;
   try {
-    const jwt = require('jsonwebtoken');
-    const config = require('../config');
-    const decoded = jwt.verify(token, config.jwtSecret);
-    userId = decoded.id;
-    workspaceId = decoded.current_workspace_id || null;
+    const session = resolveSessionUser(token);
+    // For a break-glass identity this is the synthetic recovery id, which has no users
+    // row - the lookup below then 404s exactly as the inline verify did before.
+    userId = session.user.id;
+    workspaceId = session.decoded.current_workspace_id || null;
     if (!userId) return res.status(401).json({ error: 'Invalid token' });
-  } catch {
-    return res.status(401).json({ error: 'Invalid token' });
+  } catch (err) {
+    if (err.code === 'user_not_found') return res.status(404).json({ error: 'User not found' });
+    return denySession(res, err);
   }
 
+  // Re-read with the export's own column list (it needs created_at, which the session
+  // resolver doesn't select).
   const user = db.prepare('SELECT id, email, name, role, auth_provider, plan_id, created_at FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -219,18 +238,17 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
   let userId;
   let workspaceId;
   try {
-    const jwt = require('jsonwebtoken');
-    const jwtConfig = require('../config');
-    const decoded = jwt.verify(authHeader.split(' ')[1], jwtConfig.jwtSecret);
-    userId = decoded.id;
-    workspaceId = decoded.current_workspace_id || null;
+    const session = resolveSessionUser(authHeader.split(' ')[1]);
+    // A break-glass identity has no users row: the lookup this replaced returned nothing
+    // for it, so the route 404'd. Preserve that.
+    if (session.viaRecovery) return res.status(404).json({ error: 'User not found' });
+    userId = session.user.id;
+    workspaceId = session.decoded.current_workspace_id || null;
     if (!userId) return res.status(401).json({ error: 'Invalid token' });
-  } catch {
-    return res.status(401).json({ error: 'Invalid token' });
+  } catch (err) {
+    if (err.code === 'user_not_found') return res.status(404).json({ error: 'User not found' });
+    return denySession(res, err);
   }
-
-  const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
 
   // Phase 2.2b: imports stamp workspace_id on devices and content so the
   // rows are visible to the workspace-filtered list endpoints. Fall back to

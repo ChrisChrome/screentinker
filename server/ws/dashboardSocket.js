@@ -1,5 +1,5 @@
 const heartbeat = require('../services/heartbeat');
-const { verifyToken } = require('../middleware/auth');
+const { resolveSessionUser } = require('../middleware/auth');
 const { db } = require('../db/database');
 const { accessContext, accessibleWorkspaceIds } = require('../lib/tenancy');
 const { workspaceRoom } = require('../lib/socket-rooms');
@@ -38,14 +38,25 @@ module.exports = function setupDashboardSocket(io) {
   dashboardNs.use((socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('Authentication required'));
+    let session;
     try {
-      const decoded = verifyToken(token);
-      socket.userId = decoded.id;
-      socket.userRole = decoded.role;
-      next();
-    } catch {
-      next(new Error('Invalid token'));
+      // Same resolver as requireAuth, so the socket inherits the pre-TOTP refusal and the
+      // forced-password-change gate that the HTTP surface enforces.
+      session = resolveSessionUser(token);
+    } catch (err) {
+      if (err.code === 'mfa_required') return next(new Error('mfa_required'));
+      if (err.code === 'password_change_required') return next(new Error('password_change_required'));
+      return next(new Error('Invalid token'));
     }
+    // Break-glass identities have no users row and no workspace membership, so
+    // canActOnDevice -> accessContext already denied them every command. Refuse the
+    // handshake rather than hold open a socket that can do nothing.
+    if (session.viaRecovery) return next(new Error('Invalid token'));
+    socket.userId = session.user.id;
+    // Role + existence come from the LIVE users row, not the token claim: a deleted or
+    // demoted user no longer keeps fleet control for the remainder of a 7-day JWT.
+    socket.userRole = session.user.role;
+    next();
   });
 
   dashboardNs.on('connection', (socket) => {

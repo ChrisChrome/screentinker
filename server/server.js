@@ -410,19 +410,26 @@ app.use('/api/stripe', stripeRouter);
 
 
 // Screenshot route (before protected routes - needs custom auth for img tags)
-const { verifyToken } = require('./middleware/auth');
+const { resolveSessionUser } = require('./middleware/auth');
 app.get('/api/devices/:id/screenshot', (req, res) => {
   let user = null;
   const authHeader = req.headers.authorization;
   const tokenParam = req.query.token;
   const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : tokenParam;
   if (!token) return res.status(401).json({ error: 'Authentication required' });
+  // resolveSessionUser is the same resolver requireAuth uses, so this route inherits the
+  // pre-TOTP refusal, the live-user check and the forced-password-change gate.
   try {
-    const decoded = verifyToken(token);
-    const { db } = require('./db/database');
-    user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(decoded.id);
-    if (!user) return res.status(401).json({ error: 'User not found' });
-  } catch { return res.status(401).json({ error: 'Invalid or expired token' }); }
+    const session = resolveSessionUser(token);
+    // Break-glass has no users row; the lookup this replaced returned nothing for it.
+    if (session.viaRecovery) return res.status(401).json({ error: 'User not found' });
+    user = session.user;
+  } catch (err) {
+    if (err.code === 'mfa_required') return res.status(401).json({ error: 'mfa_required' });
+    if (err.code === 'password_change_required') return res.status(403).json({ error: 'password_change_required' });
+    if (err.code === 'user_not_found') return res.status(401).json({ error: 'User not found' });
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
   const { db: sdb } = require('./db/database');
   const device = sdb.prepare('SELECT user_id FROM devices WHERE id = ?').get(req.params.id);
   if (!device) return res.status(404).json({ error: 'Device not found' });
@@ -453,13 +460,17 @@ function requesterCanAccessContent(req, content) {
   try {
     const m = (req.headers.authorization || '').match(/^Bearer (.+)$/);
     if (!m) return false;
-    const jwt = require('jsonwebtoken');
-    const decoded = jwt.verify(m[1], config.jwtSecret, { algorithms: ['HS256'] });
-    if (!decoded || !decoded.id) return false;
-    if (decoded.role === 'platform_admin') return true;
+    // Same resolver as requireAuth: a pre-TOTP token, a deleted user or an outstanding
+    // forced password change all throw here and fall through to false.
+    const session = resolveSessionUser(m[1]);
+    if (session.viaRecovery) return false; // no workspace membership; unchanged behaviour
+    const user = session.user;
+    if (!user || !user.id) return false;
+    // Role from the LIVE users row, not the token claim, so a demotion takes effect at once.
+    if (user.role === 'platform_admin') return true;
     const { db } = require('./db/database');
     return !!db.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-      .get(content.workspace_id, decoded.id);
+      .get(content.workspace_id, user.id);
   } catch { return false; }
 }
 

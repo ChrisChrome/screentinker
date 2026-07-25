@@ -2,6 +2,26 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { db } = require('../db/database');
 
+// Audience marker for the pre-TOTP token minted by generateMfaPendingToken below.
+// Session tokens (generateToken, and the recovery token from scripts/reset-admin.js)
+// carry NO `aud`, so verifyToken can refuse anything that does. That way a token minted
+// for one narrow purpose can only be redeemed through its own accessor, and a future
+// hand-rolled verify site that forgets a check fails CLOSED instead of accepting a
+// half-authenticated token.
+const MFA_TOKEN_AUDIENCE = 'st:mfa';
+
+// Raised when a token is cryptographically valid but is not a usable session: the TOTP
+// step is outstanding, the user row is gone, or a forced password change is pending.
+// `code` lets each caller map the outcome onto the status/body it already returned, so
+// no existing response shape changes.
+class SessionError extends Error {
+  constructor(code, message) {
+    super(message || code);
+    this.name = 'SessionError';
+    this.code = code;
+  }
+}
+
 // Phase 2.1: JWT now optionally carries the user's current workspace_id so
 // the tenancy middleware can resolve scope without an extra DB lookup on
 // every request. Callers that don't know the workspace yet (legacy paths,
@@ -17,19 +37,44 @@ function generateToken(user, currentWorkspaceId) {
 
 // #100: issued after password verification but BEFORE the TOTP step, so the client
 // can complete MFA. It is NOT a session token - it carries mfa_pending:true and is
-// accepted ONLY by POST /api/auth/totp/verify. requireAuth/optionalAuth reject it
-// (see below) - otherwise password-alone would yield a usable token and TOTP would
-// be decorative. Short-lived.
+// accepted ONLY by POST /api/auth/totp/verify (via verifyMfaPendingToken) - otherwise
+// password-alone would yield a usable token and TOTP would be decorative. Short-lived.
+// Two independent guards keep it off session paths: the mfa_pending check in
+// resolveSessionUser, and the audience below (which verifyToken refuses outright, so
+// even a caller that skips resolveSessionUser cannot accept this token).
 function generateMfaPendingToken(user) {
   return jwt.sign(
     { id: user.id, mfa_pending: true },
     config.jwtSecret,
-    { algorithm: 'HS256', expiresIn: '5m' }
+    { algorithm: 'HS256', expiresIn: '5m', audience: MFA_TOKEN_AUDIENCE }
   );
 }
 
+// Verify a SESSION token. Rejects any token carrying an audience: those are minted for a
+// single narrower purpose and must go through their own accessor (verifyMfaPendingToken),
+// never through a session path.
 function verifyToken(token) {
-  return jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
+  const decoded = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
+  if (decoded && decoded.aud !== undefined) {
+    // The pre-TOTP audience is a KNOWN narrow purpose: report it as such so callers can
+    // still tell the client to complete MFA rather than "your token is broken". Any other
+    // audience is unrecognised here and refused generically - the fail-closed default.
+    const aud = Array.isArray(decoded.aud) ? decoded.aud : [decoded.aud];
+    if (aud.includes(MFA_TOKEN_AUDIENCE)) throw new SessionError('mfa_required');
+    throw new SessionError('invalid_audience', 'token is scoped to another purpose');
+  }
+  return decoded;
+}
+
+// The ONLY accepted path for a pre-TOTP token: POST /api/auth/totp/verify. Requires the
+// audience, so a session token can't be presented here either.
+function verifyMfaPendingToken(token) {
+  const decoded = jwt.verify(token, config.jwtSecret, {
+    algorithms: ['HS256'],
+    audience: MFA_TOKEN_AUDIENCE,
+  });
+  if (!decoded.mfa_pending) throw new SessionError('invalid_token', 'not a pre-TOTP token');
+  return decoded;
 }
 
 // Synthetic user record for recovery tokens (scripts/reset-admin.js). Not
@@ -46,6 +91,38 @@ function recoveryUser(decoded) {
   };
 }
 
+// THE single definition of "this token is a usable session, and here is whose it is".
+// requireAuth below is a thin wrapper over it, and every site that verifies a JWT by
+// hand calls it too (the status backup/export/import routes, the screenshot + content
+// gates, the dashboard socket handshake) - so those checks cannot drift apart from
+// requireAuth's again.
+//
+// Returns { user, decoded, viaRecovery }. Throws:
+//   - a jsonwebtoken error            bad signature / expired / malformed
+//   - SessionError 'invalid_audience' token minted for a narrower purpose (pre-TOTP)
+//   - SessionError 'mfa_required'     password accepted, TOTP step NOT completed. #100
+//     (tightening #1): if this check is missing, password-alone yields a working session
+//     and TOTP is decorative.
+//   - SessionError 'user_not_found'   the token's user id no longer exists
+//   - SessionError 'password_change_required'  #7: forced first-login change outstanding,
+//     enforced SERVER-SIDE so a provisioned temp password doesn't work indefinitely.
+//
+// allowPasswordChange lets requireAuth keep its two exempt endpoints (the change itself,
+// PUT /api/auth/me, and logout) while every other caller stays hard-denied.
+function resolveSessionUser(token, { allowPasswordChange = false } = {}) {
+  const decoded = verifyToken(token);
+  // Recovery identities are synthetic (scripts/reset-admin.js) and have no users row, so
+  // they skip the lookup. Callers that must not honour break-glass check viaRecovery.
+  if (decoded.recovery) return { user: recoveryUser(decoded), decoded, viaRecovery: true };
+  if (decoded.mfa_pending) throw new SessionError('mfa_required');
+  const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, email_alerts, must_change_password FROM users WHERE id = ?').get(decoded.id);
+  if (!user) throw new SessionError('user_not_found');
+  if (user.must_change_password && !allowPasswordChange) {
+    throw new SessionError('password_change_required');
+  }
+  return { user, decoded, viaRecovery: false };
+}
+
 // Express middleware - requires valid JWT
 function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -53,38 +130,24 @@ function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
+  // #7: while must_change_password is set, allow only reading/updating one's own profile
+  // (PUT /api/auth/me clears the flag) and logout; block everything else.
+  const url = (req.originalUrl || '').split('?')[0].replace(/\/$/, '');
+  const allowPasswordChange = url === '/api/auth/me' || url === '/api/auth/logout';
+
+  let session;
   try {
-    const token = authHeader.split(' ')[1];
-    const decoded = verifyToken(token);
-    if (decoded.recovery) {
-      req.user = recoveryUser(decoded);
-      req.jwtWorkspaceId = null;
-      return next();
-    }
-    // #100 (tightening #1): an mfa_pending token has cleared the password but NOT the
-    // TOTP step. It must never authorize a protected route - only /api/auth/totp/verify
-    // accepts it. If this check is removed, password-alone yields a working session and
-    // TOTP is bypassed. (Covered by the mfa_pending bite-test.)
-    if (decoded.mfa_pending) return res.status(401).json({ error: 'mfa_required' });
-    const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, email_alerts, must_change_password FROM users WHERE id = ?').get(decoded.id);
-    if (!user) return res.status(401).json({ error: 'User not found' });
-    req.user = user;
-    // Tenancy middleware reads this on the resolver step.
-    req.jwtWorkspaceId = decoded.current_workspace_id || null;
-    // #7: enforce the forced first-login password change SERVER-SIDE (was a
-    // frontend-only redirect, so a provisioned temp password worked indefinitely
-    // via the API). While the flag is set, allow only reading/updating one's own
-    // profile (the password change is PUT /api/auth/me, which clears the flag)
-    // and logout; block everything else.
-    if (user.must_change_password) {
-      const url = (req.originalUrl || '').split('?')[0].replace(/\/$/, '');
-      const allowed = url === '/api/auth/me' || url === '/api/auth/logout';
-      if (!allowed) return res.status(403).json({ error: 'password_change_required' });
-    }
-    next();
+    session = resolveSessionUser(authHeader.split(' ')[1], { allowPasswordChange });
   } catch (err) {
+    if (err.code === 'mfa_required') return res.status(401).json({ error: 'mfa_required' });
+    if (err.code === 'user_not_found') return res.status(401).json({ error: 'User not found' });
+    if (err.code === 'password_change_required') return res.status(403).json({ error: 'password_change_required' });
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
+  req.user = session.user;
+  // Tenancy middleware reads this on the resolver step.
+  req.jwtWorkspaceId = session.viaRecovery ? null : (session.decoded.current_workspace_id || null);
+  next();
 }
 
 // Optional auth - sets req.user if token present, continues either way
@@ -163,4 +226,4 @@ function requireSuperAdmin(req, res, next) {
 // Preferred alias for new code.
 const requirePlatformAdmin = requireSuperAdmin;
 
-module.exports = { generateToken, generateMfaPendingToken, verifyToken, requireAuth, optionalAuth, requireAdmin, requireSuperAdmin, requirePlatformAdmin, isPlatformRole, isPlatformStaff, PLATFORM_ROLES, PLATFORM_STAFF, ELEVATED_ROLES };
+module.exports = { generateToken, generateMfaPendingToken, verifyToken, verifyMfaPendingToken, resolveSessionUser, SessionError, MFA_TOKEN_AUDIENCE, requireAuth, optionalAuth, requireAdmin, requireSuperAdmin, requirePlatformAdmin, isPlatformRole, isPlatformStaff, PLATFORM_ROLES, PLATFORM_STAFF, ELEVATED_ROLES };
