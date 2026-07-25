@@ -13,6 +13,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 const { accessContext } = require('../lib/tenancy');
 // #73: the upload ingest (processing + insert) is now shared with the agency router.
 const { ingestUploadedFile } = require('../lib/content-ingest');
+const { finalizeUpload, INLINE_SAFE_EXTS } = require('../lib/upload-sniff');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -143,6 +144,7 @@ router.post('/', checkStorageLimit, uploadContentFiles, async (req, res) => {
     // every existing caller reads); a multi-file upload returns the array of them.
     res.status(201).json(results.length === 1 ? results[0] : results);
   } catch (err) {
+    if (err && err.name === 'UnsupportedUploadError') return res.status(400).json({ error: err.message });
     console.error('Upload error:', err);
     res.status(500).json({ error: 'Upload failed' });
   }
@@ -504,12 +506,18 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
     if (fs.existsSync(oldThumb)) fs.unlinkSync(oldThumb);
   }
 
-  const filepath = req.file.filename;
+  // Same content-derived naming as the main ingest path (lib/upload-sniff) — the caller
+  // does not choose the extension here either. A non-media upload 400s.
+  let filepath, mime;
+  try { ({ filepath, mime } = finalizeUpload(req.file)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   let width = null, height = null, thumbnailPath = null;
 
-  // Generate new thumbnail for images
+  // Generate new thumbnail for images (SVG skipped — see lib/content-ingest.js)
   try {
-    if (req.file.mimetype.startsWith('image/')) {
+    if (mime === 'image/svg+xml') {
+      thumbnailPath = filepath;
+    } else if (mime.startsWith('image/')) {
       const sharp = require('sharp');
       const metadata = await sharp(req.file.path).metadata();
       width = metadata.width;
@@ -523,7 +531,7 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
   }
 
   db.prepare(`UPDATE content SET filepath = ?, mime_type = ?, file_size = ?, thumbnail_path = ?, width = ?, height = ? WHERE id = ?`)
-    .run(filepath, req.file.mimetype, req.file.size, thumbnailPath, width, height, req.params.id);
+    .run(filepath, mime, req.file.size, thumbnailPath, width, height, req.params.id);
 
   res.json(db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id));
 });
@@ -551,6 +559,18 @@ router.post('/:id/subtitle', upload.subtitleUpload.single('subtitle'), async (re
   res.json(db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id));
 });
 
+// Uploads share the dashboard origin — see server.js hardenUploadResponse. Same rule
+// applied here so these routes are safe on their own merits, not because another mount
+// happens to be registered first.
+function hardenUploadResponse(res, filename) {
+  res.setHeader('Content-Security-Policy', 'sandbox');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (!INLINE_SAFE_EXTS.has(path.extname(String(filename || '')).toLowerCase())) {
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'attachment');
+  }
+}
+
 // Serve content file
 router.get('/:id/file', (req, res) => {
   const content = checkContentRead(req, res);
@@ -559,6 +579,7 @@ router.get('/:id/file', (req, res) => {
   // Prevent path traversal
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
+  hardenUploadResponse(res, content.filepath);
   res.sendFile(safePath);
 });
 
@@ -569,6 +590,7 @@ router.get('/:id/thumbnail', (req, res) => {
   if (!content.thumbnail_path) return res.status(404).json({ error: 'Thumbnail not found' });
   const safePath = path.resolve(config.contentDir, path.basename(content.thumbnail_path));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
+  hardenUploadResponse(res, content.thumbnail_path);
   res.sendFile(safePath);
 });
 

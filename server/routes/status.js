@@ -7,6 +7,7 @@ const fs = require('fs');
 const config = require('../config');
 const VERSION = require('../version');
 const { PLATFORM_ROLES, resolveSessionUser } = require('../middleware/auth');
+const { INLINE_SAFE_EXTS } = require('../lib/upload-sniff');
 const loopLag = require('../services/loop-lag');
 // #146 P3.8: soak observability — internal limiter/maintenance states.
 const flapLimiter = require('../lib/flap-limiter');
@@ -349,7 +350,12 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       const files = extractedFiles[c.id];
       if (files && files.length > 0) {
         for (const f of files) {
-          const ext = path.extname(f.name);
+          // The archive chooses this name, so the extension is caller-controlled — the
+          // same defect the upload path fixes. Constrain it to the media allowlist; an
+          // entry with any other extension is skipped rather than written to the content
+          // dir under a name the browser would treat as an active document.
+          const ext = path.extname(f.name).toLowerCase();
+          if (!INLINE_SAFE_EXTS.has(ext)) continue;
           const destName = `${newId}${ext}`;
           const destPath = path.join(config.contentDir, destName);
           try {

@@ -23,8 +23,12 @@ const storage = multer.diskStorage({
     if (file.originalname) {
       file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
     }
-    const ext = path.extname(file.originalname);
-    cb(null, `${uuidv4()}${ext}`);
+    // Deliberately NOT path.extname(file.originalname): the extension decides how a
+    // browser interprets the file, and these are served from the dashboard's own origin,
+    // so a caller must not choose it. multer picks the name before any bytes exist, so we
+    // land on a neutral `.part` and lib/upload-sniff.finalizeUpload() renames it to a
+    // content-derived extension once the bytes are on disk.
+    cb(null, `${uuidv4()}.part`);
   }
 });
 

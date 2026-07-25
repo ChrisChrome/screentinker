@@ -13,6 +13,11 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 
 const { freePort } = require('./helpers/free-port');
+
+// A minimal REAL PNG (signature + padding). The upload path derives the stored
+// extension and mime from the file's BYTES (lib/upload-sniff), so a fixture that
+// merely *claims* image/png is refused — as it should be.
+const PNG_BYTES = Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]), Buffer.alloc(64)]);
 let PORT, BASE;
 const DATA_DIR = path.join(os.tmpdir(), 'st-agency-' + crypto.randomBytes(4).toString('hex'));
 let proc;
@@ -69,7 +74,7 @@ test('#73 agency token: full bite-suite (happy path + 4 confinement assertions)'
 
   // HAPPY PATH: upload via the agency token (shared ingest -> first-class content)
   const fd = new FormData();
-  fd.append('file', new Blob([Buffer.from('x')], { type: 'image/png' }), 't.png');
+  fd.append('file', new Blob([PNG_BYTES], { type: 'image/png' }), 't.png');
   const up = await fetch(BASE + '/api/agency/content', { method: 'POST', headers: { Authorization: 'Bearer ' + atok }, body: fd });
   assert.equal(up.status, 201, 'agency upload -> 201 (first-class content)');
   const content = await up.json();
@@ -114,7 +119,7 @@ test('#73 auto-publish: the TOKEN flag decides draft vs live; the body can never
 
   async function upload(tok) {
     const fd = new FormData();
-    fd.append('file', new Blob([Buffer.from('x')], { type: 'image/png' }), 't.png');
+    fd.append('file', new Blob([PNG_BYTES], { type: 'image/png' }), 't.png');
     return (await fetch(BASE + '/api/agency/content', { method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd })).json();
   }
   const cD = await upload(draftTok.token);
@@ -166,7 +171,7 @@ test('#73 full-screen guardrail holds at UPLOAD time too (auto-publish has no dr
   const auth = (tok) => ({ headers: { Authorization: 'Bearer ' + tok } });
   const upload = async (tok) => {
     const fd = new FormData();
-    fd.append('file', new Blob([Buffer.from('x')], { type: 'image/png' }), 't.png');
+    fd.append('file', new Blob([PNG_BYTES], { type: 'image/png' }), 't.png');
     return (await fetch(BASE + '/api/agency/content', { method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd })).json();
   };
   const email = 'fs' + crypto.randomBytes(4).toString('hex') + '@x.local';
@@ -212,7 +217,7 @@ test('#158 agency upload folder: auto-create, pick, subtree confinement, rebind'
 
   const up = async (folderId) => {
     const fd = new FormData();
-    fd.append('file', new Blob([Buffer.from('x')], { type: 'image/png' }), 't.png');
+    fd.append('file', new Blob([PNG_BYTES], { type: 'image/png' }), 't.png');
     if (folderId) fd.append('folder_id', folderId);
     return fetch(BASE + '/api/agency/content', { method: 'POST', headers: { Authorization: 'Bearer ' + atok }, body: fd });
   };

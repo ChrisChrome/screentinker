@@ -12,6 +12,7 @@ const { db } = require('../db/database');
 const config = require('../config');
 const { sanitizeString } = require('../middleware/sanitize');
 const { videoDisplayDims, imageDisplayDims } = require('./media-orientation');
+const { finalizeUpload } = require('./upload-sniff');
 
 // Multer takes file.originalname from the multipart header, bypassing sanitizeBody, so
 // HTML-escape here (renders as text in every UI sink). .normalize('NFC') first: macOS
@@ -26,11 +27,17 @@ function safeFilename(name) {
 // thumbnail/metadata failures are best-effort (logged, non-fatal) exactly as before.
 async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }) {
   const id = uuidv4();
-  const filepath = file.filename;
+  // Content-derived extension + mime. Throws UnsupportedUploadError (and removes the temp
+  // file) when the bytes are not a supported media type; the caller maps that to a 400.
+  const { filepath, mime } = finalizeUpload(file);
   let width = null, height = null, durationSec = null, thumbnailPath = null;
 
   try {
-    if (file.mimetype.startsWith('image/')) {
+    // SVG is deliberately NOT handed to sharp: rasterising it goes through librsvg, which
+    // is where the outstanding libvips CVEs live, and an SVG is already its own thumbnail.
+    if (mime === 'image/svg+xml') {
+      thumbnailPath = filepath;
+    } else if (mime.startsWith('image/')) {
       const sharp = require('sharp');
       const metadata = await sharp(file.path).metadata();
       // #170: honor EXIF orientation so a portrait photo isn't stored as landscape.
@@ -41,7 +48,7 @@ async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }
         .resize(config.thumbnailWidth)
         .jpeg({ quality: 70 })
         .toFile(path.join(config.contentDir, thumbnailPath));
-    } else if (file.mimetype.startsWith('video/')) {
+    } else if (mime.startsWith('video/')) {
       try {
         const { execFileSync } = require('child_process');
         const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', file.path],
@@ -72,7 +79,7 @@ async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }
   db.prepare(`
     INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height, folder_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, userId, workspaceId, safeFilename(file.originalname), filepath, file.mimetype, file.size, durationSec, thumbnailPath, width, height, folderId || null);
+  `).run(id, userId, workspaceId, safeFilename(file.originalname), filepath, mime, file.size, durationSec, thumbnailPath, width, height, folderId || null);
 
   return db.prepare('SELECT * FROM content WHERE id = ?').get(id);
 }

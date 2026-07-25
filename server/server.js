@@ -497,6 +497,7 @@ app.get('/api/content/:id/file', (req, res) => {
   // served here without auth (playlist/widget-gated above).
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  hardenUploadResponse(res, content.filepath);
   res.sendFile(safePath);
 });
 
@@ -546,6 +547,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
   // See /file — cross-origin so sandboxed widget iframes can load it.
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  hardenUploadResponse(res, content.thumbnail_path);
   res.sendFile(safePath);
 });
 
@@ -753,12 +755,42 @@ app.post('/api/device/exit', (req, res) => {
 
 // Serve uploaded content files directly (with CORS for web player canvas capture)
 // Long cache for media files — Cloudflare and browsers can cache these aggressively
+// Uploads share the dashboard's origin, so the browser's interpretation of them is a
+// security boundary. lib/upload-sniff derives every stored extension from the file's
+// bytes, but this layer is the BACKSTOP that holds regardless of how a file reached
+// disk (a future sniffer gap, a restored backup, a pre-fix row):
+//   - `Content-Security-Policy: sandbox` -> if the response is ever treated as a
+//     document, it lands in an opaque origin with scripts disabled, so it cannot read
+//     the dashboard's localStorage. Images/video loaded as subresources are unaffected
+//     (CSP on a response only governs it as a document), so <img>/<video> still work.
+//   - anything outside the inline-safe extension set is forced to download as opaque
+//     bytes instead of being rendered.
+const { INLINE_SAFE_EXTS } = require('./lib/upload-sniff');
+function hardenUploadResponse(res, filename) {
+  res.setHeader('Content-Security-Policy', 'sandbox');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  const ext = path.extname(String(filename || '')).toLowerCase();
+  if (!INLINE_SAFE_EXTS.has(ext)) {
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'attachment');
+    return false; // caller must not let express override the type
+  }
+  return true;
+}
+
 app.use('/uploads/content', (req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('Cache-Control', 'public, max-age=2592000, immutable'); // 30 days
+  hardenUploadResponse(res, req.path);
   next();
-}, express.static(config.contentDir));
+}, express.static(config.contentDir, {
+  setHeaders: (res, filePath) => {
+    // express.static sets Content-Type from the extension AFTER our middleware, so
+    // re-assert the override here for anything not inline-safe.
+    hardenUploadResponse(res, filePath);
+  },
+}));
 
 // Media proxy for remote (URL-referenced) playlist items — public by construction (players are
 // unauthenticated browsers). Takes an itemId, never a caller URL: it fetches the item's stored
