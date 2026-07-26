@@ -224,7 +224,19 @@ router.get('/:id/data.json', (req, res) => {
 
 // Latest frame-rate telemetry per widget, reported by the diag-smoothness widget running on a device.
 // In-memory (diagnostic, not persisted) — a device page reads the snapshot for the widget it plays.
-const widgetTelemetry = new Map();
+//
+// BOUNDED, because the writer is unauthenticated (the widget runs in a null-origin sandboxed
+// iframe and cannot carry a session) and the key comes from the request body. An uncapped map
+// keyed on caller-supplied values is a remote memory-exhaustion path, and on this product a dead
+// server means the whole fleet reconnects at once.
+//
+// The cap is GLOBAL rather than per-IP on purpose: signage sites egress through one NAT address,
+// so a per-IP limit would punish an entire venue for one noisy panel while doing nothing about a
+// distributed writer. Same reasoning as lib/ota-download-guard ("NEVER per-IP (SNAT)"). Eviction
+// is least-recently-written, and a live panel rewrites its key every 2.5s, so only entries the
+// dashboard would already call stale (>15s) are ever eligible.
+const widgetTelemetry = require('../lib/bounded-snapshot-store').createStore({ max: 500, ttlMs: 60_000 });
+widgetTelemetry.startSweep();
 // Public POST from the widget: it runs in a null-origin sandboxed iframe, so this must be no-auth +
 // CORS-open. The widget sends text/plain (a "simple" request → no CORS preflight); we JSON.parse it.
 router.post('/:id/telemetry', express.text({ type: '*/*', limit: '16kb' }), (req, res) => {
@@ -236,7 +248,11 @@ router.post('/:id/telemetry', express.text({ type: '*/*', limit: '16kb' }), (req
   // fall back to a widget-scoped key for players that don't pass a device id yet.
   const key = (t.device && String(t.device).slice(0, 64)) || ('w:' + req.params.id);
   widgetTelemetry.set(key, t);
-  res.json({ ok: true });
+  // 204, not res.json(): this is fire-and-forget diagnostic data and the reporting widget ignores
+  // the response entirely (routes/widgets.js renderDiagSmoothness -> fetch(...).catch()). It also
+  // keeps services/activity.js activityLogger — which wraps res.json — from writing an activity_log
+  // row per unauthenticated report, i.e. from letting an anonymous caller grow a DB table.
+  res.status(204).end();
 });
 // Public GET so the dashboard device page can display the snapshot. ?device=<id> reads that panel's
 // report; without it (or if that panel hasn't reported) falls back to the widget-scoped snapshot.
@@ -247,8 +263,10 @@ router.get('/:id/telemetry', (req, res) => {
   // Device-scoped request returns ONLY that device's report — NO widget-wide fallback, or one
   // reporting panel's data would show on every other device's page (incl. offline ones). A request
   // with no device id gets the widget-scoped snapshot (raw/debug view only).
-  const rec = dev ? (widgetTelemetry.get(dev) || null) : (widgetTelemetry.get('w:' + req.params.id) || null);
-  res.json(rec);
+  // get() returns null for a missing OR expired entry, so a stale snapshot is never served
+  // as live even between sweeps.
+  const rec = dev ? widgetTelemetry.get(dev) : widgetTelemetry.get('w:' + req.params.id);
+  res.json(rec || null);
 });
 
 // Preview unsaved widget from config (used by editor Preview button)
