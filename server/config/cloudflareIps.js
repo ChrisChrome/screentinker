@@ -31,9 +31,14 @@ const cloudflareIpv6 = [
 
 const cloudflareIps = [...cloudflareIpv4, ...cloudflareIpv6];
 
-// What Express's trust-proxy and our CF-Connecting-IP gate both honor.
-// 'loopback', 'linklocal', 'uniquelocal' keep local dev and any LAN reverse
-// proxy working without further config.
+// What Express's `trust proxy` honors. 'loopback', 'linklocal', 'uniquelocal' keep local
+// dev and any LAN reverse proxy working without further config, and they are SAFE here
+// because a proxy APPENDS to X-Forwarded-For and Express walks that chain right-to-left,
+// so a client-supplied value can never end up as the resolved address.
+//
+// NOTE: this list is deliberately NOT the gate for CF-Connecting-IP. That header carries
+// no chain — a local proxy passes through whatever single value the client sent — so
+// services/activity.js gates it on `cloudflareIps` alone. See the comment there.
 const trustedProxies = ['loopback', 'linklocal', 'uniquelocal', ...cloudflareIps];
 
 module.exports = { cloudflareIpv4, cloudflareIpv6, cloudflareIps, trustedProxies };
