@@ -10,6 +10,7 @@ const { resolveTenancy } = require('../lib/tenancy');
 const { logActivity, getClientIp } = require('../services/activity');
 const totp = require('../lib/totp');
 const totpLockout = require('../lib/totp-lockout');
+const loginLockout = require('../lib/login-lockout');
 const QRCode = require('qrcode');
 const { sendSignupEmails, sendVerificationEmail } = require('../services/signupEmails');
 const emailVerify = require('../lib/emailVerify');
@@ -168,10 +169,29 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid email or password' });
   }
 
+  // Per-ACCOUNT brute-force lockout (lib/login-lockout), on top of the per-IP limiter in
+  // server.js. Checked BEFORE bcrypt so a locked account costs no hashing work.
+  //
+  // The response is deliberately IDENTICAL to a wrong password: a distinct 429 would tell
+  // an attacker "this account exists and is under attack", turning the endpoint into an
+  // account-existence oracle. The trade is that a locked-out legitimate user sees the
+  // generic message, so the trip is written to activity_log for the operator instead.
+  if (loginLockout.isLocked(user.id)) {
+    logFailedLogin(email, getClientIp(req), 'Locked out (too many failed passwords)');
+    return res.status(401).json({ error: 'Invalid email or password' });
+  }
+
   if (!bcrypt.compareSync(password, user.password_hash)) {
+    const rec = loginLockout.recordFailure(user.id);
+    if (rec.lockedUntil) logActivity(null, 'auth:login_locked', `${email} - locked after repeated failures`, null, getClientIp(req));
     logFailedLogin(email, getClientIp(req), 'Wrong password');
     return res.status(401).json({ error: 'Invalid email or password' });
   }
+
+  // Password proven. Clear the counter HERE rather than in issueSession: the TOTP and
+  // email-verification branches below return before issueSession is ever reached, so a
+  // reset placed there would never fire for those accounts.
+  loginLockout.reset(user.id);
 
   // Email verification gate. Unverified LOCAL accounts are asked to confirm on login — this
   // covers both new signups AND existing users who predate the feature (grandfathered locals are
