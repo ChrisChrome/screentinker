@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const config = require('../config');
+const { sixDigitCode } = require('../lib/numeric-code');
 const VERSION = require('../version');
 const { PLATFORM_ROLES, resolveSessionUser } = require('../middleware/auth');
 const loopLag = require('../services/loop-lag');
@@ -332,7 +333,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
     for (const d of (data.devices || [])) {
       const newId = uuid.v4();
       idMap.devices[d.id] = newId;
-      const pairingCode = String(Math.floor(100000 + Math.random() * 900000));
+      const pairingCode = sixDigitCode(); // CSPRNG (lib/numeric-code): this code claims a device
       db.prepare(`INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, status, screen_width, screen_height, created_at) VALUES (?, ?, ?, ?, ?, 'provisioning', ?, ?, ?)`).run(newId, userId, workspaceId, d.name, pairingCode, d.screen_width || null, d.screen_height || null, d.created_at || Math.floor(Date.now() / 1000));
       stats.devices++;
     }

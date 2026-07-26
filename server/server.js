@@ -555,6 +555,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
 // req.isPlatformAdmin, req.actingAs. Route handlers in 2.1 don't read these
 // yet (they still filter by user_id); 2.2 will migrate them one route at a time.
 const { requireAuth } = require('./middleware/auth');
+const { sixDigitCode } = require('./lib/numeric-code');
 const { resolveTenancy } = require('./lib/tenancy');
 // Public API token front door (Phase 1). Attached ONLY to the public routers below.
 const { bearerAuth, tokenScopeGate, agencyGate } = require('./middleware/apiToken');
@@ -917,8 +918,11 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (
 
   const deviceName = name || 'Display ' + (db.prepare('SELECT COUNT(*) as count FROM devices WHERE user_id = ?').get(req.user.id).count + 1);
   // Generate a random 6-digit PIN for the hidden settings menu — each device gets a
-  // unique PIN provisioned by the server (never a hardcoded default).
-  const settingsPin = String(Math.floor(100000 + Math.random() * 900000));
+  // unique PIN provisioned by the server (never a hardcoded default). CSPRNG-backed
+  // (lib/numeric-code): this PIN gates the on-device settings menu and is observable in
+  // device API responses, so Math.random's recoverable state would let one tenant predict
+  // another's.
+  const settingsPin = sixDigitCode();
   db.prepare("UPDATE devices SET pairing_code = NULL, name = ?, user_id = ?, workspace_id = ?, status = 'online', settings_pin = ?, updated_at = strftime('%s','now') WHERE id = ?")
     .run(deviceName, req.user.id, req.workspaceId, settingsPin, device.id);
 
