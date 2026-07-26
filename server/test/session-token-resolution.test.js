@@ -103,11 +103,23 @@ before(async () => {
   S.mfaToken = login.body.mfa_token;
   assert.ok(S.mfaToken, 'got a pre-TOTP token');
 
-  // Recovery token, minted exactly as scripts/reset-admin.js does it.
-  S.recoveryToken = jwt.sign(
-    { id: 'recovery-' + crypto.randomBytes(8).toString('hex'), email: 'admin@localhost', role: 'admin', recovery: true },
-    SECRET, { expiresIn: '1h' }
-  );
+  // Recovery token, minted exactly as scripts/reset-admin.js does it — including the
+  // recovery_grants row, without which the token is refused outright. Backing it properly
+  // keeps the assertions below testing what they were written to test (break-glass is
+  // refused on these six surfaces because it has no users row / no workspace membership),
+  // rather than passing for the unrelated reason that the token itself is invalid.
+  {
+    const Database = require('better-sqlite3');
+    const gdb = new Database(path.join(DATA_DIR, 'db', 'remote_display.db'));
+    const jti = crypto.randomBytes(16).toString('hex');
+    gdb.prepare('INSERT INTO recovery_grants (jti, expires_at, minted_by, note) VALUES (?,?,?,?)')
+      .run(jti, Math.floor(Date.now() / 1000) + 3600, 'test', 'session-token-resolution');
+    gdb.close();
+    S.recoveryToken = jwt.sign(
+      { id: 'recovery-' + jti, email: 'admin@localhost', role: 'admin', recovery: true, jti },
+      SECRET, { expiresIn: '1h' }
+    );
+  }
 
   // Content with a real file + thumbnail, not referenced by any playlist, so
   // /api/content/:id/{file,thumbnail} falls through to the requester gate.

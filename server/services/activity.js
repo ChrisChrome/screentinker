@@ -34,6 +34,14 @@ function getClientIp(req) {
 // workspace - matches the backfill rule for consistency.
 function logActivity(userId, action, details = null, deviceId = null, ipAddress = null, workspaceId = null) {
   try {
+    // A break-glass identity ('recovery-<jti>') is synthetic and has no users row, so
+    // activity_log.user_id's foreign key rejects it and the row is lost — which is exactly
+    // why a recovery session used to leave no trail whatsoever. Record it with a NULL
+    // user_id and the identity in `details`, so the action IS audited.
+    if (typeof userId === 'string' && userId.startsWith('recovery-')) {
+      details = `[break-glass ${userId}] ${details || ''}`.trim();
+      userId = null;
+    }
     let ws = workspaceId || null;
     if (!ws && deviceId) {
       const d = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
@@ -43,9 +51,19 @@ function logActivity(userId, action, details = null, deviceId = null, ipAddress 
       'INSERT INTO activity_log (user_id, device_id, action, details, ip_address, workspace_id) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(userId || null, deviceId || null, action, details || null, ipAddress || null, ws);
   } catch (e) {
-    console.error('Activity log error:', e.message);
+    // LOUD on purpose. A silently-dropped audit row is how a break-glass session went
+    // unrecorded for months: the insert failed a foreign key, this catch swallowed it, and
+    // nothing anywhere reported that the audit trail had a hole in it. If this fires, the
+    // audit log is INCOMPLETE and that is worth someone's attention.
+    console.error(`[AUDIT-DROP] activity_log insert FAILED — the audit trail is incomplete. action=${action} user=${userId || 'null'} device=${deviceId || 'null'}: ${e.message}`);
+    auditDrops++;
   }
 }
+
+// Count of audit rows we failed to persist, so the gap is observable rather than only
+// greppable in stdout.
+let auditDrops = 0;
+function auditDropCount() { return auditDrops; }
 
 function getActivity(options = {}) {
   const { userId, deviceId, limit = 50, offset = 0 } = options;
@@ -94,4 +112,4 @@ function summarizeAction(req) {
   return parts.join(', ') || null;
 }
 
-module.exports = { logActivity, getActivity, pruneActivityLog, activityLogger, getClientIp };
+module.exports = { logActivity, getActivity, pruneActivityLog, activityLogger, getClientIp, auditDropCount };

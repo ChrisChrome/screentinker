@@ -109,11 +109,21 @@ function recoveryUser(decoded) {
 //
 // allowPasswordChange lets requireAuth keep its two exempt endpoints (the change itself,
 // PUT /api/auth/me, and logout) while every other caller stays hard-denied.
-function resolveSessionUser(token, { allowPasswordChange = false } = {}) {
+function resolveSessionUser(token, { allowPasswordChange = false, sourceIp = null } = {}) {
   const decoded = verifyToken(token);
   // Recovery identities are synthetic (scripts/reset-admin.js) and have no users row, so
-  // they skip the lookup. Callers that must not honour break-glass check viaRecovery.
-  if (decoded.recovery) return { user: recoveryUser(decoded), decoded, viaRecovery: true };
+  // they skip the users lookup — but they are NOT accepted on the strength of the claim
+  // alone. A `recovery: true` JWT is only honoured while a matching grant row exists,
+  // unexpired and unused (lib/recovery-grant), which is what makes break-glass revocable
+  // (DELETE the row), enumerable, and single-use. Redemption stamps used_at, so the same
+  // token cannot be replayed.
+  if (decoded.recovery) {
+    const grants = require('../lib/recovery-grant');
+    if (!decoded.jti || !grants.redeem(decoded.jti, { sourceIp })) {
+      throw new SessionError('recovery_grant_invalid');
+    }
+    return { user: recoveryUser(decoded), decoded, viaRecovery: true };
+  }
   if (decoded.mfa_pending) throw new SessionError('mfa_required');
   const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, email_alerts, must_change_password FROM users WHERE id = ?').get(decoded.id);
   if (!user) throw new SessionError('user_not_found');
@@ -137,9 +147,11 @@ function requireAuth(req, res, next) {
 
   let session;
   try {
-    session = resolveSessionUser(authHeader.split(' ')[1], { allowPasswordChange });
+    session = resolveSessionUser(authHeader.split(' ')[1], { allowPasswordChange, sourceIp: req.ip || null });
   } catch (err) {
     if (err.code === 'mfa_required') return res.status(401).json({ error: 'mfa_required' });
+    // No grant, spent, expired or revoked — indistinguishable from any other bad token.
+    if (err.code === 'recovery_grant_invalid') return res.status(401).json({ error: 'Invalid or expired token' });
     if (err.code === 'user_not_found') return res.status(401).json({ error: 'User not found' });
     if (err.code === 'password_change_required') return res.status(403).json({ error: 'password_change_required' });
     return res.status(401).json({ error: 'Invalid or expired token' });

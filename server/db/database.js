@@ -389,6 +389,28 @@ const migrations = [
   "ALTER TABLE content ADD COLUMN captions_lang TEXT",
   "ALTER TABLE content ADD COLUMN subtitle_url TEXT",
   "ALTER TABLE content ADD COLUMN subtitle_lang TEXT",
+  // AUTH-05: make break-glass recovery revocable, single-use and auditable.
+  //
+  // scripts/reset-admin.js mints a JWT carrying `recovery: true`, which middleware/auth.js
+  // accepts as a synthetic platform identity WITHOUT touching the database. That made it
+  // impossible to revoke (short of rotating JWT_SECRET, which logs out every user), to
+  // enumerate (nobody can answer "is a recovery token outstanding?"), or to audit — the
+  // synthetic id is not a users row, so every activity_log insert for it fails the
+  // user_id FK and is swallowed, leaving a break-glass session with NO trail at all.
+  //
+  // One row per minted token turns all three around: DELETE revokes, SELECT enumerates,
+  // used_at makes it single-use. Additive and idempotent, so re-running is a no-op and a
+  // code-only rollback simply leaves an unused table behind.
+  `CREATE TABLE IF NOT EXISTS recovery_grants (
+    jti         TEXT PRIMARY KEY,
+    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    expires_at  INTEGER NOT NULL,
+    used_at     INTEGER,
+    minted_by   TEXT,
+    source_ip   TEXT,
+    note        TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_recovery_grants_expires ON recovery_grants(expires_at)",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.
