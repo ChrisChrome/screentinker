@@ -431,9 +431,19 @@ app.get('/api/devices/:id/screenshot', (req, res) => {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
   const { db: sdb } = require('./db/database');
-  const device = sdb.prepare('SELECT user_id FROM devices WHERE id = ?').get(req.params.id);
+  const device = sdb.prepare('SELECT user_id, workspace_id FROM devices WHERE id = ?').get(req.params.id);
   if (!device) return res.status(404).json({ error: 'Device not found' });
-  if (!['admin','superadmin'].includes(user.role) && device.user_id && device.user_id !== user.id) return res.status(403).json({ error: 'Access denied' });
+  // Authorize on the DEVICE'S WORKSPACE, the same way routes/devices.js does. The previous
+  // test was pre-tenancy (`device.user_id !== user.id`) with a role bypass listing
+  // 'admin'/'superadmin', which had three problems: it short-circuited on `device.user_id &&`
+  // so a device with NO owner was readable by any authenticated account (an unpaired panel
+  // displays its pairing code, so that image is also a claim vector); it omitted
+  // 'platform_admin', the name #14 migrated 'superadmin' to, so real platform admins were
+  // denied; and it denied workspace members who administer the device everywhere else.
+  // accessContext covers direct membership, org-level access and platform staff in one call.
+  if (!device.workspace_id) return res.status(403).json({ error: 'Access denied' });
+  const ws = sdb.prepare('SELECT * FROM workspaces WHERE id = ?').get(device.workspace_id);
+  if (!ws || !accessContext(user.id, user.role, ws)) return res.status(403).json({ error: 'Access denied' });
   // Serve from memory if available (device online), otherwise from disk (offline snapshot)
   const deviceSocket = require('./ws/deviceSocket');
   const memScreenshot = deviceSocket.lastScreenshots?.[req.params.id];
@@ -557,7 +567,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
 // req.isPlatformAdmin, req.actingAs. Route handlers in 2.1 don't read these
 // yet (they still filter by user_id); 2.2 will migrate them one route at a time.
 const { requireAuth } = require('./middleware/auth');
-const { resolveTenancy } = require('./lib/tenancy');
+const { resolveTenancy, accessContext } = require('./lib/tenancy');
 // Public API token front door (Phase 1). Attached ONLY to the public routers below.
 const { bearerAuth, tokenScopeGate, agencyGate } = require('./middleware/apiToken');
 
