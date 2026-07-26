@@ -1,28 +1,32 @@
 const { db } = require('../db/database');
 const proxyaddr = require('proxy-addr');
-const { trustedProxies } = require('../config/cloudflareIps');
+const { cloudflareIps } = require('../config/cloudflareIps');
 
-// Gate function: returns true when an immediate TCP peer is one we trust
-// to populate forwarding headers (Cloudflare edges, loopback, link-local,
-// unique-local). Mirrors what `app.set('trust proxy', trustedProxies)` does
-// for X-Forwarded-For so that CF-Connecting-IP is held to the same standard.
-const isTrustedPeer = proxyaddr.compile(trustedProxies);
+// Peer gate for CF-Connecting-IP: ONLY Cloudflare's published edge ranges, deliberately
+// NOT the loopback/linklocal/uniquelocal entries that `trust proxy` also carries.
+//
+// Those entries are right for X-Forwarded-For, because a local reverse proxy APPENDS to
+// XFF and Express then walks the chain right-to-left, so a client-supplied value cannot
+// end up as the resolved address. CF-Connecting-IP has no chain: nginx passes through
+// whatever single value the client sent. Treating a loopback peer as evidence that the
+// request came through Cloudflare therefore means trusting the client.
+//
+// This is also the portable behaviour. Most self-hosted installs do NOT sit behind
+// Cloudflare; for them this header is now simply ignored and attribution comes from
+// req.ip via whatever `trust proxy` the operator configured. An install that DOES front
+// with Cloudflare is unaffected: its peer really is a CF edge.
+const isCloudflarePeer = proxyaddr.compile(cloudflareIps);
 
-// Resolve the real client IP for logging.
-//
-// Cloudflare always sets `CF-Connecting-IP` to the original client address
-// when it proxies a request. We prefer that header — but only when the
-// connection's immediate peer is a trusted CF/loopback address; otherwise
-// any random visitor could spoof the header by hitting the origin directly.
-//
-// Falls back to req.ip (which Express resolves via the trust-proxy table)
-// so local dev and any non-CF deployment keep working unchanged.
+// Resolve the real client IP. This value keys every per-IP control (the auth/pairing rate
+// limiters, lib/pair-lockout) and the ip_address column in activity_log, so a caller must
+// never be able to choose it.
 function getClientIp(req) {
   if (!req) return null;
   const cf = req.headers && req.headers['cf-connecting-ip'];
-  if (typeof cf === 'string' && cf.length > 0) {
+  if (typeof cf === 'string' && cf.trim().length > 0) {
     const peer = req.socket && req.socket.remoteAddress;
-    if (peer && isTrustedPeer(peer, 0)) return cf;
+    // Believe it only when the request demonstrably arrived through Cloudflare.
+    if (peer && isCloudflarePeer(peer, 0)) return cf.trim();
   }
   return req.ip || null;
 }
