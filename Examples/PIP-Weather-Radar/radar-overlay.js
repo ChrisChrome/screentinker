@@ -54,6 +54,40 @@
     return L.latLngBounds([lat - halfLat, lon - halfLon], [lat + halfLat, lon + halfLon]);
   }
 
+  // Bounds of a GeoJSON warning polygon, computed straight off the coordinates. Cheaper
+  // than building a throwaway L.geoJSON layer per feature just to ask for its extent.
+  function boundsOf(f) {
+    var g = f && f.geometry; if (!g) return null;
+    var polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+    var s = 90, w = 180, n = -90, e = -180;
+    polys.forEach(function (poly) {
+      poly.forEach(function (ring) {
+        ring.forEach(function (pt) {
+          var x = pt[0], y = pt[1];
+          if (y < s) s = y; if (y > n) n = y;
+          if (x < w) w = x; if (x > e) e = x;
+        });
+      });
+    });
+    return (n >= s && e >= w) ? L.latLngBounds([s, w], [n, e]) : null;
+  }
+
+  // The chips claim to describe what is "in view", so they have to be tallied from the
+  // map's ACTUAL viewport, not from the query result. The alert feed is fetched per STATE
+  // (one request instead of one per county), so it routinely returns warnings hundreds of
+  // miles away — reporting those as "2x Tornado Warning" over a map that shows neither of
+  // them is worse than saying nothing.
+  function visibleCounts() {
+    var view = map.getBounds(), counts = {};
+    drawn.forEach(function (f) {
+      if (!f.__b || !f.__b.intersects(view)) return;
+      var ev = (f.properties || {}).event;
+      counts[ev] = (counts[ev] || 0) + 1;
+    });
+    return counts;
+  }
+  function refreshChips() { renderChips(visibleCounts()); }
+
   document.getElementById('area').textContent = area;
 
   var map = L.map('map', { zoomControl: false, attributionControl: true, fadeAnimation: false }).setView([lat, lon], zoom);
@@ -119,6 +153,7 @@
 
   // ---- live NWS warning polygons ----------------------------------------------------
   var warnLayer = null;
+  var drawn = [];        // features actually on the map, each stamped with __b bounds
   var chipsEl = document.getElementById('chips');
 
   function shortHeadline(h) { h = h || ''; return h.length > 90 ? h.slice(0, 87) + '…' : h; }
@@ -153,7 +188,10 @@
     Promise.allSettled(alertUrls().map(function (u) {
       return fetch(u, { headers: { Accept: 'application/geo+json' } }).then(function (r) { return r.json(); });
     })).then(function (results) {
-      var seen = {}, feats = [], counts = {};
+      // Slightly larger than homeFrame: fitBounds padding can push the viewport a hair
+      // past it, and a polygon popping in blank at the edge looks like a bug.
+      var reachable = homeFrame.pad(0.3);
+      var seen = {}, feats = [];
       results.forEach(function (res) {
         if (res.status !== 'fulfilled' || !res.value || !res.value.features) return;
         res.value.features.forEach(function (f) {
@@ -162,10 +200,15 @@
           if (events.indexOf(p.event) === -1) return;
           var id = p.id || (f.id || JSON.stringify(g).slice(0, 40));
           if (seen[id]) return; seen[id] = 1;
+          // The map can never travel outside homeFrame, so a warning that misses it is not
+          // merely off-screen now — it is unreachable. Don't draw it and don't count it.
+          var b = boundsOf(f);
+          if (!b || !b.intersects(reachable)) return;
+          f.__b = b;
           feats.push(f);
-          counts[p.event] = (counts[p.event] || 0) + 1;
         });
       });
+      drawn = feats;
       if (warnLayer) { map.removeLayer(warnLayer); warnLayer = null; }
       if (feats.length) {
         warnLayer = L.geoJSON({ type: 'FeatureCollection', features: feats }, {
@@ -198,9 +241,15 @@
         if (loadWarnings._fitKey) map.setView([lat, lon], zoom);
         loadWarnings._fitKey = null;
       }
-      renderChips(counts);
+      // After framing, not before: fitBounds/setView change what "in view" means, and
+      // moveend fires once the view settles.
+      refreshChips();
     }).catch(function (e) { if (window.console) console.warn('warnings load failed', e && e.message); });
   }
+
+  // The zoom set by framing decides what "in view" means, and fitBounds settles
+  // asynchronously — so retally once the map stops moving rather than guessing.
+  map.on('moveend zoomend', refreshChips);
 
   // ---- go ---------------------------------------------------------------------------
   loadRadar();

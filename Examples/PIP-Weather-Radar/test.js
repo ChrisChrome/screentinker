@@ -86,6 +86,61 @@ ok('overlay uri: clamp omitted when unset', noClamp.get('maxcounties') === null)
   ok('framing: no bounds at all holds the configured view', frameFor(null) === null);
 }
 
+
+// --- the chips must describe the screen, not the query ------------------------------
+// Alerts are fetched per STATE (one request, not one per county), so the feed routinely
+// carries warnings hundreds of miles away. Counting those produced "2x Tornado Warning"
+// over a map on which neither tornado was visible.
+{
+  const src = require('fs').readFileSync(__dirname + '/radar-overlay.js', 'utf8');
+  const B = (s2, w, n, e) => ({
+    getSouth: () => s2, getWest: () => w, getNorth: () => n, getEast: () => e, isValid: () => true,
+    pad(r) { const dy = (n - s2) * r, dx = (e - w) * r; return B(s2 - dy, w - dx, n + dy, e + dx); },
+    intersects(o) { return !(o.getSouth() > n || o.getNorth() < s2 || o.getWest() > e || o.getEast() < w); },
+  });
+  const L = { latLngBounds: (a, b) => B(a[0], a[1], b[0], b[1]) };
+  const lat = 42.6052, lon = -87.8299;
+  const COUNTY_DEG = 0.35, maxCounties = 2;
+  const padLat = COUNTY_DEG * maxCounties;
+  const padLon = padLat / Math.max(0.2, Math.cos(lat * Math.PI / 180));
+  const homeFrame = L.latLngBounds([lat - padLat, lon - padLon], [lat + padLat, lon + padLon]);
+  const lift = (n) => {
+    const m = src.match(new RegExp('function ' + n + '\\([a-z]*\\) \\{[\\s\\S]*?\\n  \\}'));
+    if (!m) throw new Error('could not lift ' + n);
+    return eval('(' + m[0] + ')');
+  };
+  const boundsOf = lift('boundsOf');
+
+  const box = (s2, w, n, e) => ({ properties: { event: 'Tornado Warning' },
+    geometry: { type: 'Polygon', coordinates: [[[w, s2], [e, s2], [e, n], [w, n], [w, s2]]] } });
+
+  const b = boundsOf(box(42.5, -87.9, 42.7, -87.7));
+  ok('alerts: polygon bounds are read off the coordinates', 
+     Math.abs(b.getSouth() - 42.5) < 1e-9 && Math.abs(b.getEast() - (-87.7)) < 1e-9);
+  ok('alerts: a geometry-less alert yields no bounds', boundsOf({ properties: {} }) === null);
+
+  // A MultiPolygon must cover every ring, not just the first.
+  const multi = boundsOf({ properties: {}, geometry: { type: 'MultiPolygon', coordinates: [
+    [[[-87.9, 42.5], [-87.7, 42.5], [-87.7, 42.7], [-87.9, 42.7], [-87.9, 42.5]]],
+    [[[-88.3, 43.1], [-88.1, 43.1], [-88.1, 43.3], [-88.3, 43.3], [-88.3, 43.1]]]] } });
+  ok('alerts: a multipolygon spans all of its rings', 
+     Math.abs(multi.getNorth() - 43.3) < 1e-9 && Math.abs(multi.getWest() - (-88.3)) < 1e-9);
+
+  const reachable = homeFrame.pad(0.3);
+  const nearby = boundsOf(box(42.55, -87.9, 42.75, -87.6));      // Kenosha/Racine
+  const upstate = boundsOf(box(44.0, -88.7, 44.6, -88.0));       // Calumet/Winnebago
+  ok('alerts: a local warning is reachable and counted', nearby.intersects(reachable));
+  ok('alerts: THE BUG — a warning 100 mi away is neither drawn nor counted',
+     !upstate.intersects(reachable));
+
+  // Reachable-but-off-screen is a real third state: drawn so it can slide in at the edge,
+  // but not claimed as "in view" until it actually is.
+  const edge = boundsOf(box(43.30, -88.2, 43.45, -88.0));
+  const tightView = L.latLngBounds([lat - 0.2, lon - 0.28], [lat + 0.2, lon + 0.28]);
+  ok('alerts: reachable but off-screen is drawn, yet not counted as in view',
+     edge.intersects(reachable) && !edge.intersects(tightView));
+}
+
 console.log(`Weather-Radar checks (${checks.filter((c) => c[1]).length}/${checks.length}):`);
 for (const [name, good] of checks) console.log(`  ${good ? '✓' : '✗'} ${name}`);
 console.log('\nRESULT:', pass ? 'PASS ✅' : 'FAIL ❌');

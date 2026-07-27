@@ -67,7 +67,7 @@ function qualifies(alert, opts = {}) {
 
 // Keep in lockstep with the ?v= on the <script> tag in radar-overlay.html. Both are
 // needed: this one re-fetches the page, that one re-fetches the script.
-const ASSET_V = 2;
+const ASSET_V = 3;
 
 // Build the overlay iframe URL with the area/config encoded in the query string.
 function buildOverlayUri(base, o = {}) {
