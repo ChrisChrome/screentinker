@@ -30,10 +30,15 @@ function recordFailure(ip, now = Date.now()) {
 // A successful pair (or any reason to forgive an IP) clears its failure record.
 function reset(ip) { failures.delete(ip); }
 
-// A provisioning code is stale once it is older than the TTL (devices.created_at is the
-// register time for a provisioning device).
-function isCodeExpired(createdAtSec, now = Date.now()) {
-  return Math.floor(now / 1000) - createdAtSec > PAIRING_TTL_SEC;
+// A provisioning code is stale once the device has not been seen for longer than the TTL.
+//
+// The caller passes a LIVENESS timestamp (devices.last_heartbeat, falling back to
+// created_at for a row that has never checked in) — NOT the row's creation time. A player
+// keeps its device_id and its code across restarts and re-registers with them forever, so
+// created_at never advances; keying on it made a still-connected screen permanently
+// unpairable 15 minutes after first boot. See the comment at the call site in server.js.
+function isCodeExpired(lastSeenSec, now = Date.now()) {
+  return Math.floor(now / 1000) - lastSeenSec > PAIRING_TTL_SEC;
 }
 
 module.exports = { isLocked, recordFailure, reset, isCodeExpired, MAX_FAILS, LOCKOUT_MS, PAIRING_TTL_SEC };

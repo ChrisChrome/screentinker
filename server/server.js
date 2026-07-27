@@ -953,7 +953,28 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (
   // An EXPIRED code is a legitimate-but-stale code (a slow rollout, not an attack), so it
   // does NOT count toward the lockout - it just asks the display to regenerate. This keeps
   // a bulk rollout from one office/NAT IP from locking itself out on expired codes.
-  if (pairLockout.isCodeExpired(device.created_at)) {
+  // Expiry is keyed on LIVENESS, not on when the row was first created.
+  //
+  // devices.created_at is written once, at the device's first registration, and the row is
+  // never recreated: a player persists its device_id and its pairing code and re-registers
+  // with them forever. Keying expiry on created_at therefore made a screen permanently
+  // unclaimable 15 minutes after first boot, while it kept heartbeating and kept showing
+  // the code — and "restart the display to get a new code" could not help, because a
+  // restart reuses the stored identity and produces the same code. Seen in production on a
+  // web player whose row was 4 days old, still online, unpairable for all but its first 15
+  // minutes.
+  //
+  // last_heartbeat answers the question the operator actually cares about: is this screen
+  // still there showing me this code? A device that has gone away for longer than the TTL
+  // still expires, which is what the expiry is for. Fall back to created_at for a row that
+  // has never checked in.
+  //
+  // Trade-off, deliberately taken: a code stays claimable while its screen is connected,
+  // rather than for a fixed 15 minutes. That is the behaviour the product implies (the code
+  // is displayed on the screen the whole time), and guessing is bounded by lib/pair-lockout
+  // (5 failures per IP per 15 min) plus the 5/min route limit, not by this TTL.
+  const lastSeen = device.last_heartbeat || device.created_at;
+  if (pairLockout.isCodeExpired(lastSeen)) {
     return res.status(410).json({ error: 'Pairing code expired - restart the display to get a new code' });
   }
   pairLockout.reset(ip); // a valid claim forgives prior failed attempts from this IP
