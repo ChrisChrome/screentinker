@@ -65,12 +65,18 @@ function qualifies(alert, opts = {}) {
   return true;
 }
 
+// Keep in lockstep with the ?v= on the <script> tag in radar-overlay.html. Both are
+// needed: this one re-fetches the page, that one re-fetches the script.
+const ASSET_V = 2;
+
 // Build the overlay iframe URL with the area/config encoded in the query string.
 function buildOverlayUri(base, o = {}) {
   const q = new URLSearchParams();
   if (o.lat != null) q.set('lat', String(o.lat));
   if (o.lon != null) q.set('lon', String(o.lon));
   if (o.zoom != null) q.set('zoom', String(o.zoom));
+  if (o.max_counties != null) q.set('maxcounties', String(o.max_counties));
+  q.set('v', String(ASSET_V));   // busts the cached overlay PAGE; the page busts its own JS
   if (o.area) q.set('area', o.area);
   if (Array.isArray(o.states) && o.states.length) q.set('states', o.states.join(','));
   if (Array.isArray(o.events) && o.events.length) q.set('events', o.events.join(','));
@@ -113,7 +119,8 @@ if (require.main === module) {
   }
 
   const overlayUri = buildOverlayUri(OVERLAY_BASE, {
-    lat: cfg.lat, lon: cfg.lon, zoom: cfg.zoom || 8, area: cfg.area_label, states: cfg.states, events: EVENTS,
+    lat: cfg.lat, lon: cfg.lon, zoom: cfg.zoom || 8, max_counties: cfg.max_counties,
+    area: cfg.area_label, states: cfg.states, events: EVENTS,
   });
 
   let active = null; // { pip_id }

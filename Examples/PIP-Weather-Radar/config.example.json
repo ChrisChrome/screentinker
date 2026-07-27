@@ -10,6 +10,7 @@
   "lat": 43.0389,
   "lon": -87.9065,
   "zoom": 8,
+  "max_counties": 2,
   "states": ["WI"],
   "events": ["Tornado Warning", "Severe Thunderstorm Warning", "Flash Flood Warning", "Flood Warning"],
 

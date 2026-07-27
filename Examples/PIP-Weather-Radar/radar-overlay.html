@@ -51,6 +51,9 @@
   </div>
   <div class="legend" id="legend"></div>
   <script src="/leaflet.js"></script>
-  <script src="/radar-overlay.js"></script>
+  <!-- ?v= is a cache-buster, NOT decoration. These assets are served max-age=14400, so a
+       player that loaded the old file keeps it for four hours and silently ignores a
+       redeploy. Bump this AND `ASSET_V` in radar.js together whenever the JS changes. -->
+  <script src="/radar-overlay.js?v=2"></script>
 </body>
 </html>

@@ -13,6 +13,16 @@
   var events = (q.get('events') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
   if (!events.length) events = DEFAULT_EVENTS.slice();
 
+  // How far the auto-framing is ever allowed to pull back, expressed in county-widths from
+  // the configured centre. Without this, a warning several counties away drags the frame
+  // out to cover it and your own area shrinks to nothing — the map ends up showing half a
+  // state at a zoom where local weather is unreadable. 2 counties in every direction keeps
+  // "where I am" recognisable while still catching storms about to arrive.
+  var maxCounties = parseFloat(q.get('maxcounties'));
+  if (!isFinite(maxCounties) || maxCounties <= 0) maxCounties = 2;
+  var COUNTY_DEG = 0.35;                       // ~24 mi, a typical US county
+  var MIN_HALF_LAT = 0.18;                     // ~12 mi; a floor so one small cell can't over-zoom
+
   var EVENT_COLORS = {
     'Tornado Warning': '#FF2D2D',
     'Severe Thunderstorm Warning': '#FFD12E',
@@ -22,9 +32,37 @@
   var DEFAULT_COLOR = '#FF8A1F';
   function colorFor(ev) { return EVENT_COLORS[ev] || DEFAULT_COLOR; }
 
+  // Decide the frame for a set of warning polygons.
+  //
+  // The map NEVER PANS. Signage is watched at a glance from across a room, and a view that
+  // slides to wherever the weather is stops being "my area" — you lose the landmarks you
+  // orient by. So the centre is pinned to the configured point and only the ZOOM responds:
+  // the box we hand to fitBounds is always symmetric about home.
+  //
+  // Returns null to mean "nothing worth reframing for — hold the configured view", which is
+  // the case both when there are no warnings and when they are all outside the home frame.
+  function frameFor(b) {
+    if (!b || !b.isValid || !b.isValid()) return null;
+    if (!homeFrame.intersects(b)) return null;      // a storm three counties over is not chased
+    // How far from home the warning actually reaches, capped at the home frame. Taking the
+    // max of the two sides is what keeps the box symmetric, and therefore centred.
+    var halfLat = Math.min(Math.max(Math.abs(b.getNorth() - lat), Math.abs(lat - b.getSouth())), padLat);
+    var halfLon = Math.min(Math.max(Math.abs(b.getEast() - lon), Math.abs(lon - b.getWest())), padLon);
+    // Floor it so a single small cell overhead doesn't slam the map to street level.
+    halfLat = Math.max(halfLat, MIN_HALF_LAT);
+    halfLon = Math.max(halfLon, MIN_HALF_LAT / Math.max(0.2, Math.cos(lat * Math.PI / 180)));
+    return L.latLngBounds([lat - halfLat, lon - halfLon], [lat + halfLat, lon + halfLon]);
+  }
+
   document.getElementById('area').textContent = area;
 
   var map = L.map('map', { zoomControl: false, attributionControl: true, fadeAnimation: false }).setView([lat, lon], zoom);
+
+  // The widest frame the auto-fit may ever produce. Longitude degrees shrink toward the
+  // poles, so scale them by cos(lat) to keep the box square-ish on the ground.
+  var padLat = COUNTY_DEG * maxCounties;
+  var padLon = padLat / Math.max(0.2, Math.cos(lat * Math.PI / 180));
+  var homeFrame = L.latLngBounds([lat - padLat, lon - padLon], [lat + padLat, lon + padLon]);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
     subdomains: 'abcd', maxZoom: 19,
     attribution: '&copy; OpenStreetMap &copy; CARTO · Radar: RainViewer · Alerts: NWS/NOAA',
@@ -146,9 +184,18 @@
         var fitKey = feats.map(function (f) { return (f.properties || {}).id; }).sort().join('|');
         if (fitKey !== loadWarnings._fitKey) {
           loadWarnings._fitKey = fitKey;
-          try { map.fitBounds(warnLayer.getBounds(), { padding: [70, 70], maxZoom: 9 }); } catch (e) {}
+          // Padding is small on purpose: the frame is already the answer, and 70px of inset
+          // on a PiP-sized overlay throws away a third of the width on each side.
+          try {
+            var frame = frameFor(warnLayer.getBounds());
+            if (frame) map.fitBounds(frame, { padding: [24, 24], maxZoom: 9 });
+            else map.setView([lat, lon], zoom);
+          } catch (e) {}
         }
       } else {
+        // Warnings cleared: go back to the configured view instead of staying parked on
+        // wherever the last storm happened to be.
+        if (loadWarnings._fitKey) map.setView([lat, lon], zoom);
         loadWarnings._fitKey = null;
       }
       renderChips(counts);

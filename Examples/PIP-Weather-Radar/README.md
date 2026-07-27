@@ -97,6 +97,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0 node radar.js
 | `mode` | `"on_warning"` | `"on_warning"` = show only during qualifying warnings; `"always"` = always on |
 | `lat`, `lon` | — | Map center **and** the NWS `?point=` used to detect warnings |
 | `zoom` | `8` | Leaflet zoom; ~8 ≈ a county/metro |
+| `max_counties` | `2` | How far the auto-framing may pull back from the centre, in county-widths. Warnings inside that box are framed; one entirely outside it is not chased, so a distant storm can't zoom your area down to nothing. |
 | `area_label` | — | Shown in the overlay header |
 | `states` | `[]` | 2-letter codes used to fetch warning polygons (`?area=ST`). Empty → `?point=` |
 | `events` | Tornado/Severe Tstorm/Flash Flood/Flood Warning | Which warnings qualify & are drawn |
