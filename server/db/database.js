@@ -389,6 +389,12 @@ const migrations = [
   "ALTER TABLE content ADD COLUMN captions_lang TEXT",
   "ALTER TABLE content ADD COLUMN subtitle_url TEXT",
   "ALTER TABLE content ADD COLUMN subtitle_lang TEXT",
+  // Self-service password reset. Mirrors the email-verification columns: the emailed token
+  // is stored ONLY as a SHA-256 hash (single-use), with its own expiry, and one pending
+  // token per user so a re-request simply overwrites the previous one. Nullable and
+  // additive — existing rows are unaffected and a code-only rollback leaves dead columns.
+  "ALTER TABLE users ADD COLUMN password_reset_hash TEXT",
+  "ALTER TABLE users ADD COLUMN password_reset_expires INTEGER",
   // AUTH-05: make break-glass recovery revocable, single-use and auditable.
   //
   // scripts/reset-admin.js mints a JWT carrying `recovery: true`, which middleware/auth.js

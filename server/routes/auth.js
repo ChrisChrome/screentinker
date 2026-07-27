@@ -12,7 +12,8 @@ const totp = require('../lib/totp');
 const totpLockout = require('../lib/totp-lockout');
 const loginLockout = require('../lib/login-lockout');
 const QRCode = require('qrcode');
-const { sendSignupEmails, sendVerificationEmail } = require('../services/signupEmails');
+const { sendSignupEmails, sendVerificationEmail, sendPasswordResetEmail } = require('../services/signupEmails');
+const passwordReset = require('../lib/passwordReset');
 const emailVerify = require('../lib/emailVerify');
 const emailSvc = require('../services/email');
 const { deleteUserCascade, OrgHasOtherMembersError } = require('../lib/user-deletion');
@@ -261,6 +262,60 @@ router.post('/resend-verification', (req, res) => {
     }
   }
   res.json({ ok: true });
+});
+
+// ==================== Self-service password reset ====================
+// Two endpoints, both unauthenticated by necessity (the user cannot log in).
+//
+// The request endpoint ALWAYS answers the same way — same status, same body — whether the
+// address exists, is an SSO identity with no local password, or is malformed. Anything
+// else turns it into an account-existence oracle, which is the classic mistake here.
+//
+// Completing a reset deliberately does NOT return a session. The user logs in afterwards,
+// so a TOTP-enabled account still has to clear its second factor; issuing a token here
+// would turn "read one email" into a full session and quietly bypass MFA.
+const RESET_GENERIC_OK = { ok: true, message: 'If that address has an account, a reset link is on its way.' };
+
+router.post('/forgot-password', (req, res) => {
+  const email = String(req.body?.email || '').toLowerCase().trim();
+  // Respond identically no matter what happens below.
+  try {
+    if (email) {
+      const user = db.prepare("SELECT * FROM users WHERE email = ? AND auth_provider = 'local'").get(email);
+      if (user) {
+        if (!emailSvc.isConfigured()) {
+          // Loud, because the user will wait for an email that can never arrive and the
+          // generic response cannot tell them.
+          console.error(`[password-reset] NO EMAIL TRANSPORT CONFIGURED — reset requested for ${email} cannot be delivered.`);
+        } else {
+          const token = passwordReset.issue(user.id);
+          sendPasswordResetEmail(user, token, req).catch(e =>
+            console.error('[password-reset] send failed:', e && e.message));
+          logActivity(user.id, 'auth:password_reset_requested', null, null, getClientIp(req));
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[password-reset] request error:', e && e.message);
+  }
+  return res.json(RESET_GENERIC_OK);
+});
+
+router.post('/reset-password', (req, res) => {
+  const { token, password } = req.body || {};
+  if (!password || String(password).length < passwordReset.MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `Password must be at least ${passwordReset.MIN_PASSWORD_LENGTH} characters` });
+  }
+  const userId = passwordReset.consume(token, String(password));
+  if (!userId) return res.status(400).json({ error: 'This reset link is invalid or has expired. Request a new one.' });
+  // Someone who locked themselves out guessing must not stay locked out after proving
+  // control of the mailbox and choosing a new password.
+  loginLockout.reset(userId);
+  const u = db.prepare('SELECT email FROM users WHERE id = ?').get(userId);
+  logActivity(userId, 'auth:password_reset_completed', null, null, getClientIp(req));
+  console.log(`[password-reset] password changed for ${u ? u.email : userId}`);
+  // No session on purpose — see above.
+  return res.json({ ok: true, message: 'Password updated. You can now sign in.' });
 });
 
 // ==================== TOTP MFA (#100) ====================

@@ -212,4 +212,29 @@ async function sendVerificationEmail(user, token, req) {
   return sendEmail({ to: user.email, subject: 'Verify your email for ScreenTinker', text, html });
 }
 
-module.exports = { sendSignupEmails, sendVerificationEmail };
+function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function sendPasswordResetEmail(user, token, req) {
+  // Same public-origin resolution as verification/invites. The link lands on the SPA,
+  // which posts the token back to /api/auth/reset-password with the new password — the
+  // token is never redeemed by a bare GET, so a link-prefetching mail client cannot
+  // consume it.
+  const base = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+  const url = `${base}/app#/reset-password?token=${encodeURIComponent(token)}`;
+  const who = user.name || user.email;
+  const text = `Hi ${who},
+
+Someone asked to reset the password for your ScreenTinker account.
+
+Open this link to choose a new password (valid for 1 hour, and usable once):
+${url}
+
+If this wasn't you, you can ignore this email — your password has not changed.`;
+  const html = `<p>Hi ${escapeHtml(who)},</p>
+<p>Someone asked to reset the password for your ScreenTinker account.</p>
+<p><a href="${escapeHtml(url)}">Choose a new password</a> &mdash; the link is valid for 1 hour and can be used once.</p>
+<p style="color:#666">If this wasn't you, you can ignore this email &mdash; your password has not changed.</p>`;
+  return sendEmail({ to: user.email, subject: 'Reset your ScreenTinker password', text, html });
+}
+
+module.exports = { sendSignupEmails, sendVerificationEmail, sendPasswordResetEmail };
