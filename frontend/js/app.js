@@ -275,14 +275,20 @@ function route() {
     }
   }
 
+  // Password-reset links arrive from email on a browser that is by definition NOT logged
+  // in, and carry a one-time token in the hash. This must be handled BEFORE the redirect
+  // below: rewriting the hash would discard the token and the emailed link would silently
+  // do nothing. The login view reads the token off the hash and shows the new-password form.
+  const isResetRoute = hash.startsWith('#/reset-password');
+
   // Auth check - redirect to login if not authenticated
-  if (!isAuthenticated() && hash !== '#/login') {
+  if (!isAuthenticated() && hash !== '#/login' && !isResetRoute) {
     window.location.hash = '#/login';
     return;
   }
 
   // If authenticated and on login page, redirect to dashboard or onboarding
-  if (isAuthenticated() && hash === '#/login') {
+  if (isAuthenticated() && (hash === '#/login' || isResetRoute)) {
     window.location.hash = localStorage.getItem('rd_onboarded') ? '#/' : '#/onboarding';
     return;
   }
@@ -359,8 +365,8 @@ function route() {
     return;
   }
 
-  // Login page - hide sidebar
-  if (hash === '#/login') {
+  // Login page (and password-reset links from email) - hide sidebar
+  if (hash === '#/login' || isResetRoute) {
     sidebar.style.display = 'none';
     app.style.marginLeft = '0';
     const mb = document.getElementById('mobileMenuBtn');

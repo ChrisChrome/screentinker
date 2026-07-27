@@ -362,6 +362,11 @@ app.use('/api/auth/register', rateLimit(60000, 5)); // 5 registrations per minut
 app.use('/api/auth/totp/verify', rateLimit(60000, 10));
 // Email-verification resend: cap so it can't be used to spray mail at an address.
 app.use('/api/auth/resend-verification', rateLimit(60000, 5));
+// Self-service password reset. The request endpoint is the spray surface (it sends mail to
+// an address the caller supplies), so it gets the tighter cap; the redeem endpoint is a
+// 32-byte-token guess, capped mostly to keep the bcrypt work bounded.
+app.use('/api/auth/forgot-password', rateLimit(60000, 5));
+app.use('/api/auth/reset-password', rateLimit(60000, 10));
 // Admin password-reset endpoint: even if an admin's session is compromised,
 // cap the blast radius to 20 resets/min/IP. Express matches the longest
 // path prefix first, so this fires before /api/auth catches the request.

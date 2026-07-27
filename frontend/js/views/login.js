@@ -89,6 +89,11 @@ export async function render(container) {
             <button class="btn btn-primary" id="loginBtn" style="width:100%;justify-content:center;padding:10px">
               ${isSetup ? t('auth.create_admin_account') : t('auth.sign_in')}
             </button>
+            ${!isSetup ? `
+            <p style="text-align:center;margin-top:10px">
+              <a href="#" id="forgotLink" style="color:var(--text-secondary);font-size:12px;text-decoration:none">${t('auth.forgot_password')}</a>
+            </p>
+            ` : ''}
             ${!isSetup && canRegister ? `
             <button class="btn btn-secondary" id="showRegisterBtn" style="width:100%;justify-content:center;padding:10px;margin-top:8px">
               ${t('auth.create_account')}
@@ -188,6 +193,23 @@ export async function render(container) {
           </div>
         </details>
 
+        <div id="forgotForm" style="display:none">
+          <div class="form-group">
+            <label>${t('auth.email')}</label>
+            <input type="email" id="forgotEmail" class="input" placeholder="${t('auth.placeholder_email')}" autocomplete="email">
+          </div>
+          <button class="btn btn-primary" id="forgotSendBtn" style="width:100%;justify-content:center;padding:10px">${t('auth.forgot_send')}</button>
+          <button class="btn btn-secondary" id="forgotBackBtn" style="width:100%;justify-content:center;padding:10px;margin-top:8px">${t('auth.back_to_signin')}</button>
+          <p id="forgotNotice" style="color:var(--text-secondary);font-size:12px;text-align:center;margin-top:12px;display:none">${t('auth.forgot_sent')}</p>
+        </div>
+        <div id="resetForm" style="display:none">
+          <div class="form-group">
+            <label>${t('auth.new_password')}</label>
+            <input type="password" id="resetPassword" class="input" placeholder="${t('auth.placeholder_register_password')}" autocomplete="new-password">
+          </div>
+          <button class="btn btn-primary" id="resetSubmitBtn" style="width:100%;justify-content:center;padding:10px">${t('auth.reset_submit')}</button>
+          <button class="btn btn-secondary" id="resetBackBtn" style="width:100%;justify-content:center;padding:10px;margin-top:8px">${t('auth.back_to_signin')}</button>
+        </div>
         <p id="loginError" style="color:var(--danger);font-size:12px;text-align:center;margin-top:12px;display:none"></p>
         <p style="text-align:center;margin-top:16px;font-size:11px;color:var(--text-muted)">
           <a href="/legal/terms.html" target="_blank" style="color:var(--text-muted);text-decoration:underline">${t('auth.terms')}</a>
@@ -274,6 +296,80 @@ function setupHandlers(config, isSetup) {
   }
 
   // "Check your email" panel shown when signup/login returns verification_required (hosted).
+  // ---- Self-service password reset -------------------------------------------------
+  // Two cards swapped into the same login shell. The request step ALWAYS shows the same
+  // confirmation regardless of the server's answer, matching the server's deliberate
+  // refusal to reveal whether an address exists.
+  function showCard(id) {
+    ['localAuthForm', 'registerForm', 'mfaForm', 'ssoBlock', 'forgotForm', 'resetForm'].forEach((x) => {
+      const el = document.getElementById(x); if (el) el.style.display = (x === id ? 'block' : 'none');
+    });
+    const errEl = document.getElementById('loginError'); if (errEl) errEl.style.display = 'none';
+  }
+
+  const forgotLink = document.getElementById('forgotLink');
+  if (forgotLink) forgotLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    showCard('forgotForm');
+    const src = document.getElementById('loginEmail');
+    const dst = document.getElementById('forgotEmail');
+    if (src && dst) dst.value = src.value; // carry over whatever they already typed
+  });
+
+  const forgotBackBtn = document.getElementById('forgotBackBtn');
+  if (forgotBackBtn) forgotBackBtn.addEventListener('click', () => showCard('localAuthForm'));
+
+  const forgotSendBtn = document.getElementById('forgotSendBtn');
+  if (forgotSendBtn) forgotSendBtn.addEventListener('click', async () => {
+    const email = (document.getElementById('forgotEmail').value || '').trim();
+    forgotSendBtn.disabled = true;
+    try {
+      await fetch('/api/auth/forgot-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }),
+      });
+    } catch (e) { /* deliberately ignored — see below */ }
+    // Same confirmation either way. Surfacing a network/server error here would leak
+    // whether the address matched, undoing the server-side enumeration resistance.
+    document.getElementById('forgotNotice').style.display = 'block';
+    forgotSendBtn.disabled = false;
+  });
+
+  // A link from the reset email: #/reset-password?token=...
+  function resetTokenFromHash() {
+    const h = window.location.hash || '';
+    const q = h.indexOf('?');
+    if (!h.startsWith('#/reset-password') || q < 0) return null;
+    return new URLSearchParams(h.slice(q + 1)).get('token');
+  }
+
+  const pendingResetToken = resetTokenFromHash();
+  if (pendingResetToken) showCard('resetForm');
+
+  const resetBackBtn = document.getElementById('resetBackBtn');
+  if (resetBackBtn) resetBackBtn.addEventListener('click', () => { window.location.hash = '#/login'; window.location.reload(); });
+
+  const resetSubmitBtn = document.getElementById('resetSubmitBtn');
+  if (resetSubmitBtn) resetSubmitBtn.addEventListener('click', async () => {
+    const password = document.getElementById('resetPassword').value || '';
+    resetSubmitBtn.disabled = true;
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: pendingResetToken, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showError(data.error || t('auth.reset_failed')); resetSubmitBtn.disabled = false; return; }
+      // No session is issued by design, so send them through a normal sign-in — which is
+      // what keeps TOTP in the loop for accounts that have it.
+      showToast(t('auth.reset_done'), 'success');
+      window.location.hash = '#/login';
+      window.location.reload();
+    } catch (e) {
+      showError(t('auth.reset_failed'));
+      resetSubmitBtn.disabled = false;
+    }
+  });
+
   function showVerifyNotice(email) {
     // The server refused a session — make sure no stale token from a prior login lingers,
     // else the router would treat this browser as authenticated and bounce it into the app.
