@@ -95,6 +95,11 @@ export async function render(container) {
             <div class="form-group" style="flex:1"><label>${t('schedule.start_time')}</label><input type="time" id="schedStart" class="input" value="09:00"></div>
             <div class="form-group" style="flex:1"><label>${t('schedule.end_time')}</label><input type="time" id="schedEnd" class="input" value="17:00"></div>
           </div>
+          <!-- Which clock these hours are on. The server resolves the target's zone and the
+               player evaluates in it, but the user had no way to SEE that: hours typed as
+               "9 to 5" silently became UTC, so a schedule could sit closed while its owner
+               watched the screen. Stating the zone is the whole fix from the UI side. -->
+          <div id="schedTzNote" style="font-size:12px;color:var(--text-muted);margin:-4px 0 12px"></div>
           <div class="form-group"><label>${t('schedule.repeat')}</label>
             <select id="schedRepeat" class="input" style="background:var(--bg-input)">
               <option value="">${t('schedule.repeat_none')}</option>
@@ -138,6 +143,30 @@ export async function render(container) {
 
   deviceRadio.addEventListener('change', updateTargetVisibility);
   groupRadio.addEventListener('change', updateTargetVisibility);
+
+  // State which clock the hours above are on. The server stores a new schedule in the
+  // TARGET's zone (lib/device-timezone) and the player evaluates in that same zone — but
+  // the dialog never said so. A user typing "09:00" reasonably assumes their own clock;
+  // when the target sits in another zone the schedule is correct and still appears to do
+  // nothing, because it opens hours later. Naming the zone is the fix from the UI side.
+  const tzNote = document.getElementById('schedTzNote');
+  function updateTzNote() {
+    if (!tzNote) return;
+    const local = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    let zone = null;
+    if (!groupRadio.checked) {
+      const d = devices.find(x => x.id === deviceSelect.value);
+      zone = (d && d.timezone && d.timezone !== 'UTC' ? d.timezone : null) || (d && d.reported_timezone) || null;
+    }
+    if (!zone) { tzNote.textContent = t('schedule.tz_unknown'); return; }
+    tzNote.textContent = (zone === local)
+      ? t('schedule.tz_same').replace('{zone}', zone)
+      : t('schedule.tz_device').replace('{zone}', zone).replace('{local}', local || '—');
+  }
+  deviceRadio.addEventListener('change', updateTzNote);
+  groupRadio.addEventListener('change', updateTzNote);
+  deviceSelect.addEventListener('change', updateTzNote);
+  updateTzNote();
 
   function updateWeekLabel() {
     const end = new Date(currentWeekStart);

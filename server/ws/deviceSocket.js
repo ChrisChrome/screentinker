@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
+const { effectiveDeviceTz } = require('../lib/device-timezone');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
 const liveness = require('../lib/liveness'); // v4 core pass: pure ack/liveness/identity helpers
@@ -268,8 +269,9 @@ function buildPlaylistPayload(deviceId) {
   // #74/#75: the effective IANA timezone the player evaluates schedule blocks in.
   // An explicit (non-default) devices.timezone override wins; otherwise the player's
   // last OS-reported zone; otherwise null = the player trusts its own OS clock.
-  const tzOverride = (device?.timezone && device.timezone !== 'UTC') ? device.timezone : null;
-  const timezone = tzOverride || device?.reported_timezone || null;
+  // Shared with routes/schedules.js via lib/device-timezone — creation and evaluation
+  // MUST resolve the same zone, or a schedule runs in a different one than it was written in.
+  const timezone = effectiveDeviceTz(device);
   // #group-sync: synchronized group playback (wall takes precedence — a wall member is never
   // also group-synced). Null unless the device is on a sync-enabled group's matching playlist.
   const group_sync = wall_config ? null : resolveGroupSync(device, deviceId);

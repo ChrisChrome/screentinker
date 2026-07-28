@@ -8,6 +8,7 @@ const { db } = require('../db/database');
 // the target. This closes a long-standing leak where POST accepted those
 // payload refs with no ownership check at all (only the target was checked).
 const { accessContext } = require('../lib/tenancy');
+const { effectiveDeviceTz } = require('../lib/device-timezone');
 
 // Helper: build the expanded schedule query for a device (device-level + group-level)
 function getDeviceSchedulesQuery() {
@@ -160,17 +161,33 @@ router.post('/', (req, res) => {
 
   // Resolve target's workspace_id and verify caller has write access there.
   let targetWorkspaceId = null;
+  let targetTz = null;
   if (device_id) {
-    const device = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(device_id);
+    const device = db.prepare('SELECT workspace_id, timezone, reported_timezone FROM devices WHERE id = ?').get(device_id);
     if (!device) return res.status(404).json({ error: 'Device not found' });
     if (!device.workspace_id) return res.status(403).json({ error: 'Device not assigned to a workspace' });
     targetWorkspaceId = device.workspace_id;
+    targetTz = effectiveDeviceTz(device);
   }
   if (group_id) {
-    const group = db.prepare('SELECT workspace_id FROM device_groups WHERE id = ?').get(group_id);
+    const group = db.prepare('SELECT workspace_id, leader_device_id FROM device_groups WHERE id = ?').get(group_id);
     if (!group) return res.status(404).json({ error: 'Group not found' });
     if (!group.workspace_id) return res.status(403).json({ error: 'Group not assigned to a workspace' });
     targetWorkspaceId = group.workspace_id;
+    // A group can span zones, so there is no single right answer. The leader defines the
+    // group's wall clock; failing that, the oldest member that reports one. The resolved
+    // value is stored explicitly so the caller can see which zone it landed on.
+    const leader = group.leader_device_id
+      ? db.prepare('SELECT timezone, reported_timezone FROM devices WHERE id = ?').get(group.leader_device_id)
+      : null;
+    targetTz = effectiveDeviceTz(leader);
+    if (!targetTz) {
+      const member = db.prepare(`SELECT d.timezone, d.reported_timezone FROM devices d
+         JOIN device_group_members m ON m.device_id = d.id
+         WHERE m.group_id = ? AND COALESCE(d.timezone, d.reported_timezone) IS NOT NULL
+         ORDER BY d.created_at LIMIT 1`).get(group_id);
+      targetTz = effectiveDeviceTz(member);
+    }
   }
   const ctx = workspaceAccess(req, targetWorkspaceId);
   if (!ctx) return res.status(403).json({ error: 'Access denied' });
@@ -198,7 +215,7 @@ router.post('/', (req, res) => {
       start_time, end_time, timezone, recurrence, recurrence_end, priority, color)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, req.user.id, targetWorkspaceId, device_id || null, group_id || null, zone_id || null, content_id || null, widget_id || null,
-    layout_id || null, playlist_id || null, title || '', start_time, end_time, timezone || 'UTC',
+    layout_id || null, playlist_id || null, title || '', start_time, end_time, timezone || targetTz || 'UTC',
     recurrence || null, recurrence_end || null, priority || 0, color || '#3B82F6');
 
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(id);
