@@ -10,6 +10,8 @@ import {
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
+// Where the week view opens when nothing is scheduled yet — the start of a working day.
+const DEFAULT_SCROLL_HOUR = 8;
 
 function esc(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
 
@@ -51,8 +53,8 @@ export async function render(container) {
     <!-- Legend: only meaningful in all-screens mode, where blocks from different targets
          share one grid. Hidden for a single screen so that view stays uncluttered. -->
     <div id="schedLegend" style="display:none;flex-wrap:wrap;gap:10px;margin:-6px 0 14px;font-size:12px"></div>
-    <div style="overflow-x:auto">
-      <div id="calendar" style="display:grid;grid-template-columns:60px repeat(7,1fr);min-width:800px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden"></div>
+    <div id="calendarScroll" style="position:relative;overflow:auto;max-height:calc(100vh - 260px);border:1px solid var(--border);border-radius:var(--radius-lg)">
+      <div id="calendar" style="display:grid;grid-template-columns:60px repeat(7,1fr);min-width:800px"></div>
     </div>
 
     <div class="modal-overlay" id="scheduleModal" style="display:none">
@@ -217,7 +219,7 @@ export async function render(container) {
       const date = new Date(currentWeekStart);
       date.setDate(date.getDate() + d);
       const isToday = date.toDateString() === new Date().toDateString();
-      html += `<div style="padding:8px;text-align:center;background:var(--bg-secondary);border-bottom:1px solid var(--border);border-left:1px solid var(--border);
+      html += `<div style="padding:8px;text-align:center;background:var(--bg-secondary);position:sticky;top:0;z-index:6;border-bottom:1px solid var(--border);border-left:1px solid var(--border);
         ${isToday ? 'color:var(--accent);font-weight:600' : 'color:var(--text-secondary)'};font-size:12px">
         ${DAYS[d]}<br>${date.getDate()}
       </div>`;
@@ -288,6 +290,36 @@ export async function render(container) {
     });
 
     attachGridInteractions(cal);
+
+    // Open on the working day, not on midnight. A 24-hour grid that starts at 12am shows a new
+    // user four hours of empty night and hides the hours anything is actually scheduled in.
+    // Only on the first render, so it never yanks the view back while someone is scrolling.
+    const scroller = document.getElementById('calendarScroll');
+    if (scroller && !scroller.dataset.scrolled) {
+      scroller.dataset.scrolled = '1';
+      // Earliest scheduled hour if there is one, else the start of a normal working day.
+      const earliest = events.reduce((min, ev) => {
+        const d = new Date(ev.instance_start || ev.start_time);
+        return Math.min(min, d.getHours());
+      }, 24);
+      const target = Math.max(0, (earliest === 24 ? DEFAULT_SCROLL_HOUR : earliest) - 1);
+      // Straight grid arithmetic rather than offsetTop: the scroll container is not a positioned
+      // ancestor, so offsetTop is measured from the page body and carries the whole header stack
+      // with it — which scrolled the view hours past where it was aimed.
+      scroller.scrollTop = target * HOUR_PX;
+    }
+
+    // An empty grid teaches nothing on its own — it looks like a broken page rather than an
+    // invitation. Say what to do, without blocking the gesture it is describing.
+    document.querySelectorAll('.sched-empty-hint').forEach(n => n.remove());
+    if (!events.length && scroller) {
+      const hint = document.createElement('div');
+      hint.className = 'sched-empty-hint';
+      hint.textContent = t('schedule.drag_hint');
+      hint.style.cssText = 'margin:0 0 8px;padding:8px 12px;border-radius:8px;'
+        + 'background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-muted);font-size:12px';
+      scroller.parentElement?.insertBefore(hint, scroller);
+    }
 
     // Legend — only in all-screens mode, where the grid mixes targets. Sorted so the order
     // is stable between reloads rather than following whatever the query happened to return.
