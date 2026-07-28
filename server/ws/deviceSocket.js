@@ -731,6 +731,11 @@ module.exports = function setupDeviceSocket(io) {
             persistIdentity(device_id, data);         // change-detected write (see persistIdentity)
           }
           socket.join(device_id);
+          // The device just proved its identity (device_token, timing-safe). Clear any OTA
+          // rate-backoff held against it: /api/update/check is unauthenticated and takes a
+          // caller-supplied ?device_id=, so that bucket can have been burned by anyone who
+          // merely knows this UUID. A genuine reconnect is the proof that lets us forgive it.
+          try { require('../lib/ota-breaker').forgiveDevice(device_id); } catch (_) { /* non-fatal */ }
           socket.emit('device:registered', { device_id, device_token: tokenToSend, status: 'online' });
           // #143: a device paired/claimed server-side (user_id set) that RECONNECTS must be told
           // it's paired — the app leaves the Connect page ONLY on 'device:paired' (web: hides the

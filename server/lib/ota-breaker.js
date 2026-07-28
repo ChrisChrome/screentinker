@@ -129,6 +129,29 @@ function startSweep() {
 }
 
 function reset() { state.clear(); loggedBad.clear(); Object.assign(rateBackoffCtr, rollingCounter()); }
+
+// Forgive ONE device's rate state, called when that device proves its identity on the /device
+// socket (a valid device_token, timing-safe compared).
+//
+// /api/update/check is deliberately unauthenticated — every client version, including old ones
+// that never learned to send a token, has to be able to ask. That means `?device_id=` is
+// caller-supplied, so anyone who learns a device's UUID can burn its bucket with a handful of
+// requests and leave the REAL device in rate-backoff, silently un-updatable, for up to 30
+// minutes at a time.
+//
+// Adding auth to the check would strand old clients, and keying on IP is wrong here (the fleet
+// SNATs — see the note at the top of this file). So instead the poisoning is made
+// self-healing: the genuine device reconnects on its own schedule, proves who it is, and gets
+// its bucket cleared. An attacker can still cause noise, but the denial now lasts until the
+// device's next authenticated reconnect rather than as long as the attacker keeps poking.
+//
+// This cannot be used to evade the breaker's real job: a device stuck in an OTA loop is
+// re-registering legitimately, and clearing its rate state on each genuine reconnect is exactly
+// what a healthy device looks like — the loop protection is the DOWNLOAD guard, not this.
+function forgiveDevice(deviceId) {
+  if (!deviceId) return false;
+  return state.delete('d:' + deviceId);
+}
 function _size() { return state.size; }
 // #146 observability — how many update checks the breaker is rate-backing-off (total +
 // last completed window). A device=none 1.8.x flood shows here as rateBackoffLastWindow.
@@ -136,4 +159,4 @@ function stats(now = Date.now()) {
   const rb = read(rateBackoffCtr, now);
   return { rateBackoffTotal: rb.total, rateBackoffLastWindow: rb.lastWindow };
 }
-module.exports = { decide, reset, sweep, startSweep, cmp, parseVer, _size, stats, WINDOW_MS, THRESHOLD };
+module.exports = { decide, reset, forgiveDevice, sweep, startSweep, cmp, parseVer, _size, stats, WINDOW_MS, THRESHOLD };
