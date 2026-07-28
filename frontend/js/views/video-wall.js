@@ -217,12 +217,12 @@ async function renderWallEditor(container, wallId) {
           <span style="font-size:11px;color:var(--text-muted);max-width:340px">Cols/rows/bezel are used by Auto-arrange. Drag freely on the canvas to override.</span>
         </div>
         <div style="margin-top:16px">
-          <h3 style="font-size:14px;margin:0 0 8px">${t('wall.playlist') || 'Playlist'}</h3>
+          <h3 style="font-size:14px;margin:0 0 8px">${t('wall.playlist')}</h3>
           <select id="wallPlaylist" class="input" style="width:300px;background:var(--bg-input)">
-            <option value="">${t('wall.no_playlist') || 'No playlist'}</option>
+            <option value="">${t('wall.no_playlist')}</option>
             ${(playlists || []).map(p => `<option value="${esc(p.id)}" ${p.id === wall.playlist_id ? 'selected' : ''}>${esc(p.name)}${p.status === 'draft' ? ' (draft)' : ''}</option>`).join('')}
           </select>
-          <button class="btn btn-primary btn-sm" id="setPlaylistBtn" style="margin-left:8px">${t('wall.set_playlist') || 'Set Playlist'}</button>
+          <button class="btn btn-primary btn-sm" id="setPlaylistBtn" style="margin-left:8px">${t('wall.set_playlist')}</button>
         </div>
       </div>
 
@@ -688,7 +688,7 @@ async function renderWallEditor(container, wallId) {
     try {
       await API(`/walls/${wallId}`, { method: 'PUT', body: JSON.stringify({ playlist_id: playlistId }) });
       wall.playlist_id = playlistId;
-      showToast(t('wall.toast.playlist_updated') || 'Playlist updated', 'success');
+      showToast(t('wall.toast.playlist_updated'), 'success');
     } catch (err) { showToast(err.message, 'error'); }
   });
 

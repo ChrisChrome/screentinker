@@ -1,6 +1,41 @@
 // English translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+
+  // Recovered from dead `t(k) || 'default'` fallbacks: t() returns the key when a string is
+  // missing, so those defaults never rendered and users saw the raw key instead.
+  'admin.check_now': 'Check Now',
+  'admin.checking': 'Checking...',
+  'admin.copied': 'Copied!',
+  'admin.copy': 'Copy',
+  'admin.copy_command': 'Copy',
+  'admin.latest_version': 'Latest Version',
+  'admin.manual_update': 'Manual Update Required',
+  'admin.manual_update_desc': 'Run this command on the server:',
+  'admin.status': 'Status',
+  'admin.up_to_date': 'Up to Date',
+  'admin.update_available': 'Update Available',
+  'admin.update_failed': 'Update Failed',
+  'admin.update_now': 'Update Now',
+  'admin.update_success': 'Update Successful',
+  'admin.updating': 'Updating...',
+  'wall.no_playlist': 'No playlist',
+  'wall.playlist': 'Playlist',
+  'wall.set_playlist': 'Set Playlist',
+  'wall.toast.playlist_updated': 'Playlist updated',
+
+  // Calendar direct-manipulation strings. NOTE: t() returns the KEY when a string is missing,
+  // never undefined — so `t('x') || 'fallback'` can never fire and would ship the raw key to the
+  // user. These must exist here; a browser run caught 'schedule.ctx_new' rendering literally.
+  'schedule.ctx_new': 'New schedule here…',
+  'schedule.ctx_edit': 'Edit…',
+  'schedule.ctx_duplicate': 'Duplicate',
+  'schedule.ctx_delete': 'Delete',
+  'schedule.confirm_series': 'This schedule repeats. Changing it here updates every occurrence. Continue?',
+  'schedule.confirm_delete': 'Delete this schedule?',
+  'schedule.toast.deleted': 'Schedule deleted',
+  'schedule.drag_hint': 'Drag across a time to add a schedule, or right-click for options.',
+
   // Getting-started checklist (components/getting-started.js). Driven by real account state,
   // not a one-time flag, so it can tell someone what is actually left to do.
   'gs.title': 'Get your first screen live',

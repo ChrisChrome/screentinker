@@ -461,7 +461,7 @@ export async function render(container) {
         return;
       }
       if (editsWholeSeries(st.ev)
-        && !confirm(t('schedule.confirm_series') || 'This schedule repeats. Changing it here updates every occurrence. Continue?')) {
+        && !confirm(t('schedule.confirm_series'))) {
         loadCalendar();
         return;
       }
@@ -502,10 +502,10 @@ export async function render(container) {
     menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:2000;min-width:170px;background:var(--bg-secondary,#1f2530);`
       + 'border:1px solid var(--border,#333);border-radius:6px;padding:4px;box-shadow:0 6px 24px rgba(0,0,0,.4);font-size:13px';
     const items = ev
-      ? [[t('schedule.ctx_edit') || 'Edit…', () => editSchedule(ev)],
-         [t('schedule.ctx_duplicate') || 'Duplicate', () => duplicateSchedule(ev)],
-         [t('schedule.ctx_delete') || 'Delete', () => deleteSchedule(ev)]]
-      : [[t('schedule.ctx_new') || 'New schedule here…', () => openCreateAt(dayDate, Math.floor(minutes / 15) * 15, Math.floor(minutes / 15) * 15 + 60)]];
+      ? [[t('schedule.ctx_edit'), () => editSchedule(ev)],
+         [t('schedule.ctx_duplicate'), () => duplicateSchedule(ev)],
+         [t('schedule.ctx_delete'), () => deleteSchedule(ev)]]
+      : [[t('schedule.ctx_new'), () => openCreateAt(dayDate, Math.floor(minutes / 15) * 15, Math.floor(minutes / 15) * 15 + 60)]];
     items.forEach(([label, fn]) => {
       const b = document.createElement('div');
       b.textContent = label;
@@ -535,10 +535,10 @@ export async function render(container) {
   }
 
   async function deleteSchedule(ev) {
-    if (!confirm(t('schedule.confirm_delete') || 'Delete this schedule?')) return;
+    if (!confirm(t('schedule.confirm_delete'))) return;
     try {
       await API(`/schedules/${ev.id}`, { method: 'DELETE' });
-      showToast(t('schedule.toast.deleted') || 'Deleted', 'success');
+      showToast(t('schedule.toast.deleted'), 'success');
     } catch (err) { showToast(err.message, 'error'); }
     loadCalendar();
   }
@@ -598,11 +598,11 @@ export async function render(container) {
 
   document.getElementById('deleteScheduleBtn').onclick = async () => {
     if (!editingId) return;
-    if (!confirm(t('schedule.confirm_delete') || 'Delete this schedule?')) return;
+    if (!confirm(t('schedule.confirm_delete'))) return;
     try {
       await API(`/schedules/${editingId}`, { method: 'DELETE' });
       document.getElementById('scheduleModal').style.display = 'none';
-      showToast(t('schedule.toast.deleted') || 'Schedule deleted', 'success');
+      showToast(t('schedule.toast.deleted'), 'success');
       loadCalendar();
     } catch (err) {
       showToast(err.message, 'error');
