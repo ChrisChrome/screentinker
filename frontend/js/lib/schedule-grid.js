@@ -1,0 +1,90 @@
+// Geometry and time maths for the week calendar's direct manipulation (drag to create, drag to
+// move, drag to resize). Kept apart from the view so the arithmetic — the part that silently
+// produces a schedule an hour off, or one that ends before it starts — is testable without a
+// browser.
+//
+// The grid is 24 rows of HOUR_PX pixels, one column per weekday. A block's vertical position is
+// therefore a pure function of minutes-since-midnight, and vice versa.
+
+export const HOUR_PX = 28;
+export const SNAP_MIN = 15;          // what a drag rounds to; matches how people actually schedule
+export const MIN_DURATION_MIN = 15;  // a zero-height block is invisible and unselectable
+export const DAY_MIN = 24 * 60;
+
+export const minutesToPx = (min) => (min / 60) * HOUR_PX;
+export const pxToMinutes = (px) => (px / HOUR_PX) * 60;
+
+// Round to the nearest SNAP_MIN. Nearest rather than floor: dragging to 10:58 should give 11:00,
+// not 10:45, because the pointer is a blunt instrument and people aim at the line.
+export function snapMinutes(min, snap = SNAP_MIN) {
+  return Math.round(min / snap) * snap;
+}
+
+// Clamp a dragged range into a valid one: inside the day, at least MIN_DURATION_MIN long, and
+// never inverted. Returns {startMin, endMin}.
+export function clampRange(startMin, endMin) {
+  let s = Math.max(0, Math.min(DAY_MIN - MIN_DURATION_MIN, Math.round(startMin)));
+  let e = Math.round(endMin);
+  if (e < s + MIN_DURATION_MIN) e = s + MIN_DURATION_MIN;   // dragging up past the start, or a click
+  if (e > DAY_MIN) { e = DAY_MIN; s = Math.min(s, e - MIN_DURATION_MIN); }
+  return { startMin: s, endMin: e };
+}
+
+// A drag that started at anchorMin and is currently at pointerMin, in either direction. Outlook
+// lets you drag upward from the anchor and treats the anchor as the END; so do we.
+export function rangeFromDrag(anchorMin, pointerMin) {
+  const a = snapMinutes(anchorMin);
+  const b = snapMinutes(pointerMin);
+  return clampRange(Math.min(a, b), Math.max(a, b));
+}
+
+// Move a block of fixed length so it now STARTS at startMin, without letting it run off the end
+// of the day (it slides back instead of being silently truncated — a move must not change length).
+export function moveRange(startMin, durationMin) {
+  const dur = Math.max(MIN_DURATION_MIN, Math.round(durationMin));
+  let s = snapMinutes(Math.max(0, startMin));
+  if (s + dur > DAY_MIN) s = DAY_MIN - dur;
+  return { startMin: Math.max(0, s), endMin: Math.max(0, s) + dur };
+}
+
+// Resize by dragging the bottom edge: the start is fixed, the end follows the pointer.
+export function resizeRange(startMin, pointerMin) {
+  return clampRange(startMin, snapMinutes(pointerMin));
+}
+
+const pad = (n) => String(n).padStart(2, '0');
+
+// The wire format the API stores: a LOCAL 'YYYY-MM-DDTHH:MM:00'. Deliberately not toISOString(),
+// which converts to UTC and would shift every schedule by the browser's offset — the same class of
+// bug as storing a schedule in the wrong zone.
+export function toLocalStamp(date, minutes) {
+  const d = new Date(date.getTime());
+  d.setHours(0, 0, 0, 0);
+  d.setMinutes(minutes);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+}
+
+export function formatRange(startMin, endMin) {
+  const fmt = (m) => {
+    const h24 = Math.floor(m / 60) % 24, mm = m % 60;
+    const ampm = h24 < 12 ? 'AM' : 'PM';
+    const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+    return `${h12}:${pad(mm)} ${ampm}`;
+  };
+  return `${fmt(startMin)} – ${fmt(endMin)}`;
+}
+
+// Which day a schedule occupies is NOT always its date. A one-off sits on the date in start_time,
+// so dragging it sideways is a real date change. A RECURRING one appears on whatever days its rule
+// expands to, so dragging an instance sideways is a change to the RULE (BYDAY), not to a time —
+// a different operation with different consequences for every other instance. Refuse it here and
+// send the user to the dialog rather than silently rewriting a recurrence from a mouse gesture.
+export function canMoveAcrossDays(ev) {
+  return !(ev && ev.recurrence);
+}
+
+// Dragging a recurring event's TIME still edits the whole series, since the series has one
+// time-of-day. That is worth confirming out loud rather than assuming.
+export function editsWholeSeries(ev) {
+  return !!(ev && ev.recurrence);
+}

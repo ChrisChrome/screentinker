@@ -1,6 +1,10 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { t } from '../i18n.js';
+import {
+  HOUR_PX, pxToMinutes, minutesToPx, rangeFromDrag, moveRange, resizeRange,
+  toLocalStamp, formatRange, canMoveAcrossDays, editsWholeSeries,
+} from '../lib/schedule-grid.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
 
@@ -267,9 +271,21 @@ export async function render(container) {
       block.title = `${kind}: ${target.name}\n${label}\n${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}`
         + `\n${t('schedule.tooltip_priority', { n: ev.priority })}`
         + (ev.timezone ? `\n${t('schedule.tz_same').replace('{zone}', ev.timezone)}` : '');
-      block.onclick = () => editSchedule(ev);
+      block.dataset.schedId = ev.id;
+      block._ev = ev;
+      block.onclick = (e) => { if (dragState && dragState.moved) return; editSchedule(ev); };
+      // Bottom grip: the affordance that makes a block resizable rather than only movable.
+      // Hidden on very short blocks, where a grip would cover the whole thing.
+      if (duration * 28 >= 24) {
+        const grip = document.createElement('div');
+        grip.className = 'sched-resize-grip';
+        grip.style.cssText = 'position:absolute;left:0;right:0;bottom:0;height:6px;cursor:ns-resize;';
+        block.appendChild(grip);
+      }
       cell.appendChild(block);
     });
+
+    attachGridInteractions(cal);
 
     // Legend — only in all-screens mode, where the grid mixes targets. Sorted so the order
     // is stable between reloads rather than following whatever the query happened to return.
@@ -284,6 +300,205 @@ export async function render(container) {
         </span>`).join('');
     }
   }
+
+  // ==================== Direct manipulation (Outlook-style) ====================
+  // The calendar was read-only: the only way to create or move anything was the dialog. On a week
+  // grid that is the wrong instrument — the grid already shows exactly where a thing goes, so the
+  // grid should be where you put it. Three gestures, all sharing one pointer loop:
+  //   drag empty space  -> create (opens the dialog PREFILLED with the time you drew)
+  //   drag a block      -> move
+  //   drag a block grip -> resize the end
+  //
+  // A drag is committed on pointerup, never mid-move, so an accidental nudge costs nothing. The
+  // click-to-edit handler is suppressed when a drag actually moved, or every drag would also open
+  // the dialog on release.
+  let dragState = null;
+  let ghostEl = null;
+
+  const dayColumnOf = (el) => { const c = el.closest('[data-day]'); return c ? Number(c.dataset.day) : null; };
+
+  function gridMinutesFromEvent(e, cal) {
+    // Absolute minutes-since-midnight from the pointer, using the hour cell under it as the datum
+    // rather than the grid top — the header row and any borders would otherwise skew every value.
+    const cell = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-hour]');
+    const ref = cell || (dragState && dragState.refCell);
+    if (!ref) return null;
+    const r = ref.getBoundingClientRect();
+    return Number(ref.dataset.hour) * 60 + pxToMinutes(e.clientY - r.top);
+  }
+
+  function showGhost(cal, dayIdx, startMin, endMin, label) {
+    const host = cal.querySelector(`[data-hour="${Math.floor(startMin / 60)}"][data-day="${dayIdx}"]`);
+    if (!host) return;
+    if (!ghostEl) {
+      ghostEl = document.createElement('div');
+      ghostEl.className = 'sched-ghost';
+      ghostEl.style.cssText = 'position:absolute;left:2px;right:2px;border-radius:3px;z-index:5;pointer-events:none;'
+        + 'background:var(--accent,#3B82F6);opacity:.55;color:#fff;font-size:10px;padding:2px 4px;line-height:1.2;'
+        + 'border:1px solid rgba(255,255,255,.8);overflow:hidden';
+    }
+    ghostEl.style.top = `${minutesToPx(startMin - Math.floor(startMin / 60) * 60)}px`;
+    ghostEl.style.height = `${Math.max(14, minutesToPx(endMin - startMin))}px`;
+    ghostEl.textContent = label;
+    host.appendChild(ghostEl);
+  }
+  function clearGhost() { if (ghostEl && ghostEl.parentNode) ghostEl.parentNode.removeChild(ghostEl); }
+
+  function attachGridInteractions(cal) {
+    cal.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;                       // left button only; right opens the menu
+      const block = e.target.closest('[data-sched-id]');
+      const cell = e.target.closest('[data-hour][data-day]');
+      if (!cell) return;
+      const startMin = gridMinutesFromEvent(e, cal);
+      if (startMin == null) return;
+
+      if (block && block._ev) {
+        const ev = block._ev;
+        const s = new Date(ev.instance_start || ev.start_time);
+        const en = new Date(ev.instance_end || ev.end_time);
+        const evStart = s.getHours() * 60 + s.getMinutes();
+        const evEnd = en.getHours() * 60 + en.getMinutes();
+        dragState = {
+          kind: e.target.classList.contains('sched-resize-grip') ? 'resize' : 'move',
+          ev, block, refCell: cell, moved: false,
+          grabOffset: startMin - evStart,
+          evStart, evEnd, dayIdx: dayColumnOf(cell),
+        };
+      } else {
+        dragState = { kind: 'create', anchorMin: startMin, refCell: cell, moved: false, dayIdx: dayColumnOf(cell) };
+      }
+      cal.setPointerCapture?.(e.pointerId);
+    });
+
+    cal.addEventListener('pointermove', (e) => {
+      if (!dragState) return;
+      const now = gridMinutesFromEvent(e, cal);
+      if (now == null) return;
+      dragState.moved = true;
+      let range, day = dragState.dayIdx;
+      if (dragState.kind === 'create') {
+        range = rangeFromDrag(dragState.anchorMin, now);
+      } else if (dragState.kind === 'resize') {
+        range = resizeRange(dragState.evStart, now);
+      } else {
+        range = moveRange(now - dragState.grabOffset, dragState.evEnd - dragState.evStart);
+        // Sideways only where the day is a real date. A recurring instance's day comes from its
+        // rule, so dragging it across columns would silently rewrite the recurrence.
+        const overDay = dayColumnOf(document.elementFromPoint(e.clientX, e.clientY) || dragState.refCell);
+        if (overDay != null && canMoveAcrossDays(dragState.ev)) day = overDay;
+      }
+      dragState.pending = { range, day };
+      clearGhost();
+      showGhost(cal, day, range.startMin, range.endMin, formatRange(range.startMin, range.endMin));
+    });
+
+    const finish = async (e) => {
+      const st = dragState;
+      dragState = null;
+      clearGhost();
+      if (!st || !st.pending || !st.moved) { setTimeout(() => { if (!dragState) { /* let click through */ } }, 0); return; }
+      const { range, day } = st.pending;
+      const dayDate = new Date(currentWeekStart);
+      dayDate.setDate(dayDate.getDate() + day);
+
+      if (st.kind === 'create') {
+        openCreateAt(dayDate, range.startMin, range.endMin);
+        return;
+      }
+      if (editsWholeSeries(st.ev)
+        && !confirm(t('schedule.confirm_series') || 'This schedule repeats. Changing it here updates every occurrence. Continue?')) {
+        loadCalendar();
+        return;
+      }
+      try {
+        await API(`/schedules/${st.ev.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            start_time: toLocalStamp(dayDate, range.startMin),
+            end_time: toLocalStamp(dayDate, range.endMin),
+          }),
+        });
+        showToast(t('schedule.toast.saved'), 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+      loadCalendar();
+    };
+    cal.addEventListener('pointerup', finish);
+    cal.addEventListener('pointercancel', () => { dragState = null; clearGhost(); });
+
+    // Right-click: act on what is under the pointer, like every calendar people already use.
+    cal.addEventListener('contextmenu', (e) => {
+      const cell = e.target.closest('[data-hour][data-day]');
+      if (!cell) return;
+      e.preventDefault();
+      const block = e.target.closest('[data-sched-id]');
+      const minutes = gridMinutesFromEvent(e, cal) ?? Number(cell.dataset.hour) * 60;
+      const dayDate = new Date(currentWeekStart);
+      dayDate.setDate(dayDate.getDate() + (dayColumnOf(cell) || 0));
+      showContextMenu(e.clientX, e.clientY, block && block._ev, dayDate, minutes);
+    });
+  }
+
+  function showContextMenu(x, y, ev, dayDate, minutes) {
+    document.querySelectorAll('.sched-ctx').forEach(n => n.remove());
+    const menu = document.createElement('div');
+    menu.className = 'sched-ctx';
+    menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:2000;min-width:170px;background:var(--bg-secondary,#1f2530);`
+      + 'border:1px solid var(--border,#333);border-radius:6px;padding:4px;box-shadow:0 6px 24px rgba(0,0,0,.4);font-size:13px';
+    const items = ev
+      ? [[t('schedule.ctx_edit') || 'Edit…', () => editSchedule(ev)],
+         [t('schedule.ctx_duplicate') || 'Duplicate', () => duplicateSchedule(ev)],
+         [t('schedule.ctx_delete') || 'Delete', () => deleteSchedule(ev)]]
+      : [[t('schedule.ctx_new') || 'New schedule here…', () => openCreateAt(dayDate, Math.floor(minutes / 15) * 15, Math.floor(minutes / 15) * 15 + 60)]];
+    items.forEach(([label, fn]) => {
+      const b = document.createElement('div');
+      b.textContent = label;
+      b.style.cssText = 'padding:7px 10px;border-radius:4px;cursor:pointer;color:var(--text-primary,#e6edf7)';
+      b.onmouseenter = () => { b.style.background = 'var(--bg-primary,#151b2b)'; };
+      b.onmouseleave = () => { b.style.background = ''; };
+      b.onclick = () => { menu.remove(); fn(); };
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    const close = (evt) => { if (!menu.contains(evt.target)) { menu.remove(); document.removeEventListener('pointerdown', close, true); } };
+    setTimeout(() => document.addEventListener('pointerdown', close, true), 0);
+  }
+
+  async function duplicateSchedule(ev) {
+    try {
+      await API('/schedules', { method: 'POST', body: JSON.stringify({
+        device_id: ev.device_id || null, group_id: ev.group_id || null,
+        content_id: ev.content_id || null, playlist_id: ev.playlist_id || null, layout_id: ev.layout_id || null,
+        title: ev.title ? `${ev.title} (copy)` : null,
+        start_time: ev.start_time, end_time: ev.end_time,
+        recurrence: ev.recurrence || null, priority: ev.priority || 0, color: ev.color || '#3B82F6',
+      }) });
+      showToast(t('schedule.toast.saved'), 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+    loadCalendar();
+  }
+
+  async function deleteSchedule(ev) {
+    if (!confirm(t('schedule.confirm_delete') || 'Delete this schedule?')) return;
+    try {
+      await API(`/schedules/${ev.id}`, { method: 'DELETE' });
+      showToast(t('schedule.toast.deleted') || 'Deleted', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+    loadCalendar();
+  }
+
+  // Open the dialog already filled in with the slot that was drawn, so the gesture supplies the
+  // times and the dialog only has to supply what it alone knows (which playlist, which target).
+  function openCreateAt(dayDate, startMin, endMin) {
+    document.getElementById('addScheduleBtn').onclick();
+    const hhmm = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    document.getElementById('schedStart').value = hhmm(startMin);
+    document.getElementById('schedEnd').value = hhmm(endMin);
+    pendingCreateDate = dayDate;
+  }
+  let pendingCreateDate = null;
 
   function editSchedule(ev) {
     editingId = ev.id;
@@ -354,7 +569,12 @@ export async function render(container) {
     const playlistId = document.getElementById('schedPlaylist').value;
     const layoutId = document.getElementById('schedLayout').value;
 
-    const today = new Date().toISOString().split('T')[0];
+    // The date a new schedule is stamped with. A drag supplies the day it was drawn on;
+    // otherwise it is today. Built from LOCAL parts, not toISOString(), which is UTC and puts
+    // anyone west of Greenwich on the previous day for part of their evening.
+    const dref = pendingCreateDate || new Date();
+    const today = `${dref.getFullYear()}-${String(dref.getMonth() + 1).padStart(2, '0')}-${String(dref.getDate()).padStart(2, '0')}`;
+    pendingCreateDate = null;
     const data = {
       content_id: contentId || null,
       playlist_id: playlistId || null,
