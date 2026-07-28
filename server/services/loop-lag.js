@@ -54,15 +54,23 @@ function nextBand(cur, p99, calm) {
   return [cur, 0];
 }
 
+// A sampling window that recorded NOTHING leaves the histogram empty, and an empty
+// IntervalHistogram reports `mean` as NaN (its percentiles return a floor instead, which is
+// why only the mean was ever affected). NaN survives every arithmetic step here and only
+// becomes visible at the edge, where JSON.stringify turns it into `null` — so /api/status
+// served `mean_ms: null` to anything reading it, and no error was raised anywhere. Zero is the
+// honest value: no samples means no measured delay. Applied to every field so a future change
+// to the histogram source cannot reintroduce this one field at a time.
 const round2 = (x) => Math.round(x * 100) / 100;
+const metric = (x) => (Number.isFinite(x) ? round2(x) : 0);
 
 function sample() {
   const p99 = histogram.percentile(99) / NS_PER_MS;
   const snap = {
-    mean_ms: round2(histogram.mean / NS_PER_MS),
-    p50_ms: round2(histogram.percentile(50) / NS_PER_MS),
-    p99_ms: round2(p99),
-    max_ms: round2(histogram.max / NS_PER_MS),
+    mean_ms: metric(histogram.mean / NS_PER_MS),
+    p50_ms: metric(histogram.percentile(50) / NS_PER_MS),
+    p99_ms: metric(p99),
+    max_ms: metric(histogram.max / NS_PER_MS),
   };
   histogram.reset();
 
@@ -135,3 +143,6 @@ function getBand() { return band; }
 function getLag() { return { ...current }; }
 
 module.exports = { startLoopLagMonitor, getBand, getLag, nextBand };
+// Exported for tests: the NaN-from-an-empty-window case is invisible in normal operation
+// (it only surfaces after JSON serialisation) so it needs to be assertable directly.
+module.exports._metric = metric;
