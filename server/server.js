@@ -327,6 +327,9 @@ app.use('/socket.io-client', express.static(
 ));
 
 // Simple rate limiter for auth endpoints
+// Required here rather than relying on the log-coalescer const further down: that one is only
+// safe because the callback runs at request time, which is a subtle thing to depend on.
+const limiterTelemetry = require('./lib/limiter-telemetry');
 const rateLimits = new Map();
 function rateLimit(windowMs, maxRequests) {
   return (req, res, next) => {
@@ -341,6 +344,23 @@ function rateLimit(windowMs, maxRequests) {
     let hits = rateLimits.get(key) || [];
     hits = hits.filter(t => t > windowStart);
     if (hits.length >= maxRequests) {
+      // QA-SNAT: a 429 returns before any handler runs, so nothing else in the system ever
+      // records that it happened — the limit hides its own evidence. Count it here. The
+      // number that matters is distinct identifiers per IP: one means the limiter is doing
+      // its job, several means a shared egress IP is denying real users. Identifiers are
+      // salted-hashed inside the telemetry module and only ever counted. Response unchanged.
+      try {
+        const endpoint = (req.originalUrl || req.url || req.path).split('?')[0];
+        const ip = getClientIp(req);
+        const ident = req.body && (req.body.email || req.body.username);
+        const t = limiterTelemetry.recordRejection({ endpoint, ip, identifier: ident });
+        logCoalescer.record(
+          `limit-reject:${endpoint}:${ip}`,
+          `[limit] 429 ${endpoint} ip=${ip} rejections=${t.rejections} distinct_accounts=${t.distinctIdentifiers}` +
+          (t.distinctIdentifiers >= 3 ? ' (looks like a SHARED egress, not one attacker)' : ''),
+          { warn: t.distinctIdentifiers >= 3 },
+        );
+      } catch (_) { /* telemetry must never break the limiter */ }
       return res.status(429).json({ error: 'Too many requests, try again later' });
     }
     hits.push(now);

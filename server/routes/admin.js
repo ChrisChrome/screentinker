@@ -424,4 +424,21 @@ router.post('/trigger-update', requirePlatformAdmin, async (req, res) => {
   });
 });
 
+// QA-SNAT diagnostic. Auth rate-limit rejections are invisible everywhere else: the limiter is
+// app.use middleware that returns 429 before the handler that would write activity_log, so the
+// limit suppresses the record of itself. This exposes the in-memory tally so "is that IP one
+// attacker or a NATed office?" can be answered from data instead of argued from a hunch.
+//
+// distinct_accounts is the signal, not rejections. Values are counts only — the identifiers are
+// salted-hashed inside the telemetry module and never leave it, so this cannot become a roster
+// of a customer's email addresses. Platform-admin only, and in-memory (a restart clears it).
+router.get('/limiter-rejections', requirePlatformAdmin, (req, res) => {
+  const rows = require('../lib/limiter-telemetry').snapshot();
+  res.json({
+    rows,
+    shared_egress_suspects: rows.filter(r => r.likelySharedEgress).length,
+    note: 'In-memory since last restart. distinct_accounts >= 3 from one IP suggests a shared egress rather than a single attacker.',
+  });
+});
+
 module.exports = router;
