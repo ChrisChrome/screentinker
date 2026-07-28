@@ -5,7 +5,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES, isPlatformStaff } = require('../middlewa
 // Phase 2.2a: workspace-aware access. accessContext returns { workspaceRole, actingAs }
 // or null based on the caller's reach into a specific workspace.
 const { accessContext } = require('../lib/tenancy');
-const { stripDeviceSecrets } = require('../lib/device-sanitize');
+const { stripDeviceSecrets, stripDeviceSecretsForList } = require('../lib/device-sanitize');
 const { layoutZones, orphanCountsByDevice } = require('../lib/zone-validate');
 const deviceSettings = require('../lib/device-settings'); // #150 delete+re-pair settings preservation
 
@@ -45,7 +45,7 @@ router.get('/', (req, res) => {
   // #zone-orphan: lightweight per-device count of playlist items whose zone_id isn't in
   // the device's active layout, so the dashboard can flag screens that need attention.
   const orphanCounts = orphanCountsByDevice(devices.map(d => d.id));
-  res.json(devices.map(d => ({ ...stripDeviceSecrets(d), orphan_count: orphanCounts[d.id] || 0 })));
+  res.json(devices.map(d => ({ ...stripDeviceSecretsForList(d), orphan_count: orphanCounts[d.id] || 0 })));
 });
 
 // #106: reorder display tiles (cosmetic, within-section). Writes devices.sort_order
