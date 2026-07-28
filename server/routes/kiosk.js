@@ -19,6 +19,36 @@ function safeColor(val, fallback) {
   return fallback;
 }
 
+// CSS VALUE escaping. These land inside a <style> block, where escapeHtml() is the WRONG
+// tool: it escapes & < > " ' but not { } ;, and inside a raw-text <style> element the entities
+// it does produce are never decoded. So escapeHtml neither prevents CSS injection nor renders
+// correctly. `red} body{background:url(https://attacker/x)` closes the declaration AND the rule
+// and appends arbitrary ones — no XSS (</style> can't be reached), but an attacker-chosen rule
+// on every panel showing the page, which is an outbound beacon at minimum.
+//
+// The check is on STRUCTURE, not a value allowlist: `background` is a free-text field in the
+// editor, so legitimate values include linear-gradient(...), rgb(...) and url(...). Those all
+// stay; only characters that could end the declaration or open a new rule are refused.
+function safeCssValue(val, fallback) {
+  if (typeof val !== 'string') return fallback;
+  const v = val.trim();
+  if (!v) return fallback;
+  if (/[{};]/.test(v)) return fallback;          // declaration / rule breakout
+  if (/\/\*|\*\//.test(v)) return fallback;        // comments can swallow following declarations
+  if (/[\u0000-\u001F]/.test(v)) return fallback;   // control chars, incl. newlines
+  if (/<\s*\/?\s*style/i.test(v)) return fallback;  // belt-and-braces against the raw-text edge
+  return v;
+}
+
+// font-family needs no parentheses, so it gets a tighter allowlist than the general value check:
+// family names, the generic keywords, quotes and separators only.
+function safeFontFamily(val, fallback) {
+  if (typeof val !== 'string') return fallback;
+  const v = val.trim();
+  if (!v) return fallback;
+  return /^[a-zA-Z0-9 ,'"._-]+$/.test(v) ? v : fallback;
+}
+
 // Validate CSS numeric values
 function safeNumber(val, fallback) {
   const n = Number(val);
@@ -89,8 +119,8 @@ router.get('/:id/render', (req, res) => {
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { width:100vw; height:100vh; overflow:hidden; font-family:${escapeHtml(style.fontFamily) || '-apple-system,sans-serif'};
-    background:${escapeHtml(style.background) || '#111827'}; color:${safeColor(style.textColor, '#f1f5f9')}; display:flex; flex-direction:column; }
+  body { width:100vw; height:100vh; overflow:hidden; font-family:${safeFontFamily(style.fontFamily, '-apple-system,sans-serif')};
+    background:${safeCssValue(style.background, '#111827')}; color:${safeColor(style.textColor, '#f1f5f9')}; display:flex; flex-direction:column; }
   .header { padding:40px 60px 20px; text-align:${/^(left|center|right)$/.test(style.headerAlign) ? style.headerAlign : 'center'}; }
   .header h1 { font-size:${safeNumber(style.titleSize, 48)}px; font-weight:700; }
   .header p { font-size:${safeNumber(style.subtitleSize, 20)}px; opacity:0.7; margin-top:8px; }
