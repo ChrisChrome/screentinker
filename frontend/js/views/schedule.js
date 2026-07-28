@@ -34,7 +34,8 @@ export async function render(container) {
       <div><h1>${t('schedule.title')} <span class="help-tip" data-tip="${t('schedule.help_tip')}">?</span></h1><div class="subtitle">${t('schedule.subtitle')}</div></div>
     </div>
     <div class="schedule-controls" style="display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
-      <select id="schedDevice" class="input" style="width:200px;max-width:100%;background:var(--bg-input)">
+      <select id="schedDevice" class="input" style="width:220px;max-width:100%;background:var(--bg-input)">
+        <option value="*">${t('schedule.all_screens')}</option>
         ${devices.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('')}
       </select>
       <button class="btn btn-secondary btn-sm" id="prevWeek">${t('schedule.prev_week')}</button>
@@ -42,6 +43,9 @@ export async function render(container) {
       <button class="btn btn-secondary btn-sm" id="nextWeek">${t('schedule.next_week')}</button>
       <button class="btn btn-primary btn-sm" id="addScheduleBtn">${t('schedule.add_schedule')}</button>
     </div>
+    <!-- Legend: only meaningful in all-screens mode, where blocks from different targets
+         share one grid. Hidden for a single screen so that view stays uncluttered. -->
+    <div id="schedLegend" style="display:none;flex-wrap:wrap;gap:10px;margin:-6px 0 14px;font-size:12px"></div>
     <div style="overflow-x:auto">
       <div id="calendar" style="display:grid;grid-template-columns:60px repeat(7,1fr);min-width:800px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden"></div>
     </div>
@@ -175,12 +179,31 @@ export async function render(container) {
       `${currentWeekStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
   }
 
+  // Stable colour per target, so the same screen is the same colour every week and
+  // across reloads. Hashing the id beats cycling a palette by index, which reshuffles
+  // whenever a device is added or removed.
+  const TARGET_COLORS = ['#3B82F6','#8B5CF6','#EC4899','#F59E0B','#10B981','#06B6D4','#EF4444','#84CC16','#A855F7','#14B8A6'];
+  function colorForTarget(key) {
+    let h = 0;
+    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+    return TARGET_COLORS[h % TARGET_COLORS.length];
+  }
+  // What an event is aimed at. Group schedules name the group; device schedules name the
+  // device. In all-screens mode this is the thing the operator is actually scanning for.
+  function targetOf(ev) {
+    if (ev.group_id) return { key: 'g:' + ev.group_id, name: ev.group_name || t('schedule.target_group'), isGroup: true };
+    return { key: 'd:' + (ev.device_id || '?'), name: ev.device_name || t('schedule.target_device'), isGroup: false };
+  }
+
   async function loadCalendar() {
     const deviceId = document.getElementById('schedDevice').value;
     if (!deviceId) return;
+    const allScreens = deviceId === '*';
     updateWeekLabel();
 
-    const events = await API(`/schedules/week?date=${currentWeekStart.toISOString()}&device_id=${deviceId}`);
+    // all=1 rather than a workspace id — the server scopes to the caller's own workspace.
+    const scope = allScreens ? 'all=1' : `device_id=${encodeURIComponent(deviceId)}`;
+    const events = await API(`/schedules/week?date=${currentWeekStart.toISOString()}&${scope}`);
 
     const cal = document.getElementById('calendar');
     let html = '<div style="background:var(--bg-secondary);border-bottom:1px solid var(--border)"></div>';
@@ -204,6 +227,7 @@ export async function render(container) {
 
     cal.innerHTML = html;
 
+    const seenTargets = new Map();
     events.forEach(ev => {
       const start = new Date(ev.instance_start || ev.start_time);
       const end = new Date(ev.instance_end || ev.end_time);
@@ -216,19 +240,49 @@ export async function render(container) {
       if (!cell) return;
 
       const isGroupSchedule = !!ev.group_id;
+      const target = targetOf(ev);
+      seenTargets.set(target.key, target);
       const block = document.createElement('div');
       const topOffset = (startHour - Math.floor(startHour)) * 28;
+      // In all-screens mode colour identifies WHO the block is for, so several targets share
+      // one grid and stay tellable apart. On a single screen the schedule's own colour is
+      // kept — there is only one target, so colour is free to mean something else.
+      const bg = allScreens ? colorForTarget(target.key) : (ev.color || '#3B82F6');
+      const tall = duration * 28 >= 34;
       block.style.cssText = `position:absolute;top:${topOffset}px;left:2px;right:2px;height:${Math.max(20, duration * 28)}px;
-        background:${ev.color || '#3B82F6'};border-radius:3px;padding:2px 4px;font-size:10px;color:white;overflow:hidden;cursor:pointer;z-index:1;opacity:0.85;
-        ${isGroupSchedule ? 'border:1.5px dashed rgba(255,255,255,0.6);' : ''}`;
+        background:${bg};border-radius:3px;padding:2px 4px;font-size:10px;color:white;overflow:hidden;cursor:pointer;z-index:1;opacity:0.9;
+        line-height:1.25;${isGroupSchedule ? 'border:1.5px dashed rgba(255,255,255,0.65);' : ''}`;
 
       const label = ev.title || ev.playlist_name || ev.content_name || ev.widget_name || t('schedule.scheduled_label');
-      const prefix = isGroupSchedule ? `[${esc(ev.group_name || t('schedule.target_group'))}] ` : '';
-      block.textContent = prefix + label;
-      block.title = `${isGroupSchedule ? t('schedule.tooltip_group_prefix') + (ev.group_name || '') + '\n' : ''}${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}\n${t('schedule.tooltip_priority', { n: ev.priority })}`;
+      if (allScreens && tall) {
+        // Two lines when there is room: who it is for, then what plays. The target reads
+        // first because that is what the eye is scanning the grid for.
+        block.innerHTML = `<div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(target.name)}</div>`
+          + `<div style="opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(label)}</div>`;
+      } else {
+        block.textContent = (allScreens || isGroupSchedule) ? `${target.name} \u00b7 ${label}` : label;
+      }
+
+      const kind = isGroupSchedule ? t('schedule.target_group') : t('schedule.target_device');
+      block.title = `${kind}: ${target.name}\n${label}\n${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}`
+        + `\n${t('schedule.tooltip_priority', { n: ev.priority })}`
+        + (ev.timezone ? `\n${t('schedule.tz_same').replace('{zone}', ev.timezone)}` : '');
       block.onclick = () => editSchedule(ev);
       cell.appendChild(block);
     });
+
+    // Legend — only in all-screens mode, where the grid mixes targets. Sorted so the order
+    // is stable between reloads rather than following whatever the query happened to return.
+    const legend = document.getElementById('schedLegend');
+    if (legend) {
+      const targets = [...seenTargets.values()].sort((a, b) => a.name.localeCompare(b.name));
+      legend.style.display = (allScreens && targets.length) ? 'flex' : 'none';
+      legend.innerHTML = targets.map(tg => `
+        <span style="display:inline-flex;align-items:center;gap:6px;color:var(--text-secondary)">
+          <span style="width:11px;height:11px;border-radius:3px;background:${colorForTarget(tg.key)};
+            ${tg.isGroup ? 'border:1.5px dashed rgba(255,255,255,0.65);' : ''}"></span>${esc(tg.name)}
+        </span>`).join('');
+    }
   }
 
   function editSchedule(ev) {

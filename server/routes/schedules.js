@@ -34,6 +34,31 @@ function getDeviceSchedulesQuery() {
   `;
 }
 
+// Every schedule in a workspace, each row carrying the NAME of what it targets.
+//
+// The per-device query answers "what plays on THIS screen". This answers "what is
+// scheduled anywhere", which is what an operator actually needs to see: with a
+// single-device calendar you cannot tell whether a gap is deliberate or whether you
+// pointed the schedule at the wrong screen — the failure mode a real user hit.
+function getWorkspaceSchedulesQuery() {
+  return `
+    SELECT s.*, c.filename as content_name, w.name as widget_name, p.name as playlist_name,
+           dg.name as group_name, dg.color as group_color,
+           d.name as device_name
+    FROM schedules s
+    LEFT JOIN content c ON s.content_id = c.id
+    LEFT JOIN widgets w ON s.widget_id = w.id
+    LEFT JOIN playlists p ON s.playlist_id = p.id
+    LEFT JOIN device_groups dg ON s.group_id = dg.id
+    LEFT JOIN devices d ON s.device_id = d.id
+    WHERE s.enabled = 1 AND s.workspace_id = ?
+    ORDER BY
+      CASE WHEN s.device_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+      s.priority DESC,
+      s.created_at ASC
+  `;
+}
+
 // Load a schedule + access context, sending 403/404 on failure.
 function loadScheduleAccess(req, res, requireWrite) {
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(req.params.id);
@@ -117,13 +142,21 @@ router.get('/device/:deviceId', (req, res) => {
 
 // Expanded week view (resolves recurrences). Phase 2.2m: device access via workspace.
 router.get('/week', (req, res) => {
-  const { date, device_id } = req.query;
-  if (!device_id) return res.status(400).json({ error: 'device_id required' });
+  const { date, device_id, all } = req.query;
+  if (!device_id && !all) return res.status(400).json({ error: 'device_id or all=1 required' });
 
-  const device = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(device_id);
-  if (!device) return res.status(404).json({ error: 'Device not found' });
-  if (!device.workspace_id) return res.status(403).json({ error: 'Device not assigned to a workspace' });
-  const ctx = workspaceAccess(req, device.workspace_id);
+  // all=1 -> every schedule on every screen, for the "all screens" calendar. The workspace
+  // comes from the caller's resolved tenancy, never from the query string: a client-supplied
+  // workspace_id here would be a cross-tenant read waiting to happen.
+  let scopeWorkspaceId = all ? req.workspaceId : null;
+  if (all && !scopeWorkspaceId) return res.json([]);
+  if (device_id) {
+    const device = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(device_id);
+    if (!device) return res.status(404).json({ error: 'Device not found' });
+    if (!device.workspace_id) return res.status(403).json({ error: 'Device not assigned to a workspace' });
+    scopeWorkspaceId = device.workspace_id;
+  }
+  const ctx = workspaceAccess(req, scopeWorkspaceId);
   if (!ctx) return res.status(403).json({ error: 'Access denied' });
 
   const weekStart = date ? new Date(date) : new Date();
@@ -132,7 +165,9 @@ router.get('/week', (req, res) => {
   const weekEnd = new Date(weekStart);
   weekEnd.setDate(weekEnd.getDate() + 7);
 
-  const schedules = db.prepare(getDeviceSchedulesQuery()).all(device_id, device_id);
+  const schedules = device_id
+    ? db.prepare(getDeviceSchedulesQuery()).all(device_id, device_id)
+    : db.prepare(getWorkspaceSchedulesQuery()).all(scopeWorkspaceId);
   const events = [];
   for (const s of schedules) {
     const expanded = expandSchedule(s, weekStart, weekEnd);

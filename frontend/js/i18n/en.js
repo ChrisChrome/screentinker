@@ -1298,6 +1298,7 @@ export default {
   'schedule.tz_device': 'Times are in {zone} — the screen\u2019s timezone, not your {local}.',
   'schedule.tz_same': 'Times are in {zone}.',
   'schedule.tz_unknown': 'Times use the screen\u2019s own timezone once it reports one.',
+  'schedule.all_screens': 'All screens',
   'schedule.start_time': 'Start Time',
   'schedule.end_time': 'End Time',
   'schedule.repeat': 'Repeat',
