@@ -878,11 +878,18 @@ function renderDirectorySearch(c) {
   .entry.available, .entry.available .id { color:#00ff00; }
   body.light .entry.available, body.light .entry.available .id { color:#059669; }
 
-  .keyboard { flex:0 0 auto; padding:8px 12px 14px; background:rgba(0,0,0,0.25); user-select:none; }
+  /* The keyboard is sized against the VIEWPORT, not in fixed px. A panel's CSS viewport is its
+     physical resolution divided by its density, so a 1080p screen at 240dpi presents only 1280x720
+     CSS px - and a keyboard laid out for 1920x1080 then eats ~37% of the height instead of ~24%.
+     The vh terms scale it down on short viewports; the clamp() maxima are the original values, so
+     a 1080-tall viewport renders pixel-identically to before (5.3vh and 2.3vh both exceed their
+     max at 1080 and clamp). The px minima keep the keys tappable on very short screens. */
+  .keyboard { flex:0 0 auto; padding:clamp(5px,0.8vh,8px) 12px clamp(8px,1.3vh,14px); background:rgba(0,0,0,0.25); user-select:none; }
   body.light .keyboard { background:rgba(0,0,0,0.05); }
-  .krow { display:flex; gap:6px; justify-content:center; margin-bottom:6px; }
+  .krow { display:flex; gap:clamp(4px,0.6vh,6px); justify-content:center; margin-bottom:clamp(4px,0.6vh,6px); }
   .key {
-    flex:1 1 0; max-width:96px; min-width:0; height:56px; font-size:24px; text-transform:uppercase;
+    flex:1 1 0; max-width:96px; min-width:0;
+    height:clamp(34px,5.3vh,56px); font-size:clamp(15px,2.3vh,24px); text-transform:uppercase;
     border:0; border-radius:8px; background:rgba(255,255,255,0.12); color:inherit; cursor:pointer;
   }
   .key:active { background:#4a9eff; color:#fff; }
@@ -894,7 +901,7 @@ function renderDirectorySearch(c) {
     .header h1 { font-size:30px; }
     #q { font-size:26px; padding:14px 16px; }
     .entry { font-size:24px; }
-    .key { height:46px; font-size:20px; }
+    /* .key is viewport-scaled above - no fixed override here, it would undo the clamp. */
   }
 </style>
 </head>

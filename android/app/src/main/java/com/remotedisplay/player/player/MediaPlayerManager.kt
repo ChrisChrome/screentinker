@@ -39,6 +39,9 @@ class MediaPlayerManager(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var exoPlayer: ExoPlayer? = null
     private var currentType: MediaType = MediaType.NONE
+    // The URL the widget WebView currently has loaded, so re-showing the same widget can be a
+    // no-op. Cleared whenever anything else takes the surface (see clearWidgetUrl callers).
+    private var currentWidgetUrl: String? = null
     // Wall mode: followers must stay muted even as the leader's sync switches them
     // to a new (possibly unmuted) item, so the mute has to survive each playVideo.
     private var wallMute = false
@@ -150,6 +153,7 @@ class MediaPlayerManager(
     // no-transition hard cut.
     private fun mountImageBitmap(bitmap: Bitmap) {
         currentType = MediaType.IMAGE
+        currentWidgetUrl = null   // surface reused - a later widget show must reload
         playerView.visibility = android.view.View.GONE
         imageView.visibility = android.view.View.VISIBLE
         youtubeWebView?.visibility = android.view.View.GONE
@@ -161,6 +165,7 @@ class MediaPlayerManager(
     fun playYoutube(embedUrl: String, durationSec: Int = 0, muted: Boolean = false) {
         Log.i("MediaPlayerManager", "Playing YouTube: $embedUrl (muted=$muted)")
         currentType = MediaType.YOUTUBE
+        currentWidgetUrl = null   // surface reused - a later widget show must reload
         youtubeMuted = muted || wallMute
 
         playerView.visibility = android.view.View.GONE
@@ -195,8 +200,20 @@ class MediaPlayerManager(
     // Fullscreen widget render (single-zone / "fullscreen" layouts). Reuses the
     // full-screen WebView; ZoneManager handles widgets in multi-zone layouts.
     fun showWidget(url: String) {
+        // A solo-widget playlist re-shows the SAME item every duration_sec, and a playlist refresh
+        // re-issues the current item too. Re-navigating the WebView for a URL it already has is a
+        // visible flash, and it destroys widget state - a half-typed directory search, scroll
+        // position, anything the viewer was doing. Widgets refresh their own data client-side
+        // (directory-search polls the board's data.json every 30s), so the reload buys nothing.
+        // Make the show idempotent: same URL + widget already on screen => leave it running.
+        if (currentType == MediaType.WIDGET && url == currentWidgetUrl && youtubeWebView != null) {
+            Log.i("MediaPlayerManager", "Widget already showing, not reloading: $url")
+            youtubeWebView?.visibility = android.view.View.VISIBLE
+            return
+        }
         Log.i("MediaPlayerManager", "Showing widget: $url")
         currentType = MediaType.WIDGET
+        currentWidgetUrl = url
 
         playerView.visibility = android.view.View.GONE
         imageView.visibility = android.view.View.GONE
@@ -213,6 +230,7 @@ class MediaPlayerManager(
     fun playVideoFromUrl(url: String, muted: Boolean = false) {
         Log.i("MediaPlayerManager", "Streaming video from URL: $url (muted=$muted)")
         currentType = MediaType.VIDEO
+        currentWidgetUrl = null   // surface reused - a later widget show must reload
 
         playerView.visibility = android.view.View.VISIBLE
         imageView.visibility = android.view.View.GONE
@@ -286,6 +304,7 @@ class MediaPlayerManager(
 
     private fun mountVideo(file: File, muted: Boolean = false) {
         currentType = MediaType.VIDEO
+        currentWidgetUrl = null   // surface reused - a later widget show must reload
 
         // Show player, hide image
         playerView.visibility = android.view.View.VISIBLE
@@ -341,6 +360,7 @@ class MediaPlayerManager(
         youtubeWebView?.loadUrl("about:blank")
         youtubeWebView?.visibility = android.view.View.GONE
         currentType = MediaType.NONE
+        currentWidgetUrl = null   // surface reused - a later widget show must reload
     }
 
     fun release() {

@@ -114,3 +114,40 @@ test('search page wires the live-sync poll to its source board', async () => {
   assert.ok(html.includes('"source_widget_id":"board1"'), 'source board id inlined into the page');
   assert.ok(html.includes('/data.json'), 'page polls the data.json feed');
 });
+
+// The on-screen keyboard must be sized against the VIEWPORT, not in fixed px. A panel's CSS
+// viewport is its resolution over its density, so a 1080p screen at 240dpi presents 1280x720 CSS
+// px — where a keyboard laid out for 1920x1080 ate ~37% of the height instead of ~24%. The clamp()
+// maxima are the ORIGINAL fixed values, so a 1080-tall viewport must stay pixel-identical.
+test('the on-screen keyboard scales with the viewport instead of using fixed pixels', async () => {
+  const bid = 'kb-board', sid = 'kb-search';
+  seed(bid, 'directory-board', BOARD);
+  seed(sid, 'directory-search', { source_widget_id: bid });
+  const { status, html } = await fetchRender(sid);
+  assert.equal(status, 200);
+
+  const keyRule = html.match(/\.key\s*\{[^}]*\}/s);
+  assert.ok(keyRule, '.key rule is present');
+  assert.match(keyRule[0], /height:clamp\(/, 'key height is clamped to the viewport');
+  assert.match(keyRule[0], /font-size:clamp\(/, 'key font-size is clamped to the viewport');
+  assert.ok(!/height:\s*56px/.test(keyRule[0]), 'no bare fixed height survives');
+
+  // vh terms must exceed their max at 1080 tall, so existing 1080 panels render unchanged.
+  const h = keyRule[0].match(/height:clamp\(([\d.]+)px,\s*([\d.]+)vh,\s*([\d.]+)px\)/);
+  assert.ok(h, 'height clamp is well-formed');
+  const [, hMin, hVh, hMax] = h.map(Number);
+  assert.ok(hVh * 1080 / 100 >= hMax, 'at a 1080-tall viewport the height clamps to its max (no visual change)');
+  assert.ok(hVh * 720 / 100 < hMax, 'at a 720-tall viewport the height actually scales down');
+  assert.ok(hMin >= 30, 'keys stay tappable on very short viewports');
+});
+
+test('the narrow breakpoint no longer pins the key size back to fixed pixels', async () => {
+  const bid = 'kb2-board', sid = 'kb2-search';
+  seed(bid, 'directory-board', BOARD);
+  seed(sid, 'directory-search', { source_widget_id: bid });
+  const { html } = await fetchRender(sid);
+  const mq = html.match(/@media \(max-width:700px\)\s*\{[^}]*\}[^}]*\}/s);
+  assert.ok(mq, 'the narrow breakpoint still exists');
+  assert.ok(!/\.key\s*\{[^}]*height:\s*\d+px/.test(mq[0]),
+    'the breakpoint must not re-pin .key to a fixed height and undo the clamp');
+});
