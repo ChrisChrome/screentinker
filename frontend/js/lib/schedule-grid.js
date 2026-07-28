@@ -6,7 +6,15 @@
 // The grid is 24 rows of HOUR_PX pixels, one column per weekday. A block's vertical position is
 // therefore a pure function of minutes-since-midnight, and vice versa.
 
-export const HOUR_PX = 28;
+// 28px/hour made a 15-minute block SEVEN pixels tall — legible, but not something you can
+// reliably grab, and its resize grip would have covered the whole block. 44 keeps a full day on
+// screen on a laptop while making the smallest schedule an 11px target.
+export const HOUR_PX = 44;
+
+// A pointer must travel this far before a press counts as a drag. Without it, the 1px of movement
+// in an ordinary click turns every click into a drag and swallows click-to-edit — so the calendar
+// would feel broken in the most common interaction of all.
+export const DRAG_THRESHOLD_PX = 4;
 export const SNAP_MIN = 15;          // what a drag rounds to; matches how people actually schedule
 export const MIN_DURATION_MIN = 15;  // a zero-height block is invisible and unselectable
 export const DAY_MIN = 24 * 60;
@@ -72,6 +80,11 @@ export function formatRange(startMin, endMin) {
     return `${h12}:${pad(mm)} ${ampm}`;
   };
   return `${fmt(startMin)} – ${fmt(endMin)}`;
+}
+
+// Has the pointer moved far enough to mean "drag" rather than "click"?
+export function isDrag(dx, dy, threshold = DRAG_THRESHOLD_PX) {
+  return Math.hypot(dx, dy) >= threshold;
 }
 
 // Which day a schedule occupies is NOT always its date. A one-off sits on the date in start_time,

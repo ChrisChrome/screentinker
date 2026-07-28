@@ -3,7 +3,7 @@ import { showToast } from '../components/toast.js';
 import { t } from '../i18n.js';
 import {
   HOUR_PX, pxToMinutes, minutesToPx, rangeFromDrag, moveRange, resizeRange,
-  toLocalStamp, formatRange, canMoveAcrossDays, editsWholeSeries,
+  toLocalStamp, formatRange, canMoveAcrossDays, editsWholeSeries, isDrag,
 } from '../lib/schedule-grid.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
@@ -225,7 +225,7 @@ export async function render(container) {
     for (const h of HOURS) {
       html += `<div style="padding:4px 8px;font-size:10px;color:var(--text-muted);border-bottom:1px solid var(--border);text-align:right">${h === 0 ? t('schedule.hour_12am') : h < 12 ? h + t('schedule.hour_am') : h === 12 ? t('schedule.hour_12pm') : (h - 12) + t('schedule.hour_pm')}</div>`;
       for (let d = 0; d < 7; d++) {
-        html += `<div style="position:relative;min-height:28px;border-bottom:1px solid var(--border);border-left:1px solid var(--border);background:var(--bg-primary)" data-hour="${h}" data-day="${d}"></div>`;
+        html += `<div style="position:relative;min-height:${HOUR_PX}px;height:${HOUR_PX}px;border-bottom:1px solid var(--border);border-left:1px solid var(--border);background:var(--bg-primary)" data-hour="${h}" data-day="${d}"></div>`;
       }
     }
 
@@ -247,14 +247,14 @@ export async function render(container) {
       const target = targetOf(ev);
       seenTargets.set(target.key, target);
       const block = document.createElement('div');
-      const topOffset = (startHour - Math.floor(startHour)) * 28;
+      const topOffset = (startHour - Math.floor(startHour)) * HOUR_PX;
       // In all-screens mode colour identifies WHO the block is for, so several targets share
       // one grid and stay tellable apart. On a single screen the schedule's own colour is
       // kept — there is only one target, so colour is free to mean something else.
       const bg = allScreens ? colorForTarget(target.key) : (ev.color || '#3B82F6');
-      const tall = duration * 28 >= 34;
-      block.style.cssText = `position:absolute;top:${topOffset}px;left:2px;right:2px;height:${Math.max(20, duration * 28)}px;
-        background:${bg};border-radius:3px;padding:2px 4px;font-size:10px;color:white;overflow:hidden;cursor:pointer;z-index:1;opacity:0.9;
+      const tall = duration * HOUR_PX >= 34;
+      block.style.cssText = `position:absolute;top:${topOffset}px;left:2px;right:2px;height:${Math.max(18, duration * HOUR_PX)}px;
+        background:${bg};border-radius:3px;padding:2px 4px;font-size:10px;color:white;overflow:hidden;cursor:grab;z-index:1;opacity:0.92;
         line-height:1.25;${isGroupSchedule ? 'border:1.5px dashed rgba(255,255,255,0.65);' : ''}`;
 
       const label = ev.title || ev.playlist_name || ev.content_name || ev.widget_name || t('schedule.scheduled_label');
@@ -276,10 +276,11 @@ export async function render(container) {
       block.onclick = (e) => { if (dragState && dragState.moved) return; editSchedule(ev); };
       // Bottom grip: the affordance that makes a block resizable rather than only movable.
       // Hidden on very short blocks, where a grip would cover the whole thing.
-      if (duration * 28 >= 24) {
+      if (duration * HOUR_PX >= 22) {
         const grip = document.createElement('div');
         grip.className = 'sched-resize-grip';
-        grip.style.cssText = 'position:absolute;left:0;right:0;bottom:0;height:6px;cursor:ns-resize;';
+        grip.style.cssText = 'position:absolute;left:0;right:0;bottom:0;height:10px;cursor:ns-resize;'
+          + 'background:linear-gradient(to bottom,transparent,rgba(0,0,0,.28));';
         block.appendChild(grip);
       }
       cell.appendChild(block);
@@ -353,6 +354,7 @@ export async function render(container) {
       const startMin = gridMinutesFromEvent(e, cal);
       if (startMin == null) return;
 
+      const origin = { x: e.clientX, y: e.clientY };
       if (block && block._ev) {
         const ev = block._ev;
         const s = new Date(ev.instance_start || ev.start_time);
@@ -361,21 +363,29 @@ export async function render(container) {
         const evEnd = en.getHours() * 60 + en.getMinutes();
         dragState = {
           kind: e.target.classList.contains('sched-resize-grip') ? 'resize' : 'move',
-          ev, block, refCell: cell, moved: false,
+          ev, block, refCell: cell, moved: false, origin,
           grabOffset: startMin - evStart,
           evStart, evEnd, dayIdx: dayColumnOf(cell),
         };
       } else {
-        dragState = { kind: 'create', anchorMin: startMin, refCell: cell, moved: false, dayIdx: dayColumnOf(cell) };
+        dragState = { kind: 'create', anchorMin: startMin, refCell: cell, moved: false, origin, dayIdx: dayColumnOf(cell) };
       }
       cal.setPointerCapture?.(e.pointerId);
     });
 
     cal.addEventListener('pointermove', (e) => {
       if (!dragState) return;
+      // Ignore the jitter of an ordinary click. Until the pointer has actually travelled, this
+      // is still a click and must stay one, or click-to-edit never fires.
+      if (!dragState.moved) {
+        if (!isDrag(e.clientX - dragState.origin.x, e.clientY - dragState.origin.y)) return;
+        dragState.moved = true;
+        cal.style.touchAction = 'none';                 // stop a touch drag scrolling the page
+        cal.style.cursor = dragState.kind === 'resize' ? 'ns-resize' : 'grabbing';
+        if (dragState.block) dragState.block.style.opacity = '0.35';   // show what is being moved
+      }
       const now = gridMinutesFromEvent(e, cal);
       if (now == null) return;
-      dragState.moved = true;
       let range, day = dragState.dayIdx;
       if (dragState.kind === 'create') {
         range = rangeFromDrag(dragState.anchorMin, now);
@@ -393,10 +403,17 @@ export async function render(container) {
       showGhost(cal, day, range.startMin, range.endMin, formatRange(range.startMin, range.endMin));
     });
 
+    const resetDragChrome = (st) => {
+      cal.style.touchAction = '';
+      cal.style.cursor = '';
+      if (st && st.block) st.block.style.opacity = '';
+    };
     const finish = async (e) => {
       const st = dragState;
       dragState = null;
       clearGhost();
+      resetDragChrome(st);
+      try { cal.releasePointerCapture?.(e.pointerId); } catch (_) { /* already released */ }
       if (!st || !st.pending || !st.moved) { setTimeout(() => { if (!dragState) { /* let click through */ } }, 0); return; }
       const { range, day } = st.pending;
       const dayDate = new Date(currentWeekStart);
@@ -426,7 +443,7 @@ export async function render(container) {
       loadCalendar();
     };
     cal.addEventListener('pointerup', finish);
-    cal.addEventListener('pointercancel', () => { dragState = null; clearGhost(); });
+    cal.addEventListener('pointercancel', () => { const st = dragState; dragState = null; clearGhost(); resetDragChrome(st); });
 
     // Right-click: act on what is under the pointer, like every calendar people already use.
     cal.addEventListener('contextmenu', (e) => {

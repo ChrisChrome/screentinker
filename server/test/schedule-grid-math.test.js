@@ -105,6 +105,28 @@ test('editing a repeating schedule is flagged as editing the series', async () =
   assert.equal(G.editsWholeSeries({}), false);
 });
 
+test('THE CLICK TRAP: a jiggle is not a drag', async () => {
+  // Every click carries a pixel or two of movement. Treating that as a drag would suppress
+  // click-to-edit — the most-used interaction on the calendar — and read as "clicking is broken".
+  assert.equal(G.isDrag(0, 0), false, 'a still click');
+  assert.equal(G.isDrag(1, 1), false, 'ordinary hand tremor');
+  assert.equal(G.isDrag(2, 2), false, 'still inside the threshold');
+  assert.equal(G.isDrag(0, 6), true, 'a deliberate pull IS a drag');
+  assert.equal(G.isDrag(-6, 0), true, 'in any direction');
+});
+
+test('a 15-minute block is big enough to actually grab', async () => {
+  // At the old 28px/hour it was 7px tall — legible but not a usable pointer target, and its
+  // resize grip would have covered the entire block.
+  assert.ok(G.minutesToPx(G.MIN_DURATION_MIN) >= 10,
+    `smallest block is ${G.minutesToPx(G.MIN_DURATION_MIN)}px`);
+});
+
+test('a whole day still fits a laptop screen', async () => {
+  // The other half of the trade: taller rows must not turn the week view into a scrolling chore.
+  assert.ok(24 * G.HOUR_PX <= 1100, `full day is ${24 * G.HOUR_PX}px`);
+});
+
 test('the drag readout is human, not 24h minutes', async () => {
   assert.equal(G.formatRange(540, 630), '9:00 AM – 10:30 AM');
   assert.equal(G.formatRange(0, 45), '12:00 AM – 12:45 AM');
