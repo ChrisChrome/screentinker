@@ -49,6 +49,10 @@ const evictedSockets = new Set();
 // event is still forwarded every time, so the UI is unaffected. In-memory only.
 const lastPlayLogAt = new Map();
 const PLAY_LOG_MIN_GAP_MS = 2000;
+// Existence probes for the proof-of-play insert (see the play_start handler): the id a
+// player reports comes from its CACHED playlist and can outlive the row it names.
+const contentExists = db.prepare('SELECT 1 FROM content WHERE id = ?').pluck();
+const widgetExists = db.prepare('SELECT 1 FROM widgets WHERE id = ?').pluck();
 
 // #142 dedup + #143 per-device rate budget + global loop-lag valve for content-acks
 // all live in one control: lib/content-ack-limiter.js (required above as
@@ -1120,10 +1124,25 @@ module.exports = function setupDeviceSocket(io) {
           const lastMs = lastPlayLogAt.get(device_id) || 0;
           if (nowMs - lastMs >= PLAY_LOG_MIN_GAP_MS) {
             lastPlayLogAt.set(device_id, nowMs);
+            // Resolve the reported id against what actually exists rather than handing it
+            // straight to a foreign key. content_id references content(id) and widget_id
+            // references widgets(id); a stale id from a cached playlist made the INSERT
+            // throw and the whole row was lost. Widgets were never attributed at all —
+            // widget_id was simply never written. Write whichever column the id belongs
+            // in; an id matching neither degrades to NULL references, so content_name
+            // still records WHAT played instead of the event vanishing.
+            const isContent = content_id ? !!contentExists.get(content_id) : false;
+            const isWidget = (!isContent && content_id) ? !!widgetExists.get(content_id) : false;
             db.prepare(`
-              INSERT INTO play_logs (device_id, content_id, zone_id, content_name, started_at, trigger_type)
-              VALUES (?, ?, ?, ?, strftime('%s','now'), 'playlist')
-            `).run(device_id, content_id || null, zone_id || null, content_name || 'Unknown');
+              INSERT INTO play_logs (device_id, content_id, widget_id, zone_id, content_name, started_at, trigger_type)
+              VALUES (?, ?, ?, ?, ?, strftime('%s','now'), 'playlist')
+            `).run(
+              device_id,
+              isContent ? content_id : null,
+              isWidget ? content_id : null,
+              zone_id || null,
+              content_name || 'Unknown'
+            );
           }
           // Forward to dashboard so it can render a per-device progress bar.
           // Server-side timestamp avoids clock-skew between player and dashboard.
@@ -1140,13 +1159,21 @@ module.exports = function setupDeviceSocket(io) {
               duration_sec = strftime('%s','now') - started_at,
               completed = ?
             WHERE id = (
-              SELECT id FROM play_logs WHERE device_id = ? AND content_id = ? AND ended_at IS NULL
-              ORDER BY started_at DESC LIMIT 1
+              SELECT id FROM play_logs
+              WHERE device_id = ? AND ended_at IS NULL
+                AND (content_id = ? OR widget_id = ?)
+              -- started_at has second granularity, so two plays inside one second tie. Break
+              -- on id so this always closes the most recently INSERTED open row rather than an
+              -- arbitrary one of the tied set.
+              ORDER BY started_at DESC, id DESC LIMIT 1
             )
-          `).run(completed ? 1 : 0, device_id, content_id);
+          `).run(completed ? 1 : 0, device_id, content_id, content_id);
         }
       } catch (err) {
-        console.error('Play log error:', err.message);
+        // Include the identifiers. Without them this is undiagnosable in production: it
+        // fired ~360 times in six hours on prod with nothing in the log to point at.
+        console.error('Play log error:', err.message,
+          `(event=${event} device=${device_id} content=${content_id} zone=${zone_id})`);
       }
     });
 
