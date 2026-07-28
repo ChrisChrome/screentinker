@@ -343,6 +343,41 @@
       try { return JSON.parse(localStorage.getItem(LAYOUT_CACHE_KEY) || 'null'); } catch { return null; }
     }
 
+    // ==================== Identity reset (?reset=<token>) ====================
+    // A screen-only panel has no keyboard, no pointer and often no way to clear site data — but
+    // the URL it loads IS configurable from whatever manages it (the UniFi display UI, an MDM, a
+    // kiosk profile). This is the escape hatch for that: loading the player with ?reset=<token>
+    // discards this install's identity so it comes back as a brand-new device with a fresh
+    // pairing code. That is the recovery path when a panel is holding an identity that belongs to
+    // a different screen, and the ordinary one for redeploying a panel to another site.
+    //
+    // ONCE PER TOKEN, and that is the whole design. The configured URL is permanent — nobody
+    // goes back and removes the parameter — so a reset that fired on every load would re-pair the
+    // screen on every reboot and look exactly like a device that cannot hold its pairing. The
+    // applied token is remembered, so ?reset=1 left in the URL forever resets exactly once; to
+    // reset again, change it to any other value (?reset=2).
+    //
+    // serverUrl is deliberately preserved: we are being served BY that server, so it is
+    // known-good, and clearing it would strand a panel that cannot be typed into.
+    (function applyIdentityReset() {
+      let token;
+      try { token = new URLSearchParams(location.search).get('reset'); } catch (e) { return; }
+      if (!token) return;
+      try {
+        if (localStorage.getItem('st_reset_applied') === token) return;   // already honoured
+        const cfg = getConfig();
+        delete cfg.deviceId; delete cfg.deviceToken; delete cfg.pairingCode;
+        cfg.paired = false;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+        localStorage.removeItem('st_install_id');      // mint a NEW identity, not the old one
+        localStorage.removeItem(PLAYLIST_CACHE_KEY);
+        localStorage.removeItem(LAYOUT_CACHE_KEY);
+        localStorage.removeItem('st_group_sync');
+        localStorage.setItem('st_reset_applied', token);
+        console.warn('[reset] identity cleared by ?reset=' + token + ' — this panel will pair as a new device');
+      } catch (e) { /* storage unavailable: nothing to clear, and nothing to break */ }
+    })();
+
     // ==================== State ====================
     let socket = null;
     let config = getConfig();
