@@ -51,7 +51,11 @@ const post = (tok, obj, extra) => ({ method: 'POST', ...auth(tok, extra), body: 
 // A 1x1 PNG - enough for the ingest path to produce a real file + thumbnail, so the
 // content-reference gate is actually reachable.
 const PNG_1X1 = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAwAB/gGVUvXhAAAAAElFTkSuQmCC',
+  // Must be a STRUCTURALLY VALID PNG. The previous literal had a corrupt IDAT chunk (stored CRC
+  // did not match its data) and only decoded because the old libpng was lenient. A stricter decoder
+  // rejects it ("vipspng: libpng read error"), no thumbnail is written, and the assertions below
+  // fail with a 404 that looks like an auth regression but is not. Every chunk CRC here verifies.
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
   'base64'
 );
 
