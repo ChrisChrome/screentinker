@@ -1027,12 +1027,62 @@
     // past the window and the (now-visible) watchdog reconnects it. #148 teardown-first via connect().
     function verifyLivenessSoon() {
       lastServerMessageAt = Date.now();          // fresh grace — don't false-fire on stale hidden-silence
-      if (!socket) connect(config.serverUrl);    // never connected / torn down -> establish (teardown-first)
-      // socket connected  -> grace reset above; the watchdog verifies over the next window.
-      // socket present-but-disconnected -> socket.io's own reconnection already owns it.
+      if (!socket) { connect(config.serverUrl); return; }   // never connected / torn down -> establish
+      // socket connected -> grace reset above; the watchdog verifies over the next window.
+      // socket present-but-DISCONNECTED used to be left to "socket.io's own reconnection", which is
+      // wrong for the disconnects socket.io does not retry ('io server disconnect'). A resume is
+      // exactly when a stranded panel should get another go, so hand it to the supervisor.
+      if (!socket.connected) {
+        if (!disconnectedSinceMs) disconnectedSinceMs = Date.now();
+        startReconnectSupervisor();
+      }
     }
     function startWatchdog() { stopWatchdog(); watchdogTimer = setInterval(checkLiveness, 10000); }
     function stopWatchdog() { if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; } }
+
+    // ---- Reconnect supervisor -------------------------------------------------------------
+    // The watchdog above only covers a HALF-OPEN socket — one that still claims to be connected
+    // while the server has gone quiet. It cannot help once a socket is known to be down, because
+    // the disconnect handler stops it. That left a gap: socket.io retries most disconnects, but on
+    // 'io server disconnect' it deliberately stands down, and on an explicit client teardown it
+    // must not retry. So a server-closed socket had NOTHING watching it and the player stayed
+    // down until a human reloaded the page — which is what stranded a live panel.
+    //
+    // This supervisor is the backstop for exactly that. It only ever re-establishes a socket that
+    // is genuinely not connected, and it waits out a grace period first so socket.io's own
+    // reconnection (1s backing off to 30s) gets to do the job on the disconnects it does own.
+    let reconnectSupervisorTimer = null;
+    let disconnectedSinceMs = 0;
+    const RECONNECT_SUPERVISOR_TICK_MS = 15000;
+    const RECONNECT_GRACE_MS = 45000;   // > socket.io's 30s max backoff, so we never race it
+
+    // 'io client disconnect' is OUR OWN teardown (connect() closes the previous socket before
+    // opening the next). Supervising that would fight the reconnect already in progress.
+    function shouldSuperviseReconnect(reason) { return reason !== 'io client disconnect'; }
+
+    // Pure decision, mirroring watchdogShouldReconnect: re-establish only a socket that is really
+    // down and has stayed down past the grace period.
+    function shouldForceReconnect(connected, sinceMs, nowMs, graceMs) {
+      if (connected) return false;
+      if (!sinceMs) return false;
+      return (nowMs - sinceMs) >= graceMs;
+    }
+
+    function startReconnectSupervisor() {
+      if (reconnectSupervisorTimer) return;
+      reconnectSupervisorTimer = setInterval(() => {
+        if (PREVIEW_MODE) return;
+        if (socket && socket.connected) { stopReconnectSupervisor(); return; }
+        if (!shouldForceReconnect(!!(socket && socket.connected), disconnectedSinceMs, Date.now(), RECONNECT_GRACE_MS)) return;
+        console.warn('[reconnect] socket still down after ' + Math.round((Date.now() - disconnectedSinceMs) / 1000) + 's — re-establishing');
+        disconnectedSinceMs = Date.now();          // restart the grace so we retry on a cadence, not a spin
+        connect(config.serverUrl);                 // #148 teardown-before-reopen
+      }, RECONNECT_SUPERVISOR_TICK_MS);
+    }
+    function stopReconnectSupervisor() {
+      if (reconnectSupervisorTimer) { clearInterval(reconnectSupervisorTimer); reconnectSupervisorTimer = null; }
+      disconnectedSinceMs = 0;
+    }
     function browserPlatform() {
       try {
         const m = navigator.userAgent.match(/(Edg|OPR|Chrome|Firefox|Version)\/(\d+)/);
@@ -1076,17 +1126,28 @@
 
       socket.on('connect', () => {
         console.log('Connected');
+        stopReconnectSupervisor();   // back up; stand the backstop down
         register();
       });
 
-      socket.on('disconnect', () => {
-        console.log('Disconnected');
+      socket.on('disconnect', (reason) => {
+        console.log('Disconnected', reason || '');
         stopHeartbeat();
-        stopWatchdog(); // socket.io owns the reconnect once it KNOWS it's down; watchdog is for half-open only
+        stopWatchdog(); // the watchdog is for HALF-OPEN only; a known-down socket is the supervisor's job
         // feat/offline-cause-log: open an offline gap so the next reconnect can report cause.
         if (!disconnectedAt) {
           disconnectedAt = Date.now();
           linkLostDuringGap = (typeof navigator !== 'undefined' && navigator.onLine === false);
+        }
+        // socket.io does NOT retry every disconnect. On 'io server disconnect' it deliberately
+        // stands down and waits to be told to reconnect — so a server that closes a socket (a
+        // handler throwing, a deploy, an eviction) left this player down FOREVER, with the
+        // watchdog stopped above and nothing else watching. That happened to a real panel: it
+        // sat dark until someone reloaded it by hand. Supervise every disconnect we did not
+        // ourselves initiate.
+        if (shouldSuperviseReconnect(reason)) {
+          disconnectedSinceMs = Date.now();
+          startReconnectSupervisor();
         }
       });
 
