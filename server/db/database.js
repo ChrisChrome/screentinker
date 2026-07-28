@@ -332,6 +332,13 @@ const migrations = [
   "ALTER TABLE devices ADD COLUMN system_brightness REAL",
   "ALTER TABLE devices ADD COLUMN window_brightness REAL",
   "ALTER TABLE devices ADD COLUMN screen_off_timeout_ms INTEGER",
+  // The hardware-derived half of a client's fingerprint, kept separately from the identity it
+  // now presents. Two identical panels produce the same hardware value, so it identifies a
+  // MODEL, not a unit, and can only ever be a hint for reuniting a wiped panel with its row —
+  // never the thing a match is decided on. Nullable: clients that predate this send no such
+  // field, and the lookup falls back to exact-match-only for them.
+  "ALTER TABLE device_fingerprints ADD COLUMN hw_fingerprint TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_device_fingerprints_hw ON device_fingerprints(hw_fingerprint)",
   // Offline alerting is once per OUTAGE, not once per dedup window. This stores the
   // last_heartbeat value an offline alert was already sent for. Because a device that
   // reconnects advances last_heartbeat, the marker self-invalidates on recovery — a new

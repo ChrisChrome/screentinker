@@ -402,7 +402,7 @@ module.exports = function setupDeviceSocket(io) {
 
     // Device registers with a pairing code (first time) or device_id + device_token (reconnect)
     socket.on('device:register', (data) => {
-      const { pairing_code, device_id, device_token, device_info, fingerprint } = data;
+      const { pairing_code, device_id, device_token, device_info, fingerprint, hw_fingerprint } = data;
 
       // #146: resolve identity ONCE via the SNAT-safe chain (device_id -> fingerprint
       // -> token -> global anon), used by BOTH the operator block and the flap limiter.
@@ -460,7 +460,39 @@ module.exports = function setupDeviceSocket(io) {
       // Track device fingerprint to prevent reinstall abuse
       if (fingerprint) {
         try {
-          const existing = db.prepare('SELECT * FROM device_fingerprints WHERE fingerprint = ?').get(fingerprint);
+          let existing = db.prepare('SELECT * FROM device_fingerprints WHERE fingerprint = ?').get(fingerprint);
+
+          // MIGRATION ONLY, and only for a caller that has ALREADY proved who it is.
+          //
+          // An existing player keeps its device_id and token across an update, so it authenticates
+          // by token and merely needs its stored fingerprint moved to the new salted form. That is
+          // safe: identity was established before we got here, and the hint is only used to find
+          // the row that identity already belongs to.
+          //
+          // A caller WITHOUT credentials must never resolve through the hardware hint, however
+          // few rows it appears to match. The value describes a MODEL, not a unit — every
+          // identical panel emits the same one — so "exactly one row" means one row was recorded,
+          // not that one display exists. Two UniFi Pro Displays at DIFFERENT sites both produced
+          // web-m73u8w-5f; whichever connected second would have been handed the other's row,
+          // token and content. Such a caller falls through and is provisioned a new device, which
+          // costs the operator one pairing code and is the only answer that cannot be wrong.
+          //
+          // Clients that send no hw_fingerprint (older players, and the APK/.wgt whose fingerprint
+          // is a genuinely per-unit hardware id) never enter this branch at all and behave exactly
+          // as before.
+          const tokenProven = !!(device_id && validateDeviceToken(device_id, device_token));
+          if (!existing && hw_fingerprint && tokenProven) {
+            const candidates = db.prepare(
+              'SELECT * FROM device_fingerprints WHERE (hw_fingerprint = ? OR fingerprint = ?) AND device_id = ?')
+              .all(hw_fingerprint, hw_fingerprint, device_id);
+            if (candidates.length === 1) {
+              const prior = candidates[0].fingerprint;
+              db.prepare('UPDATE device_fingerprints SET fingerprint = ?, hw_fingerprint = ? WHERE fingerprint = ?')
+                .run(fingerprint, hw_fingerprint, prior);
+              existing = { ...candidates[0], fingerprint, hw_fingerprint };
+              console.log(`[fingerprint] migrated ${prior} -> per-install identity for authenticated device ${device_id}`);
+            }
+          }
           if (existing) {
             // device_id arrives from the client and can name a row that no longer exists (a
             // reconnect after the device was deleted — the same case that emits device:unpaired).
@@ -473,8 +505,8 @@ module.exports = function setupDeviceSocket(io) {
             const known = (id) => !!(id && db.prepare('SELECT 1 FROM devices WHERE id = ?').get(id));
             const fpDeviceId = known(device_id) ? device_id
               : (known(existing.device_id) ? existing.device_id : null);
-            db.prepare("UPDATE device_fingerprints SET last_seen = strftime('%s','now'), device_id = ? WHERE fingerprint = ?")
-              .run(fpDeviceId, fingerprint);
+            db.prepare("UPDATE device_fingerprints SET last_seen = strftime('%s','now'), device_id = ?, hw_fingerprint = COALESCE(?, hw_fingerprint) WHERE fingerprint = ?")
+              .run(fpDeviceId, hw_fingerprint || null, fingerprint);
             // If this fingerprint was previously registered to a different device, block the new registration
             if (!device_id && existing.device_id && pairing_code) {
               // Someone reinstalled - link them back to existing device
@@ -646,8 +678,8 @@ module.exports = function setupDeviceSocket(io) {
             // INSERT OR IGNORE does NOT suppress FK violations - so null out an
             // unknown id instead of letting it throw (was a caught, noisy error).
             const fpDeviceId = (device_id && db.prepare('SELECT 1 FROM devices WHERE id = ?').get(device_id)) ? device_id : null;
-            db.prepare("INSERT OR IGNORE INTO device_fingerprints (fingerprint, device_id) VALUES (?, ?)")
-              .run(fingerprint, fpDeviceId);
+            db.prepare("INSERT OR IGNORE INTO device_fingerprints (fingerprint, device_id, hw_fingerprint) VALUES (?, ?, ?)")
+              .run(fingerprint, fpDeviceId, hw_fingerprint || null);
           }
         } catch (e) {
           console.error('Fingerprint tracking error:', e.message);
@@ -879,8 +911,8 @@ module.exports = function setupDeviceSocket(io) {
         // BEFORE the dashboard:device-added emit below so that emit carries restored values.
         if (fingerprint) {
           try {
-            db.prepare("INSERT INTO device_fingerprints (fingerprint, device_id, last_seen) VALUES (?, ?, strftime('%s','now')) ON CONFLICT(fingerprint) DO UPDATE SET device_id = excluded.device_id, last_seen = excluded.last_seen")
-              .run(fingerprint, id);
+            db.prepare("INSERT INTO device_fingerprints (fingerprint, device_id, last_seen, hw_fingerprint) VALUES (?, ?, strftime('%s','now'), ?) ON CONFLICT(fingerprint) DO UPDATE SET device_id = excluded.device_id, last_seen = excluded.last_seen, hw_fingerprint = COALESCE(excluded.hw_fingerprint, device_fingerprints.hw_fingerprint)")
+              .run(fingerprint, id, hw_fingerprint || null);
             const restored = deviceSettings.applyToDevice(id, fingerprint);
             if (restored) console.log(`[#150] restored saved settings for re-paired device ${id} (fp ${fingerprint.slice(0, 8)}…)`);
           } catch (e) { console.warn(`[#150] settings restore failed for ${id}: ${e.message}`); }

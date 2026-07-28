@@ -643,7 +643,14 @@
     });
 
     // ==================== Browser Fingerprint ====================
-    function generateBrowserFingerprint() {
+    // Hardware-only identity. Every input below is a property of the MODEL, not the unit: two
+    // identical panels report the same user agent, the same screen geometry, the same core count
+    // and the same canvas raster. So this value is shared by every display of that model
+    // ANYWHERE — it was never an identity, and treating it as one meant a second identical panel
+    // collided with the first (observed live: two UniFi Pro Displays at DIFFERENT sites both
+    // producing web-m73u8w-5f). It is kept because it is still a useful HINT for reuniting a
+    // wiped panel with its own row, but it is no longer proof of which unit is calling.
+    function generateHardwareFingerprint() {
       const components = [
         navigator.userAgent,
         navigator.language,
@@ -673,6 +680,31 @@
         hash = hash & hash;
       }
       return 'web-' + Math.abs(hash).toString(36) + '-' + str.length.toString(36);
+    }
+
+    // The identity the server matches on: hardware PLUS a random per-INSTALL salt, so two
+    // identical panels are distinguishable from the first connection — which hardware alone can
+    // never be. The salt is minted once and kept in localStorage. Clearing storage mints a new
+    // one, which is correct: that IS a new install, and the hw_fingerprint sent alongside is what
+    // lets the server offer the old row back when it can do so unambiguously.
+    //
+    // Falls back to the bare hardware value when storage is unavailable (private mode, a locked
+    // down kiosk). That reintroduces the collision for those clients alone rather than leaving
+    // them with no identity at all, and the server treats an ambiguous hardware value as an
+    // unknown device and provisions a fresh one — the safe outcome either way.
+    function generateBrowserFingerprint() {
+      const hw = generateHardwareFingerprint();
+      let salt = null;
+      try {
+        salt = localStorage.getItem('st_install_id');
+        if (!salt) {
+          const buf = new Uint8Array(16);
+          (window.crypto || window.msCrypto).getRandomValues(buf);
+          salt = Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+          localStorage.setItem('st_install_id', salt);
+        }
+      } catch (e) { salt = null; }
+      return salt ? hw + '-' + salt.slice(0, 16) : hw;
     }
 
     // ==================== Boot ====================
@@ -1383,8 +1415,11 @@
       data.client_version = PLAYER_VERSION;
       data.platform = browserPlatform();
       data.contract_version = 'v4';
-      // Browser fingerprint (survives localStorage clear)
+      // Device identity. `fingerprint` is per-INSTALL and is what the server matches on.
+      // `hw_fingerprint` is the old hardware-only value, sent alongside so a panel whose storage
+      // was wiped can still be rematched to its row — but only when that value is unambiguous.
       data.fingerprint = generateBrowserFingerprint();
+      data.hw_fingerprint = generateHardwareFingerprint();
       console.log(`[register] device_id=${data.device_id || 'none'}, has_token=${!!data.device_token}, token_len=${data.device_token?.length || 0}, paired=${config.paired}, pairing_code=${data.pairing_code || 'none'}`);
       socket.emit('device:register', data);
     }
