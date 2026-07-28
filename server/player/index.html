@@ -645,12 +645,39 @@
 
     // Function used by connect button and auto-connect
     let autoContinueTimer;
-    function connectBtnFunc() {
-        if (autoContinueTimer) {
-          clearInterval(autoContinueTimer);
-          autoContinueTimer = null;
-          document.getElementById('connectBtn').textContent = _t('connect');
+
+    // Shared "editable URL + short countdown" behaviour. Used on first boot AND on
+    // recovery (server unpaired / rejected us). A display panel usually has no keyboard
+    // or pointer, so anything that WAITS for a click is a dead end there — the countdown
+    // is what lets an input-less screen heal itself. The field stays editable the whole
+    // time for the case where someone IS standing there with a remote and needs to point
+    // the player somewhere else; typing cancels the countdown so it can't yank the form
+    // out from under them mid-edit.
+    function cancelAutoContinue() {
+      if (!autoContinueTimer) return;
+      clearInterval(autoContinueTimer);
+      autoContinueTimer = null;
+      document.getElementById('connectBtn').textContent = _t('connect');
+    }
+    function startAutoContinue(seconds) {
+      cancelAutoContinue();
+      let countdown = seconds;
+      const connectBtn = document.getElementById('connectBtn');
+      connectBtn.disabled = false;
+      connectBtn.textContent = `${_t('connect')} (${countdown})`;
+      autoContinueTimer = setInterval(() => {
+        countdown--;
+        if (countdown > 0) {
+          connectBtn.textContent = `${_t('connect')} (${countdown})`;
+        } else {
+          cancelAutoContinue();
+          connectBtnFunc();
         }
+      }, 1000);
+    }
+
+    function connectBtnFunc() {
+        cancelAutoContinue();
         unlockAudio();
         const url = document.getElementById('serverUrl').value.trim().replace(/\/$/, '');
         if (!url) return;
@@ -728,29 +755,7 @@
       }
     } else {
       // Auto-Continue after 5s if not configured. If user interacts with form (typing in the box), stop the timer.
-      
-      let countdown = 5;
-      const connectBtn = document.getElementById('connectBtn');
-
-      connectBtn.textContent = `${_t('connect')} (${countdown})`;
-
-      autoContinueTimer = setInterval(() => {
-        countdown--;
-        if (countdown > 0) {
-          connectBtn.textContent = `${_t('connect')} (${countdown})`;
-        } else {
-          clearInterval(autoContinueTimer);
-          connectBtn.textContent = _t('connect');
-          connectBtnFunc()
-        }
-      }, 1000);
-
-      document.getElementById('serverUrl').addEventListener('input', () => {
-        if (countdown > 0) {
-          clearInterval(autoContinueTimer);
-          connectBtn.textContent = _t('connect');
-        }
-      });
+      startAutoContinue(5);
     }
     } // #104: end preview-mode gate (else branch wrapping the normal boot)
 
@@ -787,6 +792,10 @@
     }
 
     document.getElementById('connectBtn').onclick = connectBtnFunc;
+    // Bound once, not per countdown: startAutoContinue() can run more than once in a
+    // session (first boot, then again if the server unpairs us), and re-binding here
+    // would stack a listener each time.
+    document.getElementById('serverUrl').addEventListener('input', cancelAutoContinue);
 
     // ==================== #104 Device-free preview ====================
     // #104: device-free dashboard preview. Renders EITHER a draft playlist
@@ -1044,29 +1053,37 @@
         if (showIdle) showStatus('Waiting for content...');
       });
 
-      socket.on('device:unpaired', () => {
-        console.warn('Device not found on server — clearing credentials');
+      // Server no longer accepts our identity (row deleted, or token rejected). Drop the
+      // stale credentials and get a NEW pairing code on screen without anyone touching the
+      // panel: config.serverUrl is known-good — we are talking to that server right now —
+      // so there is nothing for a human to re-enter. The old code showed the URL form and
+      // HID the pairing section, which on a screen-only display is a dead end: it asks for
+      // typing that cannot happen, and hides the one thing that would rescue it. Recovery
+      // then needed a physical reload. The Android player already does this correctly
+      // (ProvisioningActivity "repair mode"); this brings the web player in line.
+      function enterRepairMode(message) {
         delete config.deviceId;
         delete config.deviceToken;
         config.paired = false;
         saveConfig(config);
-        savePlaylistCache([]);
         document.getElementById('setupScreen').style.display = 'flex';
-        document.getElementById('urlForm').style.display = 'block';
-        document.getElementById('pairingSection').style.display = 'none';
-        document.getElementById('setupStatus').textContent = 'Device was removed from server. Please reconnect.';
+        document.getElementById('urlForm').style.display = 'block';   // still editable
+        document.getElementById('pairingSection').style.display = 'none'; // until a code arrives
+        document.getElementById('setupStatus').textContent = message;
+        // Reconnecting re-registers with no device_id, so the server issues a fresh pairing
+        // code and the device:registered handler reveals pairingSection.
+        startAutoContinue(10);
+      }
+
+      socket.on('device:unpaired', () => {
+        console.warn('Device not found on server — clearing credentials');
+        savePlaylistCache([]);
+        enterRepairMode('Device was removed from the server. Re-pairing…');
       });
 
       socket.on('device:auth-error', (data) => {
         console.warn('Device auth rejected:', data?.error || 'unknown');
-        delete config.deviceId;
-        delete config.deviceToken;
-        config.paired = false;
-        saveConfig(config);
-        document.getElementById('setupScreen').style.display = 'flex';
-        document.getElementById('urlForm').style.display = 'block';
-        document.getElementById('pairingSection').style.display = 'none';
-        document.getElementById('setupStatus').textContent = 'Authentication failed. Please re-pair this device.';
+        enterRepairMode('This device needs to be re-paired. Getting a new code…');
       });
 
       socket.on('device:playlist-update', (data) => {
