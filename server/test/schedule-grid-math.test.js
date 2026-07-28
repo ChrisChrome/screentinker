@@ -127,6 +127,34 @@ test('a whole day still fits a laptop screen', async () => {
   assert.ok(24 * G.HOUR_PX <= 1100, `full day is ${24 * G.HOUR_PX}px`);
 });
 
+test('MOBILE: touch arms by HOLDING, a mouse arms by moving', async () => {
+  // The two cannot share a rule. A browser decides at touch-start whether a gesture scrolls the
+  // page, so a touch drag that only declares itself after the finger moves has already lost — the
+  // page scrolls and the pointer stream is cancelled. That is exactly why the first version did
+  // nothing on a phone: it set touch-action only AFTER the move threshold.
+  assert.equal(G.dragArmMode('touch'), 'longpress');
+  assert.equal(G.dragArmMode('mouse'), 'immediate');
+  assert.equal(G.dragArmMode('pen'), 'immediate');
+  assert.equal(G.dragArmMode(undefined), 'immediate', 'unknown input behaves like a mouse');
+});
+
+test('the hold is long enough to mean intent, short enough not to feel stuck', async () => {
+  assert.ok(G.LONG_PRESS_MS >= 250 && G.LONG_PRESS_MS <= 600, `${G.LONG_PRESS_MS}ms`);
+});
+
+test('a tap with no drag still yields a sensible slot', async () => {
+  // On a phone this is the only create gesture — dragging a range with a finger is awkward.
+  assert.equal(G.DEFAULT_NEW_MIN, 60);
+  const r = G.clampRange(9 * 60, 9 * 60 + G.DEFAULT_NEW_MIN);
+  assert.equal(r.endMin - r.startMin, 60);
+});
+
+test('a tap late in the day does not produce an invalid slot', async () => {
+  const start = 23 * 60 + 30;
+  const r = G.clampRange(start, Math.min(start + G.DEFAULT_NEW_MIN, G.DAY_MIN));
+  assert.ok(r.endMin <= G.DAY_MIN && r.endMin > r.startMin);
+});
+
 test('the drag readout is human, not 24h minutes', async () => {
   assert.equal(G.formatRange(540, 630), '9:00 AM – 10:30 AM');
   assert.equal(G.formatRange(0, 45), '12:00 AM – 12:45 AM');

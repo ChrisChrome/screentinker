@@ -4,6 +4,7 @@ import { t } from '../i18n.js';
 import {
   HOUR_PX, pxToMinutes, minutesToPx, rangeFromDrag, moveRange, resizeRange,
   toLocalStamp, formatRange, canMoveAcrossDays, editsWholeSeries, isDrag,
+  dragArmMode, LONG_PRESS_MS, DEFAULT_NEW_MIN,
 } from '../lib/schedule-grid.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
@@ -370,6 +371,24 @@ export async function render(container) {
       } else {
         dragState = { kind: 'create', anchorMin: startMin, refCell: cell, moved: false, origin, dayIdx: dayColumnOf(cell) };
       }
+      // A touchscreen cannot arm the way a mouse does. The browser decides at touch-START
+      // whether this gesture scrolls the page; by the time a finger has moved far enough to look
+      // like a drag, scrolling has already begun and the pointer stream is cancelled. So on touch
+      // we wait for a HOLD, and only then take the gesture over. Everything else still scrolls
+      // normally, which is what a phone user expects a calendar to do.
+      dragState.armMode = dragArmMode(e.pointerType);
+      if (dragState.armMode === 'longpress') {
+        dragState.armed = false;
+        dragState.longPressTimer = setTimeout(() => {
+          if (!dragState) return;
+          dragState.armed = true;
+          cal.style.touchAction = 'none';       // taken over — now the page must NOT scroll
+          if (dragState.block) dragState.block.style.opacity = '0.35';
+          if (navigator.vibrate) { try { navigator.vibrate(10); } catch (_) { /* optional */ } }
+        }, LONG_PRESS_MS);
+      } else {
+        dragState.armed = true;
+      }
       cal.setPointerCapture?.(e.pointerId);
     });
 
@@ -377,8 +396,15 @@ export async function render(container) {
       if (!dragState) return;
       // Ignore the jitter of an ordinary click. Until the pointer has actually travelled, this
       // is still a click and must stay one, or click-to-edit never fires.
+      const travelled = isDrag(e.clientX - dragState.origin.x, e.clientY - dragState.origin.y);
+      // Touch that moves BEFORE the hold completes is the user scrolling. Let go of it entirely
+      // rather than fighting the browser for the gesture.
+      if (dragState.armMode === 'longpress' && !dragState.armed) {
+        if (travelled) { clearTimeout(dragState.longPressTimer); dragState = null; clearGhost(); }
+        return;
+      }
       if (!dragState.moved) {
-        if (!isDrag(e.clientX - dragState.origin.x, e.clientY - dragState.origin.y)) return;
+        if (!travelled) return;
         dragState.moved = true;
         cal.style.touchAction = 'none';                 // stop a touch drag scrolling the page
         cal.style.cursor = dragState.kind === 'resize' ? 'ns-resize' : 'grabbing';
@@ -412,9 +438,20 @@ export async function render(container) {
       const st = dragState;
       dragState = null;
       clearGhost();
+      if (st) clearTimeout(st.longPressTimer);
       resetDragChrome(st);
       try { cal.releasePointerCapture?.(e.pointerId); } catch (_) { /* already released */ }
-      if (!st || !st.pending || !st.moved) { setTimeout(() => { if (!dragState) { /* let click through */ } }, 0); return; }
+      if (!st) return;
+      // A tap or click on empty space with no drag still means "put something here" — and on a
+      // phone it is the ONLY create gesture, since dragging out a range with a finger is awkward.
+      if (!st.moved && st.kind === 'create' && st.anchorMin != null) {
+        const d0 = new Date(currentWeekStart);
+        d0.setDate(d0.getDate() + (st.dayIdx || 0));
+        const start = Math.floor(st.anchorMin / 15) * 15;
+        openCreateAt(d0, start, Math.min(start + DEFAULT_NEW_MIN, 24 * 60));
+        return;
+      }
+      if (!st.pending || !st.moved) return;   // a tap on a block: let the click handler edit it
       const { range, day } = st.pending;
       const dayDate = new Date(currentWeekStart);
       dayDate.setDate(dayDate.getDate() + day);

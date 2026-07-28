@@ -82,6 +82,22 @@ export function formatRange(startMin, endMin) {
   return `${fmt(startMin)} – ${fmt(endMin)}`;
 }
 
+// How long a touch must be held before it becomes a drag. A touchscreen cannot use the mouse
+// rule: the browser decides at touch-START whether the gesture is a page scroll, so a drag that
+// only declares itself after the finger moves has already lost — the page scrolls and the pointer
+// stream is cancelled. Holding still first is the signal that this is a drag and not a scroll.
+export const LONG_PRESS_MS = 350;
+
+// Touch arms by holding; a mouse or pen arms as soon as it has travelled. Returning the mode
+// rather than branching on pointerType at each site keeps the two paths from drifting apart.
+export function dragArmMode(pointerType) {
+  return pointerType === 'touch' ? 'longpress' : 'immediate';
+}
+
+// A default slot for "I tapped a time" rather than dragging one out — the whole gesture on a
+// phone, where dragging out a range is awkward.
+export const DEFAULT_NEW_MIN = 60;
+
 // Has the pointer moved far enough to mean "drag" rather than "click"?
 export function isDrag(dx, dy, threshold = DRAG_THRESHOLD_PX) {
   return Math.hypot(dx, dy) >= threshold;
