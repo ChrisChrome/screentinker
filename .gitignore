@@ -55,3 +55,7 @@ shared/Transitions/demo.html
 audit/
 .mcp.json
 **/.mcp.json
+
+# Local SQLite artifacts (any extension the tooling might produce)
+*.sqlite
+*.sqlite3

@@ -462,8 +462,19 @@ module.exports = function setupDeviceSocket(io) {
         try {
           const existing = db.prepare('SELECT * FROM device_fingerprints WHERE fingerprint = ?').get(fingerprint);
           if (existing) {
+            // device_id arrives from the client and can name a row that no longer exists (a
+            // reconnect after the device was deleted — the same case that emits device:unpaired).
+            // device_fingerprints.device_id has an FK to devices(id), so writing a stale id
+            // throws, the catch below swallows it, and the WHOLE fingerprint block is abandoned
+            // — including the #150 settings restore that a post-delete re-pair depends on.
+            // Prefer the incoming id, fall back to what is already stored, and only ever write
+            // an id that still resolves. Same guard as the INSERT path below; this UPDATE was
+            // missed, and it is the one that actually fires (37 FK failures on prod).
+            const known = (id) => !!(id && db.prepare('SELECT 1 FROM devices WHERE id = ?').get(id));
+            const fpDeviceId = known(device_id) ? device_id
+              : (known(existing.device_id) ? existing.device_id : null);
             db.prepare("UPDATE device_fingerprints SET last_seen = strftime('%s','now'), device_id = ? WHERE fingerprint = ?")
-              .run(device_id || existing.device_id, fingerprint);
+              .run(fpDeviceId, fingerprint);
             // If this fingerprint was previously registered to a different device, block the new registration
             if (!device_id && existing.device_id && pairing_code) {
               // Someone reinstalled - link them back to existing device
