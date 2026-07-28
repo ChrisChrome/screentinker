@@ -1,6 +1,25 @@
 // English translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  // Getting-started checklist (components/getting-started.js). Driven by real account state,
+  // not a one-time flag, so it can tell someone what is actually left to do.
+  'gs.title': 'Get your first screen live',
+  'gs.progress': '{done} of {total} done',
+  'gs.dismiss': 'Hide',
+  'gs.device.title': 'Connect a screen',
+  'gs.device.desc': 'Open the player on your display, then enter the code it shows.',
+  'gs.device.cta': 'Add screen',
+  'gs.content.title': 'Add some content',
+  'gs.content.desc': 'Upload images or video, or add a web page or widget.',
+  'gs.content.cta': 'Add content',
+  'gs.playlist.title': 'Put content in a playlist',
+  'gs.playlist.desc': 'A playlist is the running order your screen loops through.',
+  'gs.playlist.cta': 'New playlist',
+  'gs.assign.title': 'Send it to the screen',
+  'gs.assign.desc': 'Open the screen and assign the playlist — it starts playing straight away.',
+  'gs.assign.cta': 'Assign',
+  'gs.reopen': 'Show getting-started checklist',
+
   // #zone-orphan dashboard warnings
   'device.pl_item.orphan_zone': 'Zone from a different layout — reassign',
   'device.pl_item.orphan_zone_tip': "This item's zone isn't part of the device's current layout. It still plays (recovered into the largest zone), but reassign it to a zone in this layout.",

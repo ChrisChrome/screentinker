@@ -3,6 +3,7 @@ import { on, off, requestScreenshot } from '../socket.js';
 import { showToast } from '../components/toast.js';
 import { esc, livenessBadge } from '../utils.js';
 import { t, tn } from '../i18n.js';
+import * as gettingStarted from '../components/getting-started.js';
 import { showDeviceOwnerQRModal } from '../components/device-owner-qr-modal.js';
 
 const DESTRUCTIVE_COMMANDS = ['reboot', 'shutdown'];
@@ -273,7 +274,8 @@ export function render(container) {
       </button>
       <button class="btn btn-sm" id="clearSelectionBtn">Clear</button>
     </div>
-    <div id="dashStats" class="dash-stats-row" style="display:flex;gap:12px;margin-bottom:16px"></div>
+    <div id="gettingStarted"></div>
+      <div id="dashStats" class="dash-stats-row" style="display:flex;gap:12px;margin-bottom:16px"></div>
     <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
       <input type="text" id="deviceSearch" class="input" placeholder="${t('dashboard.search')}" style="max-width:300px">
       <select id="deviceFilter" class="input" style="width:180px;background:var(--bg-input)">
@@ -521,6 +523,23 @@ async function loadDashboard() {
     const seen = new Map();
     for (const d of rawDevices) seen.set(d.id, d);
     const devices = Array.from(seen.values());
+
+    // Getting started. Skipped entirely once put away or finished, so the extra content
+    // lookup only ever happens for an account that still has something left to do.
+    const gsHost = document.getElementById('gettingStarted');
+    if (gsHost && !gettingStarted.isDismissed()) {
+      try {
+        const content = await api.getContent();
+        const state = gettingStarted.computeSteps({ devices, content: content || [], playlists: playlists || [] });
+        if (state.complete) gettingStarted.dismiss();   // finished: never costs a fetch again
+        gettingStarted.render(gsHost, state, {
+          onAction: (a) => {
+            if (a === 'add-device') { document.getElementById('addDeviceBtn')?.click(); return true; }
+            return false;
+          },
+        });
+      } catch (_) { /* guidance must never break the dashboard */ }
+    }
 
     // Stats
     const online = devices.filter(d => d.status === 'online').length;
