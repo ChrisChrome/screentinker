@@ -395,16 +395,50 @@
         fetch(url, { method: 'POST', body, headers: { 'Content-Type': 'application/json' }, keepalive: true }).catch(() => {});
       } catch (e) { /* a dying page must never throw */ }
     }
+    // A crash message on its own is not actionable. Three players died with
+    // "Cannot set properties of null (setting 'textContent')" and it could not be traced: the
+    // message names no file, and every candidate line in the CURRENT player was ruled out by
+    // inspection, which points at an older cached build still being served by the service
+    // worker — precisely the case where guessing from source is worthless. The error event
+    // already carries filename/lineno/colno; it was simply being discarded. Keep it.
+    //
+    // Deliberately compact: the server stores 200 chars (liveness.sanitizeExitReason), so this
+    // sends the message plus ONE location rather than a whole stack that would be truncated
+    // mid-frame. Only the basename is sent — the origin is already known from the device.
+    function crashDetail(message, file, line, col) {
+      let out = String(message || 'error');
+      try {
+        if (file) {
+          const base = String(file).split('/').pop().split('?')[0] || String(file);
+          out += ` @ ${base}:${line || 0}:${col || 0}`;
+        }
+      } catch (e) { /* a dying page must never throw */ }
+      return out.slice(0, 200);
+    }
     window.addEventListener('error', (ev) => {
       // ONLY a real uncaught script error is a crash — a resource (img/script/link) load failure is NOT.
       if (!ev) return;
       const isResourceError = ev.target && ev.target !== window && (ev.target.src || ev.target.href);
       if (isResourceError) return;
-      sendExitBeacon('crashed', (ev.error && ev.error.message) || ev.message || 'error');
+      // A cross-origin script reports a bare "Script error." with no filename or line. Say so
+      // explicitly rather than emitting a location of :0:0 that reads like a real answer.
+      const msg = (ev.error && ev.error.message) || ev.message || 'error';
+      sendExitBeacon('crashed', ev.filename
+        ? crashDetail(msg, ev.filename, ev.lineno, ev.colno)
+        : crashDetail(msg + ' (no location — cross-origin script)'));
     });
     window.addEventListener('unhandledrejection', (ev) => {
       const r = ev && ev.reason;
-      sendExitBeacon('crashed', (r && (r.message || String(r))) || 'unhandledrejection');
+      const msg = (r && (r.message || String(r))) || 'unhandledrejection';
+      // A rejection carries no filename/lineno, so take the first stack frame instead.
+      let frame = null;
+      try {
+        if (r && typeof r.stack === 'string') {
+          const l = r.stack.split('\n').find(x => /:\d+:\d+/.test(x));
+          if (l) frame = l.trim().replace(/^at\s+/, '').slice(0, 120);
+        }
+      } catch (e) { /* never throw here */ }
+      sendExitBeacon('crashed', (frame ? `${msg} @ ${frame}` : String(msg)).slice(0, 200));
     });
     window.addEventListener('pagehide', (ev) => {
       if (ev && ev.persisted) return;   // bfcache SUSPEND (may restore) — NOT a death; watchdog owns it
