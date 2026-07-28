@@ -332,6 +332,15 @@ const migrations = [
   "ALTER TABLE devices ADD COLUMN system_brightness REAL",
   "ALTER TABLE devices ADD COLUMN window_brightness REAL",
   "ALTER TABLE devices ADD COLUMN screen_off_timeout_ms INTEGER",
+  // Offline alerting is once per OUTAGE, not once per dedup window. This stores the
+  // last_heartbeat value an offline alert was already sent for. Because a device that
+  // reconnects advances last_heartbeat, the marker self-invalidates on recovery — a new
+  // outage gets a new alert with no cleanup job and no state to reset. Being on the row
+  // (not in memory) is the point: a restart used to re-alert every offline device.
+  // NOTE: deliberately no backfill UPDATE in this array — statements here re-run on every
+  // boot, so an `IS NULL` backfill would silently swallow the first alert of any outage
+  // that began since the last restart. The one-time backfill is below, in schema_migrations.
+  "ALTER TABLE devices ADD COLUMN offline_alert_heartbeat INTEGER",
   // Backfill a unique 6-digit PIN for already-paired devices that predate the
   // settings_pin column (their next reconnect re-sends device:paired with it, so
   // the existing fleet isn't locked out of the on-device menu). Idempotent: the
@@ -448,6 +457,20 @@ try { db.prepare("INSERT OR IGNORE INTO schema_migrations (id) VALUES ('phase7_p
 
 // Public API tokens: api_tokens table is created idempotently by schema.sql.
 try { db.prepare("INSERT OR IGNORE INTO schema_migrations (id) VALUES ('phase8_api_tokens')").run(); } catch { /* schema_migrations not ready yet */ }
+
+// One-time: treat every CURRENTLY-offline device as already-alerted for its outage, so
+// upgrading to per-outage alerting doesn't itself send a round of "your display is
+// offline" mail for outages the owner was already told about. Must run exactly once —
+// hence schema_migrations rather than the migrations array, which re-runs every boot.
+try {
+  const ID = 'offline_alert_per_outage_backfill';
+  if (!db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(ID)) {
+    const n = db.prepare(`UPDATE devices SET offline_alert_heartbeat = last_heartbeat
+                          WHERE status = 'offline' AND last_heartbeat IS NOT NULL`).run().changes;
+    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(ID);
+    if (n > 0) console.log(`[migrate] offline-alert backfill: ${n} device(s) marked as already-alerted`);
+  }
+} catch { /* schema_migrations or column not ready yet; next boot retries */ }
 
 // Fix assignments table: make content_id nullable (SQLite requires table rebuild)
 try {

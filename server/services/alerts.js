@@ -1,10 +1,11 @@
 const { db } = require('../db/database');
 const { sendEmail } = require('./email');
 
-// Per-(alert_type, target_id) dedup. In-memory Map; restarts reset it, which
-// at current alert volume is fine - worst case is one duplicate alert after
-// a server restart. Future alert types (payment_failed, plan_limit_hit, etc.)
-// share this same mechanism via the alertType axis.
+// Per-(alert_type, target_id) rate limit. In-memory Map; restarts reset it. For
+// device_offline that reset no longer causes duplicate mail - repeat suppression within
+// one outage lives on devices.offline_alert_heartbeat, which survives a restart. What
+// this Map still buys is a floor on how often a FLAPPING target can alert. Future alert
+// types (payment_failed, plan_limit_hit, etc.) share it via the alertType axis.
 const alertLastSent = new Map();
 const DEFAULT_DEDUP_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -25,6 +26,9 @@ async function checkOfflineDevices(io) {
   const now = Math.floor(Date.now() / 1000);
   const threshold = 300; // 5 minutes offline
 
+  // A device that is still offline is not a new event. The per-outage marker below is
+  // keyed on last_heartbeat, so SQL can exclude everything already alerted for - the
+  // rows that come back are genuinely un-alerted outages.
   const offlineDevices = db.prepare(`
     SELECT d.id, d.name, d.user_id, d.workspace_id, d.last_heartbeat, d.status,
            u.email as owner_email, u.name as owner_name, u.email_alerts
@@ -32,23 +36,35 @@ async function checkOfflineDevices(io) {
     LEFT JOIN users u ON d.user_id = u.id
     WHERE d.status = 'offline' AND d.last_heartbeat IS NOT NULL
     AND (? - d.last_heartbeat) > ?
+    AND (d.offline_alert_heartbeat IS NULL OR d.offline_alert_heartbeat != d.last_heartbeat)
   `).all(now, threshold);
 
   for (const device of offlineDevices) {
-    // Dedup: skip if we've alerted on this device within the window
-    if (!shouldSendAlert('device_offline', device.id)) continue;
-
     // Skip if user has alerts disabled
     if (!device.email_alerts) continue;
 
-    // Long-offline cutoff: stop nagging about devices that have been offline
-    // for >24 hours. They're not a notification-worthy event anymore - either
-    // the user knows, or the device is abandoned. Spares ~15 chronic-offline
-    // prod devices from re-firing every 2-hour dedup window.
+    // Long-offline cutoff: never open an outage alert for a device that was already
+    // dark for >24h when we first saw it - it's not news. This no longer bounds
+    // repeats (the per-outage marker does that); it bounds the FIRST alert, which is
+    // what stops a restart from mailing about long-abandoned devices.
     const offlineHours = (now - device.last_heartbeat) / 3600;
     if (offlineHours > 24) continue;
 
     if (device.owner_email) {
+      // Two guards doing two different jobs:
+      //   - the SQL marker above stops repeats WITHIN one outage (the actual spam bug)
+      //   - this window stops a FLAPPING device turning each short outage into its own
+      //     mail. It is checked before the marker is written, so a rate-limited alert is
+      //     merely deferred to a later tick rather than marked-and-dropped.
+      if (!shouldSendAlert('device_offline', device.id)) continue;
+
+      // Mark the outage BEFORE sending. sendEmail() swallows its own transport errors,
+      // so a failed send is indistinguishable from a good one here; marking first means
+      // a broken mailbox costs one lost alert rather than one every 60s forever. This is
+      // a spam fix - when the two failure modes trade off, err toward not sending.
+      db.prepare('UPDATE devices SET offline_alert_heartbeat = ? WHERE id = ?')
+        .run(device.last_heartbeat, device.id);
+
       const offlineMinutes = Math.floor((now - device.last_heartbeat) / 60);
       const subject = `Display Offline: ${device.name}`;
       const body = `Your display "${device.name}" has been offline for ${offlineMinutes} minutes.\n\nLast heartbeat: ${new Date(device.last_heartbeat * 1000).toLocaleString()}\n\nCheck your device and network connection.\n\n- ScreenTinker`;
@@ -75,7 +91,9 @@ async function checkOfflineDevices(io) {
     }
   }
 
-  // Clear notifications for devices that came back online
+  // Recovery: drop the flap window so a device that genuinely comes back and later fails
+  // again alerts immediately. The durable per-outage marker needs no clearing here - a
+  // reconnect advances last_heartbeat, which invalidates it by construction.
   const onlineDevices = db.prepare("SELECT id FROM devices WHERE status = 'online'").all();
   for (const device of onlineDevices) {
     alertLastSent.delete(`device_offline:${device.id}`);
@@ -113,3 +131,7 @@ function sendEmailAlert(to, name, { subject, body }) {
 }
 
 module.exports = { startAlertService, sendEmailAlert };
+
+// Test seam: drive one tick directly, and reach the in-memory window so a restart
+// (which is just "that Map is empty again") can be simulated without a real restart.
+module.exports.__test = { checkOfflineDevices, alertLastSent };
