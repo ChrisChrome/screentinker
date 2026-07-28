@@ -9,9 +9,18 @@ import {
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
 
+// Teardown registered during render (resize listener, etc). Declared here rather than beside
+// cleanup() so it is initialised before any render can push to it.
+const cleanupFns = [];
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 // Where the week view opens when nothing is scheduled yet — the start of a working day.
 const DEFAULT_SCROLL_HOUR = 8;
+// Below this the week grid stops being usable: seven columns in a phone-width window leaves
+// ~50px each, too narrow to read a name or aim a finger at, and the horizontal scroll it forces
+// fights the vertical drag. Narrow screens get ONE day at a time instead.
+const NARROW_PX = 700;
+const isNarrow = () => window.innerWidth < NARROW_PX;
+let focusedDay = new Date().getDay();   // which single day a narrow screen is showing
 
 function esc(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
 
@@ -50,6 +59,7 @@ export async function render(container) {
       <button class="btn btn-secondary btn-sm" id="nextWeek">${t('schedule.next_week')}</button>
       <button class="btn btn-primary btn-sm" id="addScheduleBtn">${t('schedule.add_schedule')}</button>
     </div>
+    <div id="dayStrip" style="display:none;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>
     <!-- Legend: only meaningful in all-screens mode, where blocks from different targets
          share one grid. Hidden for a single screen so that view stays uncluttered. -->
     <div id="schedLegend" style="display:none;flex-wrap:wrap;gap:10px;margin:-6px 0 14px;font-size:12px"></div>
@@ -213,9 +223,17 @@ export async function render(container) {
     const events = await API(`/schedules/week?date=${currentWeekStart.toISOString()}&${scope}`);
 
     const cal = document.getElementById('calendar');
-    let html = '<div style="background:var(--bg-secondary);border-bottom:1px solid var(--border)"></div>';
+    // Narrow screens render ONE day. Seven columns in a phone-width window leaves ~50px each —
+    // too narrow to read a name or aim a finger at — and the horizontal scroll it forces fights
+    // the vertical drag gesture.
+    const narrow = isNarrow();
+    const visibleDays = narrow ? [focusedDay] : [0, 1, 2, 3, 4, 5, 6];
+    // The template must match how many columns are actually emitted, or the cells wrap or stretch.
+    cal.style.gridTemplateColumns = `52px repeat(${visibleDays.length},1fr)`;
+    cal.style.minWidth = narrow ? '0' : '800px';
+    let html = '<div style="background:var(--bg-secondary);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:6"></div>';
 
-    for (let d = 0; d < 7; d++) {
+    for (const d of visibleDays) {
       const date = new Date(currentWeekStart);
       date.setDate(date.getDate() + d);
       const isToday = date.toDateString() === new Date().toDateString();
@@ -227,7 +245,7 @@ export async function render(container) {
 
     for (const h of HOURS) {
       html += `<div style="padding:4px 8px;font-size:10px;color:var(--text-muted);border-bottom:1px solid var(--border);text-align:right">${h === 0 ? t('schedule.hour_12am') : h < 12 ? h + t('schedule.hour_am') : h === 12 ? t('schedule.hour_12pm') : (h - 12) + t('schedule.hour_pm')}</div>`;
-      for (let d = 0; d < 7; d++) {
+      for (const d of visibleDays) {
         html += `<div style="position:relative;min-height:${HOUR_PX}px;height:${HOUR_PX}px;border-bottom:1px solid var(--border);border-left:1px solid var(--border);background:var(--bg-primary)" data-hour="${h}" data-day="${d}"></div>`;
       }
     }
@@ -289,13 +307,31 @@ export async function render(container) {
       cell.appendChild(block);
     });
 
+    // Day strip: only meaningful when the grid is showing a single day.
+    const strip = document.getElementById('dayStrip');
+    if (strip) {
+      strip.style.display = narrow ? 'flex' : 'none';
+      if (narrow) {
+        strip.innerHTML = DAYS.map((d, i) => {
+          const dt = new Date(currentWeekStart); dt.setDate(dt.getDate() + i);
+          const on = i === focusedDay;
+          return `<button class="btn btn-sm" data-day-pick="${i}" style="flex:1;min-width:40px;padding:6px 4px;font-size:11px;
+            ${on ? 'background:var(--accent,#3B82F6);color:#fff;border-color:transparent' : ''}">${d}<br>${dt.getDate()}</button>`;
+        }).join('');
+        strip.querySelectorAll('[data-day-pick]').forEach((b) => {
+          b.addEventListener('click', () => { focusedDay = Number(b.dataset.dayPick); loadCalendar(); });
+        });
+      }
+    }
+
     attachGridInteractions(cal);
 
     // Open on the working day, not on midnight. A 24-hour grid that starts at 12am shows a new
     // user four hours of empty night and hides the hours anything is actually scheduled in.
     // Only on the first render, so it never yanks the view back while someone is scrolling.
     const scroller = document.getElementById('calendarScroll');
-    if (scroller && !scroller.dataset.scrolled) {
+    if (scroller && (!scroller.dataset.scrolled || scroller.dataset.layout !== (narrow ? 'day' : 'week'))) {
+      scroller.dataset.layout = narrow ? 'day' : 'week';
       scroller.dataset.scrolled = '1';
       // Earliest scheduled hour if there is one, else the start of a normal working day.
       const earliest = events.reduce((min, ev) => {
@@ -697,7 +733,30 @@ export async function render(container) {
   document.getElementById('prevWeek').onclick = () => { currentWeekStart.setDate(currentWeekStart.getDate() - 7); loadCalendar(); };
   document.getElementById('nextWeek').onclick = () => { currentWeekStart.setDate(currentWeekStart.getDate() + 7); loadCalendar(); };
 
+  // Re-render across the narrow/wide boundary only — resizing within one layout must not throw
+  // away a scroll position or an open drag for nothing.
+  // Rotating a phone crosses the breakpoint in both directions: ~390px portrait is one day,
+  // ~844px landscape is the full week. Rotation also fires several resize events in a burst, and
+  // on iOS the dimensions are briefly the OLD ones when orientationchange arrives — so settle
+  // first and then decide, rather than re-rendering against a size that is about to change again.
+  let wasNarrow = isNarrow();
+  let settleTimer = null;
+  const onViewportChange = () => {
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      const now = isNarrow();
+      if (now !== wasNarrow) { wasNarrow = now; loadCalendar(); }
+    }, 150);
+  };
+  window.addEventListener('resize', onViewportChange);
+  window.addEventListener('orientationchange', onViewportChange);
+  cleanupFns.push(() => {
+    clearTimeout(settleTimer);
+    window.removeEventListener('resize', onViewportChange);
+    window.removeEventListener('orientationchange', onViewportChange);
+  });
+
   loadCalendar();
 }
 
-export function cleanup() {}
+export function cleanup() { while (cleanupFns.length) { try { cleanupFns.pop()(); } catch (_) { /* */ } } }
