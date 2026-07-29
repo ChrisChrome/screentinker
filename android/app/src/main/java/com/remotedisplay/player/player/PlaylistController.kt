@@ -84,8 +84,36 @@ class PlaylistController(
 
     val isPlaying: Boolean get() = isRunning && currentIndex >= 0
 
-    /** Video wall: true on followers (suppress auto-advance; leader drives the index). */
-    fun setWallFollower(b: Boolean) { wallFollower = b }
+    /**
+     * Enter/leave follower mode (video wall follower, or group sync). While it is ON no advance
+     * timer is ever armed — playCurrentItem() skips scheduleAdvance() and the wall/group tick owns
+     * the index instead.
+     *
+     * That makes BOTH edges stateful, and both were being ignored:
+     *  - leaving, the flag was cleared but nothing re-armed the timer for the item already on
+     *    screen, so the playlist sat on one frame forever (until the app restarted). Unchecking
+     *    "sync" on a group froze every member showing an image.
+     *  - entering, a timer armed by the previous playCurrentItem() stayed live and would fire a
+     *    next() that fights the tick for the index.
+     *
+     * Video is exempt on the way out: it advances from its completion callback, which onVideoComplete
+     * already gates on this same flag.
+     */
+    fun setWallFollower(b: Boolean) {
+        val was = wallFollower
+        wallFollower = b
+        if (was == b) return
+        if (b) { cancelAdvance(); return }
+        val item = currentItem ?: return
+        val delay = FollowerExit.resumeDelayMs(
+            isRunning = isRunning,
+            isImageOrWidget = item.mimeType.startsWith("image/") || item.isWidget,
+            slotMs = slotMs(item),
+            elapsedMs = System.currentTimeMillis() - itemStartedAt
+        ) ?: return
+        Log.i("PlaylistController", "follower mode off — resuming self-advance in ${delay}ms")
+        scheduleAdvance(delay)
+    }
 
     /** Current playlist index (-1 if nothing is playing). */
     fun getIndex(): Int = currentIndex
@@ -494,5 +522,28 @@ class PlaylistController(
             )
         }
         return out
+    }
+}
+
+/**
+ * Pure decision for re-arming self-advance when follower mode (video wall / group sync) is turned
+ * off, extracted so it's unit-testable without a Handler or Android runtime — same seam pattern as
+ * TierLogic / ManagedLogic.
+ *
+ * Returns the delay to schedule, or null when nothing should be armed. The remaining slot is
+ * measured from when the item actually started, so leaving sync 8s into a 10s image advances in
+ * ~2s rather than restarting the full duration. A slot that already elapsed yields 0 and the
+ * caller's MIN_ADVANCE_MS backstop keeps it off a busy loop.
+ */
+object FollowerExit {
+    fun resumeDelayMs(
+        isRunning: Boolean,
+        isImageOrWidget: Boolean,
+        slotMs: Long,
+        elapsedMs: Long
+    ): Long? {
+        if (!isRunning) return null          // nothing is playing; playCurrentItem() will arm it
+        if (!isImageOrWidget) return null    // video advances from its completion callback
+        return (slotMs - elapsedMs).coerceAtLeast(0L)
     }
 }
