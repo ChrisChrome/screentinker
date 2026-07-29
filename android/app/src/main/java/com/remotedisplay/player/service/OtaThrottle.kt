@@ -75,6 +75,18 @@ object OtaThrottle {
         ) to report
     }
 
+    /**
+     * An operator pressed "force update" on THIS device. That is a far stronger signal than the
+     * 30-minute timer, so it hands the attempt budget back: a device parked in backoff (or one
+     * that already burned all three attempts on an install nobody accepted) tries again straight
+     * away instead of waiting out the window.
+     *
+     * Target version is kept — this is "try again now", not "forget what you were doing".
+     * backoffReported resets too, so if it caps out again the operator hears about it again;
+     * that report is per-decision, not once per lifetime.
+     */
+    fun onForcedCheck(state: State): State = state.copy(attempts = 0, backoffReported = false)
+
     /** A check found us already on the latest. True if there was pending OTA state to clear. */
     fun shouldClearOnUpToDate(state: State): Boolean = state.targetVersion.isNotEmpty()
 

@@ -745,8 +745,12 @@ class MainActivity : AppCompatActivity() {
                     startActivity(intent)
                 }
                 "update" -> {
-                    Log.i("MainActivity", "Force update check triggered")
-                    if (::updateChecker.isInitialized) updateChecker.checkForUpdate()
+                    // FORCED: an operator aimed this at ONE device and is watching the screen.
+                    // Ignores the backoff cap and the MDM stand-down, and reports the outcome back
+                    // — including "nothing to do", which used to return in silence and made a
+                    // working button look broken.
+                    Log.i("MainActivity", "Force update check triggered (operator)")
+                    if (::updateChecker.isInitialized) updateChecker.checkForUpdate(forced = true)
                 }
                 // #161 device-owner tooling: push + silently install an arbitrary APK from a URL.
                 "install_apk" -> {

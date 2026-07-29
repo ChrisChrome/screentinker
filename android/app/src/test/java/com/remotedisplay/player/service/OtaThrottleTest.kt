@@ -144,4 +144,50 @@ class OtaThrottleTest {
         assertEquals(MAX, s.attempts)
         assertTrue(s.backoffReported)
     }
+
+    // ---- force update: an operator pressed the button on THIS device ----------------------------
+
+    @Test fun THE_POINT_a_forced_check_un_parks_a_capped_device_immediately() {
+        val now = 1_000_000L
+        // Capped and well inside the backoff window: the timer would do nothing for ~24h.
+        val capped = OtaThrottle.State(targetVersion = V, attempts = MAX, lastAttemptAt = now, backoffReported = true)
+        assertEquals(OtaThrottle.Action.BACKOFF, OtaThrottle.onUpdateAvailable(capped, V, now + 60_000).second)
+
+        val forced = OtaThrottle.onForcedCheck(capped)
+        assertEquals(OtaThrottle.Action.ATTEMPT, OtaThrottle.onUpdateAvailable(forced, V, now + 60_000).second)
+    }
+
+    @Test fun forcing_keeps_the_target_it_is_try_again_not_start_over() {
+        val s = OtaThrottle.onForcedCheck(
+            OtaThrottle.State(targetVersion = V, attempts = MAX, lastAttemptAt = 5L, backoffReported = true))
+        assertEquals(V, s.targetVersion)
+        assertEquals(0, s.attempts)
+    }
+
+    @Test fun forcing_re_arms_the_backoff_report_so_a_second_cap_is_announced_again() {
+        // backoffReported is a once-per-decision latch, not once-per-lifetime: if the operator
+        // forces and it caps out AGAIN, that is news again.
+        val s = OtaThrottle.onForcedCheck(
+            OtaThrottle.State(targetVersion = V, attempts = MAX, lastAttemptAt = 5L, backoffReported = true))
+        assertFalse(s.backoffReported)
+        val relaunched = generateSequence(s) { OtaThrottle.onInstallLaunched(it, 10L).first }.elementAt(MAX)
+        assertEquals(MAX, relaunched.attempts)
+        assertTrue(OtaThrottle.onInstallLaunched(
+            OtaThrottle.State(targetVersion = V, attempts = MAX - 1, lastAttemptAt = 5L, backoffReported = false), 10L).second)
+    }
+
+    @Test fun forcing_gives_a_full_budget_not_a_single_shot() {
+        // After forcing, three attempts are available again before it re-caps.
+        var s = OtaThrottle.onForcedCheck(
+            OtaThrottle.State(targetVersion = V, attempts = MAX, lastAttemptAt = 0L, backoffReported = true))
+        var t = 1_000L
+        var launched = 0
+        repeat(MAX + 2) {
+            val (afterCheck, action) = OtaThrottle.onUpdateAvailable(s, V, t)
+            s = afterCheck
+            if (action == OtaThrottle.Action.ATTEMPT) { s = OtaThrottle.onInstallLaunched(s, t).first; launched++ }
+            t += 60_000
+        }
+        assertEquals(MAX, launched)
+    }
 }
