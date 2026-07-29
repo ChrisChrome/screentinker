@@ -1,6 +1,7 @@
 // Italian translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  'nav.members': 'Membri',
   'common.close': 'Chiudi',
   'switcher.manage_members': 'Gestisci membri',
   'switcher.rename': 'Rinomina spazio di lavoro',

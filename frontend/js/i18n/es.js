@@ -1,6 +1,7 @@
 // Spanish translations. Reviewed for UI register (informal tú).
 // Native review still recommended before publicizing as fully supported.
 export default {
+  'nav.members': 'Miembros',
   'common.close': 'Cerrar',
   'switcher.manage_members': 'Gestionar miembros',
   'switcher.rename': 'Renombrar espacio de trabajo',

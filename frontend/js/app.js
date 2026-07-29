@@ -170,6 +170,7 @@ const NAV_LABEL_KEYS = {
   designer: 'nav.designer',
   activity: 'nav.activity',
   teams: 'nav.teams',
+  members: 'nav.members',
   help: 'nav.help',
   settings: 'nav.settings',
   billing: 'nav.subscription',
@@ -266,6 +267,21 @@ function enableHelpTips() {
   });
   if (tipsBound) return;
   tipsBound = true;
+  // A native title= is hover-only too, so icon-only buttons (rename a wall, remove a device
+  // from one, manage members) explain themselves on a desktop and say nothing at all on a
+  // touchscreen. Long-press one and show its label as a toast — the text already exists and is
+  // translated, it simply had no way to reach a finger.
+  let pressTimer = null;
+  const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+  document.addEventListener('touchstart', (e) => {
+    const el = e.target.closest('[title]');
+    if (!el) return;
+    const label = el.getAttribute('title');
+    if (!label) return;
+    pressTimer = setTimeout(() => showToast(label, 'info'), 500);
+  }, { passive: true });
+  ['touchend', 'touchmove', 'touchcancel'].forEach(ev =>
+    document.addEventListener(ev, cancelPress, { passive: true }));
   // Views render from ~20 call sites and modals appear later still, so watch the DOM rather
   // than trying to call this after each one — a tip added by a route nobody remembered to hook
   // would otherwise be keyboard-unreachable again.
@@ -489,6 +505,18 @@ function route() {
   } else if (hash === '#/teams' || hash.startsWith('#/team/')) {
     currentView = teams;
     teams.render(app);
+  } else if (hash === '#/members') {
+    // The static nav link cannot know the workspace id, so resolve it here from the signed-in
+    // user. Falls back to the first accessible workspace, and to the dashboard when there is
+    // none at all — better than rendering a members page for nothing.
+    // /me is cached in localStorage by refreshCurrentUser(); there is no in-memory copy.
+    let me = null;
+    try { me = JSON.parse(localStorage.getItem('user') || 'null'); } catch (_) { me = null; }
+    const activeWs = me?.current_workspace_id
+      || (Array.isArray(me?.accessible_workspaces) && me.accessible_workspaces[0]?.id);
+    if (!activeWs) { window.location.hash = '#/'; return; }
+    currentView = workspaceMembers;
+    workspaceMembers.render(app, activeWs);
   } else if (hash.startsWith('#/workspace/') && hash.includes('/members')) {
     const wsId = hash.split('#/workspace/')[1].split('/')[0];
     currentView = workspaceMembers;

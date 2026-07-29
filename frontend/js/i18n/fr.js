@@ -2,6 +2,7 @@
 // standard for software UIs in France; tu would feel underdressed for a B2B tool).
 // Native review recommended before publicizing as fully supported.
 export default {
+  'nav.members': 'Membres',
   'common.close': 'Fermer',
   'switcher.manage_members': 'Gérer les membres',
   'switcher.rename': 'Renommer l\'espace de travail',

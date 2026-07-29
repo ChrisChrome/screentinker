@@ -1,6 +1,7 @@
 // English translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  'nav.members': 'Members',
   'common.close': 'Close',
   'switcher.manage_members': 'Manage members',
   'switcher.rename': 'Rename workspace',

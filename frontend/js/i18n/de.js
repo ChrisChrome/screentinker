@@ -2,6 +2,7 @@
 // standard for B2B software in DACH). Native review recommended before
 // publicizing as fully supported.
 export default {
+  'nav.members': 'Mitglieder',
   'common.close': 'Schließen',
   'switcher.manage_members': 'Mitglieder verwalten',
   'switcher.rename': 'Workspace umbenennen',

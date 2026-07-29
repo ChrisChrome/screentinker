@@ -2,6 +2,7 @@
 // Reviewed for UI register (informal você). Native review recommended before
 // publicizing as fully supported.
 export default {
+  'nav.members': 'Membros',
   'common.close': 'Fechar',
   'switcher.manage_members': 'Gerir membros',
   'switcher.rename': 'Mudar o nome da área de trabalho',

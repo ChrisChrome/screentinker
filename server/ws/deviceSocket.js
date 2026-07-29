@@ -975,7 +975,14 @@ module.exports = function setupDeviceSocket(io) {
       db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), updated_at = strftime('%s','now') WHERE id = ?")
         .run(device_id);
 
-      if (telemetry) {
+      // A device row can vanish mid-session — deleted by an operator, or replaced by a re-pair —
+      // while its socket is still heartbeating. The telemetry insert then fails the foreign key,
+      // the safe-socket wrapper reads that throw as a broken handler and disconnects the socket
+      // SERVER-side, and socket.io deliberately does not retry that kind of disconnect. The panel
+      // goes dark until a human reloads it; that happened to a live screen. A heartbeat for a
+      // device that no longer exists is not worth killing a connection over — skip the write and
+      // let the register path answer with unpaired, which is what actually helps it recover.
+      if (telemetry && deviceExists(device_id)) {
         db.prepare(`
           INSERT INTO device_telemetry (device_id, battery_level, battery_charging, storage_free_mb, storage_total_mb,
             ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds)
