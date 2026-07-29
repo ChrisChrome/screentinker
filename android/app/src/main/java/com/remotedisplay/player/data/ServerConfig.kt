@@ -98,6 +98,17 @@ class ServerConfig(context: Context) {
         get() = prefs.getString("cached_playlist", "") ?: ""
         set(value) = prefs.edit().putString("cached_playlist", value).apply()
 
+    // #234: last playing index + when it started. Lives here, not in PlaylistController, precisely
+    // because the controller is rebuilt with every Activity — which is how a relaunch used to reset
+    // playback to the first item and starve everything after it.
+    var resumeIndex: Int
+        get() = prefs.getInt("resume_index", -1)
+        set(value) = prefs.edit().putInt("resume_index", value).apply()
+
+    var resumeAt: Long
+        get() = prefs.getLong("resume_at", 0L)
+        set(value) = prefs.edit().putLong("resume_at", value).apply()
+
     fun clearPlaylistCache() {
         prefs.edit().remove("cached_playlist").apply()
     }

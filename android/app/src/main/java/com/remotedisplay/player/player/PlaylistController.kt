@@ -39,7 +39,11 @@ class PlaylistController(
     private val onWaitingForContent: (() -> Unit)? = null,
     // Proof-of-play: emitted on each item show ("play_start") and when it's left ("play_end"),
     // so the caller can forward device:play-event to the server (populates play_logs / Reports).
-    private val onPlayLog: ((event: String, item: PlaylistItem, completed: Boolean) -> Unit)? = null
+    private val onPlayLog: ((event: String, item: PlaylistItem, completed: Boolean) -> Unit)? = null,
+    // #234: playback position, persisted OUTSIDE this object so it survives the controller being
+    // rebuilt with a new Activity. Null on both = today's behaviour (always start from the top).
+    private val loadResume: (() -> Pair<Int, Long>?)? = null,
+    private val saveResume: ((index: Int, atMs: Long) -> Unit)? = null
 ) {
     private companion object {
         const val CONTENT_RECHECK_MS = 3000L
@@ -289,7 +293,16 @@ class PlaylistController(
         if (firstActiveIndex() < 0) { showNothingScheduled(); return }
         // Screen-resilience: only start on an item whose content is downloaded; if the scheduled
         // content isn't ready yet, keep current/wait (never blank on a loading state).
-        val idx = PlaylistSelection.firstPlayableIndex(items.size) { playableNow(it) }
+        // #234: continue where we left off when this is a reload moments after playing (a new
+        // Activity => a brand-new controller), not a genuine cold start. Scanning from 0 every time
+        // is what pinned these playlists on their first item forever.
+        val saved = try { loadResume?.invoke() } catch (_: Throwable) { null }
+        val from = PlaybackResume.resumeIndex(
+            saved?.first ?: -1, saved?.second ?: 0L, System.currentTimeMillis(), items.size)
+        val idx = if (from > 0 && playableNow(from)) from
+                  else if (from > 0) PlaylistSelection.nextPlayableIndex(items.size, from - 1) { playableNow(it) }
+                  else PlaylistSelection.firstPlayableIndex(items.size) { playableNow(it) }
+        if (from > 0) Log.i("PlaylistController", "Resuming at index $from (reload within resume window)")
         if (idx >= 0) { currentIndex = idx; playCurrentItem() } else onContentNotReady()
     }
 
@@ -365,6 +378,8 @@ class PlaylistController(
         cancelRetry()
         val item = currentItem ?: return
         itemStartedAt = System.currentTimeMillis()
+        // #234: remember where we are so a controller rebuilt seconds from now can carry on.
+        try { saveResume?.invoke(currentIndex, itemStartedAt) } catch (_: Throwable) {}
         Log.i("PlaylistController", "Playing: ${item.filename} (index $currentIndex)")
         onItemChanged(item)
         hasContentOnScreen = true // a valid item is now rendered — protect it from being blanked
