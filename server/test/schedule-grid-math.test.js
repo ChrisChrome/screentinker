@@ -160,3 +160,52 @@ test('the drag readout is human, not 24h minutes', async () => {
   assert.equal(G.formatRange(0, 45), '12:00 AM – 12:45 AM');
   assert.equal(G.formatRange(720, 780), '12:00 PM – 1:00 PM');
 });
+
+// ---------------------------------------------------------------- crossing midnight
+
+test('THE GAP: a window ending before it starts crosses midnight', async () => {
+  // 22:00 -> 04:00 is an ordinary signage schedule. The playback engine has always understood
+  // it (schedule-eval treats start > end as a wrap); the calendar computed 4 - 22 = -18 hours,
+  // so it drew an 18px sliver at 10pm and nothing at all after midnight.
+  assert.equal(G.crossesMidnight(22 * 60, 4 * 60), true);
+  assert.equal(G.crossesMidnight(9 * 60, 17 * 60), false);
+  assert.equal(G.crossesMidnight(9 * 60, 9 * 60), true, 'equal ends is a full 24h wrap, not zero');
+});
+
+test('an overnight window is drawn as two pieces on consecutive days', async () => {
+  const segs = G.splitAcrossMidnight(2, 22 * 60, 4 * 60);   // Tuesday 22:00 -> Wednesday 04:00
+  assert.equal(segs.length, 2);
+  assert.deepEqual(
+    segs.map(s => [s.dayIdx, s.startMin, s.endMin]),
+    [[2, 1320, 1440], [3, 0, 240]]);
+  assert.equal(segs[0].continues, true, 'the first piece runs into the next day');
+  assert.equal(segs[1].continued, true, 'and the second is a continuation');
+});
+
+test('the two pieces add up to the real duration', async () => {
+  const segs = G.splitAcrossMidnight(1, 22 * 60 + 30, 6 * 60 + 15);
+  const total = segs.reduce((n, s) => n + (s.endMin - s.startMin), 0);
+  assert.equal(total, (24 * 60 - (22 * 60 + 30)) + (6 * 60 + 15), '7h45m');
+});
+
+test('a same-day window is still one piece', async () => {
+  const segs = G.splitAcrossMidnight(4, 9 * 60, 17 * 60);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].continues, false);
+  assert.equal(segs[0].endMin, 17 * 60);
+});
+
+test('a Saturday-night spill is not wrapped round to Sunday', async () => {
+  // Wrapping would draw the after-midnight part at the START of the same week, making it look
+  // like it played six days early.
+  const segs = G.splitAcrossMidnight(6, 23 * 60, 2 * 60);
+  assert.equal(segs.length, 1, 'only the part that fits this grid is drawn');
+  assert.equal(segs[0].endMin, G.DAY_MIN);
+});
+
+test('an overnight schedule cannot be dragged, because a drag cannot express it', async () => {
+  // A drag describes a window inside ONE day; applying it to a wrap would clamp it and silently
+  // destroy the schedule.
+  assert.equal(G.canDragEvent({}, 22 * 60, 4 * 60), false);
+  assert.equal(G.canDragEvent({}, 9 * 60, 17 * 60), true);
+});

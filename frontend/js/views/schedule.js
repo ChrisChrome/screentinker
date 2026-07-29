@@ -4,6 +4,7 @@ import { t } from '../i18n.js';
 import {
   HOUR_PX, pxToMinutes, minutesToPx, rangeFromDrag, moveRange, resizeRange,
   toLocalStamp, formatRange, canMoveAcrossDays, editsWholeSeries, isDrag,
+  splitAcrossMidnight, crossesMidnight, canDragEvent,
   dragArmMode, LONG_PRESS_MS, DEFAULT_NEW_MIN,
 } from '../lib/schedule-grid.js';
 
@@ -253,13 +254,21 @@ export async function render(container) {
     cal.innerHTML = html;
 
     const seenTargets = new Map();
-    events.forEach(ev => {
+    // One schedule can need TWO blocks: an overnight window (22:00–04:00) is drawn as the part
+    // before midnight on its day and the part after it on the next. Flattening to segments first
+    // means the drawing code below has a single shape to handle.
+    const segments = [];
+    events.forEach((ev) => {
       const start = new Date(ev.instance_start || ev.start_time);
       const end = new Date(ev.instance_end || ev.end_time);
-      const dayIdx = start.getDay();
-      const startHour = start.getHours() + start.getMinutes() / 60;
-      const endHour = end.getHours() + end.getMinutes() / 60;
-      const duration = endHour - startHour;
+      const sMin = start.getHours() * 60 + start.getMinutes();
+      const eMin = end.getHours() * 60 + end.getMinutes();
+      for (const seg of splitAcrossMidnight(start.getDay(), sMin, eMin)) segments.push({ ev, ...seg });
+    });
+
+    segments.forEach(({ ev, dayIdx, startMin, endMin, continues, continued }) => {
+      const startHour = startMin / 60;
+      const duration = (endMin - startMin) / 60;
 
       const cell = cal.querySelector(`[data-hour="${Math.floor(startHour)}"][data-day="${dayIdx}"]`);
       if (!cell) return;
@@ -289,10 +298,20 @@ export async function render(container) {
       }
 
       const kind = isGroupSchedule ? t('schedule.target_group') : t('schedule.target_device');
-      block.title = `${kind}: ${target.name}\n${label}\n${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}`
+      // The tooltip names the WHOLE window, not the piece being hovered — the point of a tooltip
+      // on an overnight block is to say it runs 10pm to 4am, which neither half shows alone.
+      const whole = new Date(ev.instance_start || ev.start_time);
+      const wholeEnd = new Date(ev.instance_end || ev.end_time);
+      block.title = `${kind}: ${target.name}\n${label}\n${whole.toLocaleTimeString()} - ${wholeEnd.toLocaleTimeString()}`
+        + ((continues || continued) ? `\n${t('schedule.overnight_note')}` : '')
         + `\n${t('schedule.tooltip_priority', { n: ev.priority })}`
         + (ev.timezone ? `\n${t('schedule.tz_same').replace('{zone}', ev.timezone)}` : '');
+      // Visually join the two halves of an overnight schedule: square off the edge each one
+      // continues across, so it reads as one window split by midnight rather than two schedules.
+      if (continues) block.style.borderBottomLeftRadius = block.style.borderBottomRightRadius = '0';
+      if (continued) block.style.borderTopLeftRadius = block.style.borderTopRightRadius = '0';
       block.dataset.schedId = ev.id;
+      block.dataset.overnight = (continues || continued) ? '1' : '';
       block._ev = ev;
       block.onclick = (e) => { if (dragState && dragState.moved) return; editSchedule(ev); };
       // Bottom grip: the affordance that makes a block resizable rather than only movable.
@@ -426,6 +445,13 @@ export async function render(container) {
       const origin = { x: e.clientX, y: e.clientY };
       if (block && block._ev) {
         const ev = block._ev;
+        // A drag can only describe a window inside one day, so dragging an overnight schedule
+        // would clamp it into that day and silently destroy the wrap. Refuse, and say why.
+        if (block.dataset.overnight) {
+          dragState = null;
+          showToast(t('schedule.overnight_no_drag'), 'info');
+          return;
+        }
         const s = new Date(ev.instance_start || ev.start_time);
         const en = new Date(ev.instance_end || ev.end_time);
         const evStart = s.getHours() * 60 + s.getMinutes();

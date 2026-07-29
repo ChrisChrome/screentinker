@@ -117,3 +117,36 @@ export function canMoveAcrossDays(ev) {
 export function editsWholeSeries(ev) {
   return !!(ev && ev.recurrence);
 }
+
+// A window whose end is BEFORE its start crosses midnight — 22:00 to 04:00 is a real and common
+// signage schedule (a bar, a hotel lobby, anything running overnight). The playback engine has
+// always understood this: schedule-eval treats start > end as a wrap. The calendar did not, and
+// computed a negative height, so an overnight schedule appeared as an 18px sliver at 10pm with
+// nothing at all after midnight.
+export function crossesMidnight(startMin, endMin) {
+  return endMin <= startMin;
+}
+
+// Split an overnight window into the pieces a week grid can actually draw: the part before
+// midnight on its own day, and the part after midnight on the NEXT one. A same-day window is
+// returned unchanged as a single piece, so callers have one shape to render.
+export function splitAcrossMidnight(dayIdx, startMin, endMin) {
+  if (!crossesMidnight(startMin, endMin)) {
+    return [{ dayIdx, startMin, endMin, continues: false, continued: false }];
+  }
+  const out = [{ dayIdx, startMin, endMin: DAY_MIN, continues: true, continued: false }];
+  // Sunday-night spill lands on Monday of the SAME grid, which is what a week view shows; a
+  // Saturday-night spill would run off the end, so it is simply not drawn rather than wrapping
+  // round to Sunday and appearing to be a week early.
+  if (dayIdx < 6 && endMin > 0) {
+    out.push({ dayIdx: dayIdx + 1, startMin: 0, endMin, continues: false, continued: true });
+  }
+  return out;
+}
+
+// A drag can only express a window inside one day. Moving or resizing an overnight schedule with
+// the mouse would therefore clamp it into that day and silently destroy the wrap, so it is
+// refused and left to the dialog — the same reasoning as a recurring schedule's day.
+export function canDragEvent(ev, startMin, endMin) {
+  return !crossesMidnight(startMin, endMin);
+}

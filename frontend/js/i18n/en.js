@@ -1,6 +1,8 @@
 // English translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  'schedule.overnight_no_drag': 'This schedule runs past midnight — open it to change its times.',
+  'schedule.overnight_note': 'Runs past midnight — shown as two blocks.',
 
   // Recovered from dead `t(k) || 'default'` fallbacks: t() returns the key when a string is
   // missing, so those defaults never rendered and users saw the raw key instead.
