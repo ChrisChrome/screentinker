@@ -434,6 +434,11 @@ export async function render(container) {
   function clearGhost() { if (ghostEl && ghostEl.parentNode) ghostEl.parentNode.removeChild(ghostEl); }
 
   function attachGridInteractions(cal) {
+    // #calendar is the SAME element on every render — only its children are replaced — so
+    // binding here per render stacked a full set of pointer handlers each time. Five weeks of
+    // navigation meant five ghosts on a drag and five PUTs on drop. Bind once.
+    if (cal.dataset.interactionsBound) return;
+    cal.dataset.interactionsBound = '1';
     cal.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;                       // left button only; right opens the menu
       const block = e.target.closest('[data-sched-id]');
@@ -640,10 +645,18 @@ export async function render(container) {
   // Open the dialog already filled in with the slot that was drawn, so the gesture supplies the
   // times and the dialog only has to supply what it alone knows (which playlist, which target).
   function openCreateAt(dayDate, startMin, endMin) {
-    document.getElementById('addScheduleBtn').onclick();
+    // Reuses the Add Schedule button's own handler so the dialog resets exactly as it does for a
+    // normal create. Guarded because a drag is a user gesture that must never throw: if that
+    // button or its handler is missing, the drop should quietly do nothing rather than raise an
+    // uncaught error in the middle of an interaction.
+    const addBtn = document.getElementById('addScheduleBtn');
+    if (!addBtn || typeof addBtn.onclick !== 'function') return;
+    addBtn.onclick();
     const hhmm = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-    document.getElementById('schedStart').value = hhmm(startMin);
-    document.getElementById('schedEnd').value = hhmm(endMin);
+    const startEl = document.getElementById('schedStart');
+    const endEl = document.getElementById('schedEnd');
+    if (startEl) startEl.value = hhmm(startMin);
+    if (endEl) endEl.value = hhmm(endMin);
     pendingCreateDate = dayDate;
   }
   let pendingCreateDate = null;
