@@ -2,6 +2,8 @@
 // Reviewed for UI register (informal você). Native review recommended before
 // publicizing as fully supported.
 export default {
+  'team.unavailable_desc': 'Esta funcionalidade está indisponível enquanto é reformulada para funcionar com as Áreas de trabalho. Os dados das equipas existentes são preservados.',
+  'team.unavailable_title': 'As equipas estão a ser reformuladas',
   'settings.help_tip': 'O seu perfil, palavra-passe e autenticação de dois fatores, além de tokens de API para integrações e ferramentas para exportar ou importar os seus dados.',
   'activity.help_tip': 'Registo do que mudou e de quem o mudou: inícios de sessão, carregamentos de conteúdo, comandos a dispositivos e alertas. Útil para perceber por que razão um ecrã mudou o que estava a mostrar.',
   'playlist.help_tip': 'Uma playlist é a ordem de reprodução que um ecrã repete em ciclo. Adicione conteúdos, defina quanto tempo cada um aparece e atribua a playlist a um ecrã ou a um grupo. Um ecrã reproduz uma playlist de cada vez, a não ser que um agendamento a substitua.',

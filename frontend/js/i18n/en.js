@@ -1,6 +1,8 @@
 // English translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  'team.unavailable_desc': 'This feature is unavailable while it is redesigned to work with Workspaces. Existing team data is preserved.',
+  'team.unavailable_title': 'Teams is being rebuilt',
   'settings.help_tip': 'Your profile, password and two-factor sign-in, plus API tokens for integrations and tools to export or import your data.',
   'activity.help_tip': 'A record of what changed and who changed it — logins, content uploads, device commands and alerts. Useful for working out why a screen changed what it was showing.',
   'playlist.help_tip': 'A playlist is the running order a screen loops through. Add content items, set how long each shows, then assign the playlist to a screen or group. A screen plays one playlist at a time unless a schedule overrides it.',

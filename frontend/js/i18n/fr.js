@@ -2,6 +2,8 @@
 // standard for software UIs in France; tu would feel underdressed for a B2B tool).
 // Native review recommended before publicizing as fully supported.
 export default {
+  'team.unavailable_desc': 'Cette fonctionnalité est indisponible pendant sa refonte pour fonctionner avec les espaces de travail. Les données des équipes existantes sont conservées.',
+  'team.unavailable_title': 'Les équipes sont en cours de refonte',
   'settings.help_tip': 'Votre profil, votre mot de passe et la double authentification, ainsi que les jetons d\'API pour les intégrations et les outils d\'export ou d\'import de vos données.',
   'activity.help_tip': 'Journal de ce qui a changé et par qui : connexions, envois de contenu, commandes aux appareils et alertes. Utile pour comprendre pourquoi un écran a changé d\'affichage.',
   'playlist.help_tip': 'Une playlist est l\'ordre de lecture qu\'un écran répète en boucle. Ajoutez des contenus, définissez la durée de chacun, puis affectez la playlist à un écran ou à un groupe. Un écran lit une seule playlist à la fois, sauf si une programmation la remplace.',

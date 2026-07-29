@@ -1409,6 +1409,17 @@ body {
 /* A help tip must be reachable without a mouse. :hover alone made every one of these
    invisible on a tablet or phone — which is a large share of the people administering a
    signage install — and unreachable by keyboard. Tapping toggles .is-open; focus shows it too. */
+/* The visible marker is 18px, which is fine to look at and far too small to hit with a thumb —
+   about half the ~44px touch guideline. Now that tapping a tip is how touch users read it at
+   all, extend the HIT AREA with a transparent inset overlay rather than inflating the circle,
+   so the target is comfortable without the marker dominating a heading. */
+.help-tip::before {
+  content: '';
+  position: absolute;
+  inset: -13px;
+  border-radius: 50%;
+}
+
 .help-tip:hover::after,
 .help-tip:focus-visible::after,
 .help-tip.is-open::after {

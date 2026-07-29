@@ -2,6 +2,8 @@
 // standard for B2B software in DACH). Native review recommended before
 // publicizing as fully supported.
 export default {
+  'team.unavailable_desc': 'Diese Funktion ist nicht verfügbar, während sie für die Zusammenarbeit mit Workspaces neu gestaltet wird. Vorhandene Teamdaten bleiben erhalten.',
+  'team.unavailable_title': 'Teams wird überarbeitet',
   'settings.help_tip': 'Ihr Profil, Passwort und die Zwei-Faktor-Anmeldung sowie API-Tokens für Integrationen und Werkzeuge zum Export und Import Ihrer Daten.',
   'activity.help_tip': 'Protokoll darüber, was sich geändert hat und wer es geändert hat: Anmeldungen, hochgeladene Inhalte, Gerätebefehle und Warnungen. Hilfreich, um nachzuvollziehen, warum ein Bildschirm etwas anderes angezeigt hat.',
   'playlist.help_tip': 'Eine Playlist ist die Reihenfolge, die ein Bildschirm in einer Schleife abspielt. Fügen Sie Inhalte hinzu, legen Sie deren Anzeigedauer fest und weisen Sie die Playlist einem Bildschirm oder einer Gruppe zu. Ein Bildschirm spielt jeweils eine Playlist ab, sofern kein Zeitplan sie überschreibt.',

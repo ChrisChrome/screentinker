@@ -1,6 +1,8 @@
 // Spanish translations. Reviewed for UI register (informal tú).
 // Native review still recommended before publicizing as fully supported.
 export default {
+  'team.unavailable_desc': 'Esta función no está disponible mientras se rediseña para funcionar con los Espacios de trabajo. Los datos de los equipos existentes se conservan.',
+  'team.unavailable_title': 'Equipos está en rediseño',
   'settings.help_tip': 'Tu perfil, contraseña y verificación en dos pasos, además de tokens de API para integraciones y herramientas para exportar o importar tus datos.',
   'activity.help_tip': 'Registro de qué cambió y quién lo cambió: inicios de sesión, subidas de contenido, comandos a dispositivos y alertas. Útil para averiguar por qué una pantalla cambió lo que mostraba.',
   'playlist.help_tip': 'Una lista de reproducción es el orden que una pantalla repite en bucle. Añade contenidos, define cuánto dura cada uno y asigna la lista a una pantalla o a un grupo. Una pantalla reproduce una sola lista salvo que una programación la anule.',

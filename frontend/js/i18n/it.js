@@ -1,6 +1,8 @@
 // Italian translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  'team.unavailable_desc': 'Questa funzione non è disponibile mentre viene riprogettata per funzionare con gli Spazi di lavoro. I dati dei team esistenti vengono conservati.',
+  'team.unavailable_title': 'I team sono in fase di riprogettazione',
   'settings.help_tip': 'Il tuo profilo, la password e l\'accesso a due fattori, oltre ai token API per le integrazioni e agli strumenti per esportare o importare i tuoi dati.',
   'activity.help_tip': 'Registro di che cosa è cambiato e di chi lo ha cambiato: accessi, caricamenti di contenuti, comandi ai dispositivi e avvisi. Utile per capire perché uno schermo ha cambiato ciò che mostrava.',
   'playlist.help_tip': 'Una playlist è l\'ordine di riproduzione che uno schermo ripete in ciclo. Aggiungi contenuti, imposta per quanto tempo ciascuno viene mostrato e assegna la playlist a uno schermo o a un gruppo. Uno schermo riproduce una sola playlist alla volta, a meno che una pianificazione non la sostituisca.',

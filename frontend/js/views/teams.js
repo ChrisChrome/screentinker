@@ -37,6 +37,18 @@ async function renderList(container) {
     const teams = await API('/teams');
     const list = document.getElementById('teamsList');
 
+    // Teams is switched off server-side while it is redesigned: every endpoint answers 503 with
+    // an explanation. API() resolves the BODY whatever the status, so an object arrives where an
+    // array was expected — and `!teams.length` then rendered "No teams yet" over a feature that
+    // is not there, next to a New Team button that could only ever fail. Say what is actually
+    // happening, and take away the button that leads nowhere.
+    if (!Array.isArray(teams)) {
+      document.getElementById('newTeamBtn')?.remove();
+      list.innerHTML = `<div class="empty-state"><h3>${esc(t('team.unavailable_title'))}</h3>`
+        + `<p>${esc(teams && teams.message ? teams.message : t('team.unavailable_desc'))}</p></div>`;
+      return;
+    }
+
     if (!teams.length) {
       list.innerHTML = `<div class="empty-state"><h3>${t('team.empty_title')}</h3><p>${t('team.empty_desc')}</p></div>`;
       return;
