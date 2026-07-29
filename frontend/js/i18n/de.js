@@ -2,6 +2,9 @@
 // standard for B2B software in DACH). Native review recommended before
 // publicizing as fully supported.
 export default {
+  'settings.help_tip': 'Ihr Profil, Passwort und die Zwei-Faktor-Anmeldung sowie API-Tokens für Integrationen und Werkzeuge zum Export und Import Ihrer Daten.',
+  'activity.help_tip': 'Protokoll darüber, was sich geändert hat und wer es geändert hat: Anmeldungen, hochgeladene Inhalte, Gerätebefehle und Warnungen. Hilfreich, um nachzuvollziehen, warum ein Bildschirm etwas anderes angezeigt hat.',
+  'playlist.help_tip': 'Eine Playlist ist die Reihenfolge, die ein Bildschirm in einer Schleife abspielt. Fügen Sie Inhalte hinzu, legen Sie deren Anzeigedauer fest und weisen Sie die Playlist einem Bildschirm oder einer Gruppe zu. Ein Bildschirm spielt jeweils eine Playlist ab, sofern kein Zeitplan sie überschreibt.',
   // #zone-orphan dashboard warnings
   'device.pl_item.orphan_zone': 'Zone aus einem anderen Layout — neu zuweisen',
   'device.pl_item.orphan_zone_tip': 'Die Zone dieses Elements gehört nicht zum aktuellen Layout des Geräts. Es wird weiterhin abgespielt (in die größte Zone verschoben), sollte aber einer Zone dieses Layouts neu zugewiesen werden.',
@@ -888,7 +891,7 @@ export default {
   // Schedule
   'schedule.title': 'Zeitplan',
   'schedule.subtitle': 'Inhaltsplanungs-Kalender',
-  'schedule.help_tip': 'Visueller Wochenkalender für Inhaltsplanung. Klicken Sie auf Zeitplan hinzufügen, um Zeitfenster zu erstellen. Wiederholungen für regelmäßige Inhalte. Höhere Priorität überschreibt niedrigere. Geräteebene überschreibt Gruppenebene.',
+  'schedule.help_tip': 'Wochenkalender. Ziehen Sie über eine Zeitspanne, um einen Zeitplan anzulegen, ziehen Sie einen Block, um ihn zu verschieben, ziehen Sie seine Unterkante, um das Ende zu ändern, oder klicken Sie mit der rechten Maustaste für weitere Optionen. Höhere Priorität gewinnt, und der eigene Zeitplan eines Bildschirms überschreibt den seiner Gruppe.',
   'schedule.prev_week': '< Zurück',
   'schedule.next_week': 'Weiter >',
   'schedule.add_schedule': 'Zeitplan hinzufügen',

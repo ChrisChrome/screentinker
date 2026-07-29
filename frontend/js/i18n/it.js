@@ -1,6 +1,9 @@
 // Italian translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  'settings.help_tip': 'Il tuo profilo, la password e l\'accesso a due fattori, oltre ai token API per le integrazioni e agli strumenti per esportare o importare i tuoi dati.',
+  'activity.help_tip': 'Registro di che cosa è cambiato e di chi lo ha cambiato: accessi, caricamenti di contenuti, comandi ai dispositivi e avvisi. Utile per capire perché uno schermo ha cambiato ciò che mostrava.',
+  'playlist.help_tip': 'Una playlist è l\'ordine di riproduzione che uno schermo ripete in ciclo. Aggiungi contenuti, imposta per quanto tempo ciascuno viene mostrato e assegna la playlist a uno schermo o a un gruppo. Uno schermo riproduce una sola playlist alla volta, a meno che una pianificazione non la sostituisca.',
   // #zone-orphan dashboard warnings
   'device.pl_item.orphan_zone': 'Zona di un altro layout — riassegna',
   'device.pl_item.orphan_zone_tip': 'La zona di questo elemento non fa parte del layout attuale del dispositivo. Continua a essere riprodotto (recuperato nella zona più grande), ma riassegnalo a una zona di questo layout.',
@@ -846,7 +849,7 @@ export default {
     // Schedule
   'schedule.title': 'Programmazione',
   'schedule.subtitle': 'Calendario di programmazione contenuti',
-  'schedule.help_tip': 'Calendario settimanale visivo per la programmazione dei contenuti. Clicca su "Aggiungi Programmazione" per creare fasce orarie. Imposta la ricorrenza per i contenuti ripetitivi. La priorità più alta prevale su quella più bassa. Le programmazioni a livello di dispositivo prevalgono su quelle di gruppo.',
+  'schedule.help_tip': 'Calendario settimanale. Trascina su una fascia oraria per creare una pianificazione, trascina un blocco per spostarlo, trascina il bordo inferiore per cambiarne la fine, oppure fai clic con il tasto destro per altre opzioni. La priorità più alta prevale e la pianificazione dello schermo sostituisce quella del suo gruppo.',
   'schedule.prev_week': '< Prec',
   'schedule.next_week': 'Succ >',
   'schedule.add_schedule': 'Aggiungi Programmazione',

@@ -253,6 +253,47 @@ async function refreshCurrentUser() {
   } catch {}
 }
 
+// Help tips are the main in-product explanation, and they were reachable by HOVER only —
+// invisible on a tablet or phone, and unreachable from a keyboard. Bound once at the document
+// level so every view's tips work without each having to opt in: tapping toggles one, Escape or
+// a tap elsewhere closes it, and the marker is made focusable so Tab can reach it.
+let tipsBound = false;
+function enableHelpTips() {
+  document.querySelectorAll('.help-tip:not([tabindex])').forEach((el) => {
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', el.dataset.tip || 'Help');
+  });
+  if (tipsBound) return;
+  tipsBound = true;
+  // Views render from ~20 call sites and modals appear later still, so watch the DOM rather
+  // than trying to call this after each one — a tip added by a route nobody remembered to hook
+  // would otherwise be keyboard-unreachable again.
+  const host = document.getElementById('app') || document.body;
+  let pending = null;
+  new MutationObserver(() => {
+    clearTimeout(pending);
+    pending = setTimeout(() => {
+      document.querySelectorAll('.help-tip:not([tabindex])').forEach((el) => {
+        el.setAttribute('tabindex', '0');
+        el.setAttribute('role', 'button');
+        el.setAttribute('aria-label', el.dataset.tip || 'Help');
+      });
+    }, 50);
+  }).observe(host, { childList: true, subtree: true });
+  document.addEventListener('click', (e) => {
+    const tip = e.target.closest('.help-tip');
+    document.querySelectorAll('.help-tip.is-open').forEach((o) => { if (o !== tip) o.classList.remove('is-open'); });
+    if (tip) { e.preventDefault(); tip.classList.toggle('is-open'); }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') document.querySelectorAll('.help-tip.is-open').forEach((o) => o.classList.remove('is-open'));
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('help-tip')) {
+      e.preventDefault(); e.target.classList.toggle('is-open');
+    }
+  });
+}
+
 function route() {
   // Cleanup previous view
   if (currentView && currentView.cleanup) currentView.cleanup();
@@ -676,6 +717,7 @@ if (isAuthenticated()) {
   }, 60000);
 }
 window.addEventListener('hashchange', route);
+enableHelpTips();
 route();
 
 // Close-modal buttons (replaces inline onclick handlers — required for CSP).

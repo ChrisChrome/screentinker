@@ -1406,7 +1406,12 @@ body {
   flex-shrink: 0;
 }
 
-.help-tip:hover::after {
+/* A help tip must be reachable without a mouse. :hover alone made every one of these
+   invisible on a tablet or phone — which is a large share of the people administering a
+   signage install — and unreachable by keyboard. Tapping toggles .is-open; focus shows it too. */
+.help-tip:hover::after,
+.help-tip:focus-visible::after,
+.help-tip.is-open::after {
   content: attr(data-tip);
   position: absolute;
   bottom: 100%;

@@ -75,3 +75,42 @@ test('the getting-started checklist has all of its strings', () => {
     assert.ok(defined.has(k), `${k} is missing and would render literally`);
   }
 });
+
+// Help tips are the main in-product explanation, so a missing translation is not a cosmetic
+// gap — it is a non-English user being handed an English paragraph at the exact moment they
+// are confused. English is the deliberate fallback, but it should be a CHOICE, not a surprise.
+//
+// hi.js is intentionally empty (see the note at the top of that file: a real user in India,
+// and a decision not to ship machine-quality Hindi), so it is excluded by name rather than by
+// accident — if another locale is ever stubbed the same way it has to be added here on purpose.
+const INTENTIONALLY_EMPTY = new Set(['hi']);
+
+test('every help tip is translated in every active locale', () => {
+  const dir = path.join(FRONTEND, 'i18n');
+  const locales = fs.readdirSync(dir).filter(f => f.endsWith('.js') && f !== 'en.js')
+    .map(f => f.replace('.js', '')).filter(l => !INTENTIONALLY_EMPTY.has(l));
+  const tipKeys = [...defined].filter(k => k.endsWith('.help_tip'));
+  assert.ok(tipKeys.length >= 10, `found ${tipKeys.length} tips in English`);
+
+  const missing = [];
+  for (const loc of locales) {
+    const src = fs.readFileSync(path.join(dir, `${loc}.js`), 'utf8');
+    const has = new Set([...src.matchAll(/^\s*'([^']+)'\s*:/gm)].map(m => m[1]));
+    for (const k of tipKeys) if (!has.has(k)) missing.push(`${loc}: ${k}`);
+  }
+  assert.deepEqual(missing, [],
+    `these tips fall back to English:\n  ${missing.join('\n  ')}`);
+});
+
+test('a tip marker in a view always names a real string', () => {
+  // <span class="help-tip" data-tip="${t('x')}"> renders the KEY when x is undefined, putting
+  // a bare identifier in the tooltip of the thing meant to explain the page.
+  const missing = [];
+  for (const file of sourceFiles(FRONTEND)) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/class="help-tip"\s+data-tip="\$\{t\('([^']+)'\)\}"/g)) {
+      if (!defined.has(m[1])) missing.push(`${path.relative(FRONTEND, file)}: ${m[1]}`);
+    }
+  }
+  assert.deepEqual(missing, [], missing.join('\n  '));
+});

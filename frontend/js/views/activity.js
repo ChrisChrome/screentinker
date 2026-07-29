@@ -7,7 +7,7 @@ const API = (url) => fetch('/api' + url, { headers: { Authorization: `Bearer ${l
 export async function render(container) {
   container.innerHTML = `
     <div class="page-header">
-      <div><h1>${t('activity.title')}</h1><div class="subtitle">${t('activity.subtitle')}</div></div>
+      <div><h1>${t('activity.title')} <span class="help-tip" data-tip="${t('activity.help_tip')}">?</span></h1><div class="subtitle">${t('activity.subtitle')}</div></div>
     </div>
     <div id="activityList"><div class="empty-state"><h3>${t('common.loading')}</h3></div></div>
     <div style="text-align:center;margin-top:16px">

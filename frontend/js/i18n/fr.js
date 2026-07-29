@@ -2,6 +2,9 @@
 // standard for software UIs in France; tu would feel underdressed for a B2B tool).
 // Native review recommended before publicizing as fully supported.
 export default {
+  'settings.help_tip': 'Votre profil, votre mot de passe et la double authentification, ainsi que les jetons d\'API pour les intégrations et les outils d\'export ou d\'import de vos données.',
+  'activity.help_tip': 'Journal de ce qui a changé et par qui : connexions, envois de contenu, commandes aux appareils et alertes. Utile pour comprendre pourquoi un écran a changé d\'affichage.',
+  'playlist.help_tip': 'Une playlist est l\'ordre de lecture qu\'un écran répète en boucle. Ajoutez des contenus, définissez la durée de chacun, puis affectez la playlist à un écran ou à un groupe. Un écran lit une seule playlist à la fois, sauf si une programmation la remplace.',
   // #zone-orphan dashboard warnings
   'device.pl_item.orphan_zone': 'Zone d\'une autre mise en page — réattribuer',
   'device.pl_item.orphan_zone_tip': 'La zone de cet élément ne fait pas partie de la mise en page actuelle de l\'appareil. Il continue de s\'afficher (récupéré dans la plus grande zone), mais réattribuez-le à une zone de cette mise en page.',
@@ -888,7 +891,7 @@ export default {
   // Schedule
   'schedule.title': 'Calendrier',
   'schedule.subtitle': 'Calendrier de programmation du contenu',
-  'schedule.help_tip': 'Calendrier hebdomadaire visuel pour la programmation. Cliquez sur Ajouter une plage pour créer des créneaux. La récurrence permet de répéter du contenu. La priorité plus haute prime. Les plages au niveau appareil priment sur celles de groupe.',
+  'schedule.help_tip': 'Calendrier hebdomadaire. Faites glisser sur une plage horaire pour créer une programmation, déplacez un bloc pour le décaler, tirez son bord inférieur pour changer sa fin, ou faites un clic droit pour plus d\'options. La priorité la plus élevée l\'emporte, et la programmation propre à un écran remplace celle de son groupe.',
   'schedule.prev_week': '< Préc',
   'schedule.next_week': 'Suiv >',
   'schedule.add_schedule': 'Ajouter une plage',

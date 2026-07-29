@@ -25,7 +25,7 @@ export async function render(container) {
   container.innerHTML = `
     <div class="page-header">
       <div>
-        <h1>${t('settings.title')}</h1>
+        <h1>${t('settings.title')} <span class="help-tip" data-tip="${t('settings.help_tip')}">?</span></h1>
         <div class="subtitle">${t('settings.subtitle')}</div>
       </div>
     </div>

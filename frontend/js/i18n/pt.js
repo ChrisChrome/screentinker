@@ -2,6 +2,9 @@
 // Reviewed for UI register (informal você). Native review recommended before
 // publicizing as fully supported.
 export default {
+  'settings.help_tip': 'O seu perfil, palavra-passe e autenticação de dois fatores, além de tokens de API para integrações e ferramentas para exportar ou importar os seus dados.',
+  'activity.help_tip': 'Registo do que mudou e de quem o mudou: inícios de sessão, carregamentos de conteúdo, comandos a dispositivos e alertas. Útil para perceber por que razão um ecrã mudou o que estava a mostrar.',
+  'playlist.help_tip': 'Uma playlist é a ordem de reprodução que um ecrã repete em ciclo. Adicione conteúdos, defina quanto tempo cada um aparece e atribua a playlist a um ecrã ou a um grupo. Um ecrã reproduz uma playlist de cada vez, a não ser que um agendamento a substitua.',
   // #zone-orphan dashboard warnings
   'device.pl_item.orphan_zone': 'Zona de outro layout — reatribuir',
   'device.pl_item.orphan_zone_tip': 'A zona deste item não faz parte do layout atual do dispositivo. Ele continua sendo reproduzido (recuperado na maior zona), mas reatribua-o a uma zona deste layout.',
@@ -888,7 +891,7 @@ export default {
   // Schedule
   'schedule.title': 'Agenda',
   'schedule.subtitle': 'Calendário de programação de conteúdo',
-  'schedule.help_tip': 'Calendário semanal visual para agendamento. Clique em Adicionar para criar slots. Defina recorrência para conteúdo recorrente. Prioridade maior sobrepõe menor. Agendas de dispositivo sobrepõem as de grupo.',
+  'schedule.help_tip': 'Calendário semanal. Arraste sobre um intervalo para criar um agendamento, arraste um bloco para o mover, arraste a margem inferior para alterar quando termina, ou clique com o botão direito para mais opções. A prioridade mais alta prevalece, e o agendamento do próprio ecrã substitui o do seu grupo.',
   'schedule.prev_week': '< Anterior',
   'schedule.next_week': 'Próxima >',
   'schedule.add_schedule': 'Adicionar agenda',

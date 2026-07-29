@@ -1,6 +1,9 @@
 // English translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  'settings.help_tip': 'Your profile, password and two-factor sign-in, plus API tokens for integrations and tools to export or import your data.',
+  'activity.help_tip': 'A record of what changed and who changed it — logins, content uploads, device commands and alerts. Useful for working out why a screen changed what it was showing.',
+  'playlist.help_tip': 'A playlist is the running order a screen loops through. Add content items, set how long each shows, then assign the playlist to a screen or group. A screen plays one playlist at a time unless a schedule overrides it.',
   'schedule.overnight_no_drag': 'This schedule runs past midnight — open it to change its times.',
   'schedule.overnight_note': 'Runs past midnight — shown as two blocks.',
 
@@ -1330,7 +1333,7 @@ export default {
   // Schedule
   'schedule.title': 'Schedule',
   'schedule.subtitle': 'Content scheduling calendar',
-  'schedule.help_tip': 'Visual weekly calendar for content scheduling. Click Add Schedule to create time slots. Set recurrence for repeating content. Higher priority overrides lower. Device-level schedules override group-level.',
+  'schedule.help_tip': 'Weekly calendar. Drag across a time to create a schedule, drag a block to move it, drag its lower edge to change when it ends, or right-click for more. Higher priority wins, and a screen\'s own schedule overrides its group\'s.',
   'schedule.prev_week': '< Prev',
   'schedule.next_week': 'Next >',
   'schedule.add_schedule': 'Add Schedule',

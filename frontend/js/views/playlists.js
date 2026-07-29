@@ -71,7 +71,7 @@ async function renderList(container) {
   container.innerHTML = `
     <div class="page-header">
       <div>
-        <h1>${t('playlist.title')}</h1>
+        <h1>${t('playlist.title')} <span class="help-tip" data-tip="${t('playlist.help_tip')}">?</span></h1>
         <div class="subtitle">${t('playlist.subtitle')}</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">

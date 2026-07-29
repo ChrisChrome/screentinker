@@ -1,6 +1,9 @@
 // Spanish translations. Reviewed for UI register (informal tú).
 // Native review still recommended before publicizing as fully supported.
 export default {
+  'settings.help_tip': 'Tu perfil, contraseña y verificación en dos pasos, además de tokens de API para integraciones y herramientas para exportar o importar tus datos.',
+  'activity.help_tip': 'Registro de qué cambió y quién lo cambió: inicios de sesión, subidas de contenido, comandos a dispositivos y alertas. Útil para averiguar por qué una pantalla cambió lo que mostraba.',
+  'playlist.help_tip': 'Una lista de reproducción es el orden que una pantalla repite en bucle. Añade contenidos, define cuánto dura cada uno y asigna la lista a una pantalla o a un grupo. Una pantalla reproduce una sola lista salvo que una programación la anule.',
   // #zone-orphan dashboard warnings
   'device.pl_item.orphan_zone': 'Zona de otro diseño — reasignar',
   'device.pl_item.orphan_zone_tip': 'La zona de este elemento no pertenece al diseño actual del dispositivo. Se sigue reproduciendo (recuperado en la zona más grande), pero reasígnalo a una zona de este diseño.',
@@ -918,7 +921,7 @@ export default {
   // Schedule
   'schedule.title': 'Horario',
   'schedule.subtitle': 'Calendario de programación de contenido',
-  'schedule.help_tip': 'Calendario semanal visual para programación. Haz clic en Agregar horario para crear franjas. Configura recurrencia para repetir contenido. La prioridad mayor anula la menor. Los horarios de dispositivo anulan los de grupo.',
+  'schedule.help_tip': 'Calendario semanal. Arrastra sobre una franja horaria para crear una programación, arrastra un bloque para moverlo, arrastra su borde inferior para cambiar cuándo termina, o haz clic derecho para más opciones. La prioridad más alta gana, y la programación propia de una pantalla anula la de su grupo.',
   'schedule.prev_week': '< Anterior',
   'schedule.next_week': 'Siguiente >',
   'schedule.add_schedule': 'Agregar horario',
