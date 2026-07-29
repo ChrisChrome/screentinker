@@ -138,6 +138,28 @@ Schema migrations run automatically on first boot — no manual migration comman
 | `HEARTBEAT_TIMEOUT` | How long without an app-level heartbeat (ms) before marking a device offline. Raise for slow/jittery networks. | `45000` |
 | `MAX_FILE_SIZE` | Largest upload the server will accept. Bytes, or a suffix (`2GB`, `1500MB`). **A reverse proxy caps this independently** — see below. | `500MB` |
 | `COMMAND_QUEUE_TTL_MS` | How long the server holds commands and playlist-updates for a device that's offline at emit time (ms). Flushed in order on reconnect within this window; dropped past TTL. | `30000` |
+| `OTA_ALLOW_MANAGED_DEVICES` | Let Android players self-update even when an MDM/DPC owns the device. Off by default — see below before enabling. | `0` |
+
+#### Android players under an MDM
+
+By default a player **stands down from self-updating** when it detects that another device owner
+(an MDM/DPC such as an EMM agent) manages the panel. The reasoning is that on a managed device the
+install confirmation dialog cannot be reliably auto-dismissed, so it ends up sitting over customer
+content — and the MDM is normally the thing distributing packages anyway. Such a panel reports
+`manual_update_required` rather than going quiet, so it still shows up as needing attention.
+
+Set `OTA_ALLOW_MANAGED_DEVICES=1` if you run an MDM that does **not** distribute the player and you
+want ScreenTinker's OTA to own updates instead. The server then advertises `allow_managed: true` in
+`/api/update/check` and players stop standing down.
+
+Two things to know before enabling it:
+
+- **It does not grant the ability to install silently.** Unless the player is the device owner, or
+  the MDM has delegated `DELEGATION_PACKAGE_INSTALLATION` to it, Android still raises a confirm
+  dialog that somebody (or an accessibility service) has to accept. If installs are failing *with*
+  an MDM present, delegating that scope is usually the real fix — not this flag.
+- **It is read by the player, not the server**, so only players new enough to understand
+  `allow_managed` honour it. Older players keep standing down regardless.
 
 #### Raising the upload limit
 

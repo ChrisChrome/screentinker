@@ -221,6 +221,16 @@ object ManagedLogic {
         // isProfileOwner is carried on Admin but intentionally NOT consulted — see above.
         return admins.any { it.packageName != ourPackage && it.isDeviceOwner }
     }
+
+    /**
+     * Final say on whether self-OTA stands down: a foreign DPC owns installs AND the operator has
+     * not overridden it (server `allow_managed`, from OTA_ALLOW_MANAGED_DEVICES).
+     *
+     * [serverAllowsManaged] must arrive as FALSE when the server said nothing — an older server
+     * that has never heard of the field would otherwise read as permission. Absence is not consent.
+     */
+    fun standDownFromSelfOta(foreignDpcOwnsInstalls: Boolean, serverAllowsManaged: Boolean): Boolean =
+        foreignDpcOwnsInstalls && !serverAllowsManaged
 }
 
 /** Pure tier decision, extracted so it's unit-testable without a device / DevicePolicyManager. */

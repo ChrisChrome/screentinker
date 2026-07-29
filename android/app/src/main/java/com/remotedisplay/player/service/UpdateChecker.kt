@@ -113,7 +113,18 @@ class UpdateChecker(private val context: Context) {
         checkTimer = null
     }
 
-    fun checkForUpdate() {
+    /**
+     * [forced] = an operator pressed "force update" on this specific device, rather than the
+     * 30-minute timer firing. A forced run differs in three ways, all because a human aimed it at
+     * one panel and is watching:
+     *   - it ignores the backoff cap (the budget is handed back, so a parked device retries NOW),
+     *   - it overrides the MDM stand-down (a targeted human action outranks a blanket default),
+     *   - it REPORTS what happened, including the nothing-to-do cases.
+     * That last one is the point. The dashboard toast only ever confirmed the command reached the
+     * socket; every reason the device might then do nothing returned silently, so a capped or
+     * managed panel looked identical to a working one.
+     */
+    fun checkForUpdate(forced: Boolean = false) {
         if (config.serverUrl.isEmpty()) return
 
         Thread {
@@ -138,10 +149,17 @@ class UpdateChecker(private val context: Context) {
                 val updateAvailable = json.optBoolean("update_available", false)
                 val latestVersion = json.optString("latest_version", currentVersion)
                 val downloadUrl = json.optString("download_url", "")
+                // #166 escape hatch: the operator set OTA_ALLOW_MANAGED_DEVICES, so self-update is
+                // permitted even under a foreign DPC. Defaults FALSE, which is also what an older
+                // server (that never sends the field) yields — absence must never read as consent.
+                val allowManaged = json.optBoolean("allow_managed", false)
 
                 Log.i(TAG, "Current: $currentVersion, Latest: $latestVersion, Update: $updateAvailable")
 
                 if (!updateAvailable) {
+                    // A forced check that finds nothing must SAY nothing-to-do. Silence here is
+                    // what made the button look broken when it was working correctly.
+                    if (forced) report("info", "Force update: already on the latest version ($currentVersion)")
                     // #139: on the latest version now. If OTA state was pending, the install
                     // landed (the app relaunched as the new version) — clear state + caches once.
                     if (OtaThrottle.shouldClearOnUpToDate(otaState())) {
@@ -159,7 +177,13 @@ class UpdateChecker(private val context: Context) {
                     // Checked HERE rather than before the request: standing down early meant a
                     // stood-down panel never learned an update existed, so it reported ota_status
                     // 'none' — indistinguishable from up to date — and no dashboard ever flagged it.
-                    if (isManagedByForeignDeviceOwner()) {
+                    //
+                    // A forced run overrides it: the operator is aiming at ONE device and can see
+                    // the screen, which is a stronger and better-targeted signal than the global
+                    // OTA_ALLOW_MANAGED_DEVICES switch.
+                    val managedNow = isManagedByForeignDeviceOwner()
+                    if (com.remotedisplay.player.admin.ManagedLogic.standDownFromSelfOta(
+                            managedNow, allowManaged || forced)) {
                         val (managed, first) = OtaThrottle.onManagedStandDown(
                             otaState(), latestVersion, System.currentTimeMillis())
                         persistOta(managed)
@@ -170,7 +194,19 @@ class UpdateChecker(private val context: Context) {
                         }
                         return@Thread
                     }
-                    maybeUpdate(latestVersion, "${config.serverUrl}$downloadUrl")
+                    if (managedNow) {
+                        // Loud on purpose: a safety default was overridden, and the confirm dialog
+                        // this may raise over customer content is the cost of that choice.
+                        val why = if (forced) "operator forced it" else "server allows managed self-update"
+                        Log.i(TAG, "Managed by a foreign DPC, but $why — proceeding")
+                        if (forced) report("warn", "Force update: this panel is managed by another device owner — installing anyway at your request; a confirm dialog may appear on screen")
+                    }
+                    if (forced) {
+                        // Hand the attempt budget back so a device parked in backoff acts NOW
+                        // instead of waiting out the window.
+                        persistOta(OtaThrottle.onForcedCheck(otaState()))
+                    }
+                    maybeUpdate(latestVersion, "${config.serverUrl}$downloadUrl", forced)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Update check error: ${e.message}")
@@ -192,7 +228,7 @@ class UpdateChecker(private val context: Context) {
     // that can't silently install (Fire TV: no device-owner) stops re-pulling the full APK every
     // cycle. Only a COMMITTED install consumes the attempt budget — a transient download/verify
     // failure on a HEALTHY device must never park it in backoff.
-    private fun maybeUpdate(latestVersion: String, downloadUrl: String) {
+    private fun maybeUpdate(latestVersion: String, downloadUrl: String, forced: Boolean = false) {
         val now = System.currentTimeMillis()
         val cur = otaState()
         if (OtaThrottle.isNewTarget(cur, latestVersion)) cleanupApks(latestVersion)
@@ -202,19 +238,36 @@ class UpdateChecker(private val context: Context) {
         // Capped + still inside the window: do nothing AND stay silent. Fire OS restarts re-fire
         // this check constantly; reporting here would just move the flood onto the WS channel.
         // The enter-backoff line was already sent once on the crossing (below).
-        if (action == OtaThrottle.Action.BACKOFF) return
+        if (action == OtaThrottle.Action.BACKOFF) {
+            // Can only be reached unforced: a forced run hands the budget back before calling in.
+            if (forced) report("warn", "Force update: still backing off on $latestVersion — this should not happen, please report it")
+            return
+        }
 
         // download/verify failure → retry on the normal cadence; do NOT count it as an attempt.
         if (!downloadAndInstall(downloadUrl, latestVersion)) {
             Log.w(TAG, "Update $latestVersion: download/verify failed — retry next check (no attempt consumed)")
+            // Unforced this is deliberately quiet (transient network blips are not news). Forced,
+            // somebody is waiting on an answer, and "the APK would not download or did not match
+            // our signing key" is the single most useful thing we can tell them.
+            if (forced) report("error", "Force update: $latestVersion failed to download or failed signature verification — not installed")
             return
         }
 
         val (afterLaunch, enteredBackoff) = OtaThrottle.onInstallLaunched(afterCheck, now)
         persistOta(afterLaunch)
         Log.i(TAG, "Install launched for $latestVersion (attempt ${afterLaunch.attempts}/${OtaThrottle.MAX_INSTALL_ATTEMPTS})")
+        if (forced) {
+            // The APK is verified and the installer is launched — but off device-owner Android
+            // raises a confirm dialog, and "launched" is NOT "installed". Say which one happened,
+            // because the gap between them is exactly where force-update appears to do nothing.
+            report("info", if (canInstallSilently())
+                "Force update: installing $latestVersion silently"
+            else
+                "Force update: $latestVersion downloaded and verified, install launched — a confirm dialog must be accepted on the device unless an accessibility service does it")
+        }
         if (enteredBackoff) {
-            report("warn", "Update $latestVersion available but not installing after ${afterLaunch.attempts} attempts — manual update required (backing off to one retry per ${OtaThrottle.BACKOFF_MS / 3_600_000L}h)")
+            report("warn", "Update $latestVersion downloaded and verified, but ${afterLaunch.attempts} install attempts have not completed — a human needs to accept the install prompt on this device (or the MDM needs to delegate install permission). Still retrying.")
             announceOtaStatus() // transition -> emits 'manual_update_required'
         }
     }
@@ -351,6 +404,17 @@ class UpdateChecker(private val context: Context) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 val installer = context.packageManager.packageInstaller
+                // Abandon our own leftover sessions first. Every attempt stages a FULL copy of the
+                // APK (~8.7MB) via openWrite, and a session whose confirm dialog is never accepted
+                // just sits there holding it. At three attempts that was a rounding error; at forty
+                // it would be ~350MB of staged installs on a panel nobody walks up to, on hardware
+                // that does not have it spare. Also keeps us clear of the per-app session limit,
+                // which would start throwing once enough accumulated.
+                try {
+                    for (s in installer.mySessions) {
+                        try { installer.abandonSession(s.sessionId) } catch (_: Throwable) { /* already gone */ }
+                    }
+                } catch (e: Throwable) { Log.w(TAG, "Session cleanup skipped: ${e.message}") }
                 val params = android.content.pm.PackageInstaller.SessionParams(
                     android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL
                 )
@@ -476,4 +540,8 @@ class UpdateChecker(private val context: Context) {
     // now lives in STPolicy.hasForeignDeviceOwner() (same public getActiveAdmins() signal, errs safe).
     private fun isManagedByForeignDeviceOwner(): Boolean =
         com.remotedisplay.player.admin.STPolicy(context).hasForeignDeviceOwner()
+
+    /** Device owner, or an MDM delegated install scope to us — i.e. no confirm dialog. */
+    private fun canInstallSilently(): Boolean =
+        try { com.remotedisplay.player.admin.STPolicy(context).canInstallSilently() } catch (_: Throwable) { false }
 }

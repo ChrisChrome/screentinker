@@ -75,4 +75,27 @@ class ManagedLogicTest {
         val admins = listOf(ManagedLogic.Admin("com.mdm.dpc", isDeviceOwner = true))
         assertFalse(ManagedLogic.foreignDpcOwnsInstalls(true, OURS, admins))
     }
+
+    // ---- #166 escape hatch: OTA_ALLOW_MANAGED_DEVICES -> server `allow_managed` ----------------
+
+    @Test fun a_managed_panel_stands_down_when_the_operator_has_not_overridden() {
+        assertTrue(ManagedLogic.standDownFromSelfOta(foreignDpcOwnsInstalls = true, serverAllowsManaged = false))
+    }
+
+    @Test fun the_override_lets_a_managed_panel_self_update() {
+        assertFalse(ManagedLogic.standDownFromSelfOta(foreignDpcOwnsInstalls = true, serverAllowsManaged = true))
+    }
+
+    @Test fun an_unmanaged_panel_never_stands_down_either_way() {
+        assertFalse(ManagedLogic.standDownFromSelfOta(foreignDpcOwnsInstalls = false, serverAllowsManaged = false))
+        assertFalse(ManagedLogic.standDownFromSelfOta(foreignDpcOwnsInstalls = false, serverAllowsManaged = true))
+    }
+
+    @Test fun ABSENCE_IS_NOT_CONSENT_an_old_server_that_omits_the_field_reads_as_false() {
+        // The caller parses it with optBoolean("allow_managed", false). A server predating the
+        // flag says nothing, and that silence must mean "stand down", not "go ahead" — otherwise
+        // upgrading a PLAYER against an older SERVER would silently switch the safe default off.
+        val serverSaidNothing = false
+        assertTrue(ManagedLogic.standDownFromSelfOta(true, serverSaidNothing))
+    }
 }
