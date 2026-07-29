@@ -227,7 +227,11 @@ class MainActivity : AppCompatActivity() {
                 val cid = item.contentId.ifEmpty { item.widgetId ?: "" }
                 if (event == "play_start") wsService?.sendPlayStart(cid, item.filename, item.durationSec)
                 else wsService?.sendPlayEnd(cid, item.filename, completed)
-            }
+            },
+            // #234: carry the playback position across Activity rebuilds. Without this a relaunch
+            // restarts the playlist at item 1, so anything after it never gets a turn.
+            loadResume = { config.resumeIndex.takeIf { it >= 0 }?.let { it to config.resumeAt } },
+            saveResume = { index, atMs -> config.resumeIndex = index; config.resumeAt = atMs }
         )
         // Screen-resilience: an item is playable only when its content is actually available —
         // a widget, a remote stream, or a fully-downloaded local file. A not-yet/failed download is

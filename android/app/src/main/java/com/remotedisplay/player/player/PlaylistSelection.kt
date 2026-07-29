@@ -44,3 +44,35 @@ object PlaylistSelection {
     fun whenNonePlayable(hasContentOnScreen: Boolean): NonePlayable =
         if (hasContentOnScreen) NonePlayable.KEEP_CURRENT else NonePlayable.SHOW_WAITING
 }
+
+/**
+ * #234 — where playback should RESUME when a playlist is (re)loaded.
+ *
+ * PlaylistController is created fresh with every MainActivity instance, so a recreate always handed
+ * it an empty list and then a full one, which reads as "0 -> N items" and starts from the top. On a
+ * panel that re-registers and relaunches itself at each item boundary, item 2 therefore never
+ * survived more than a fraction of a second: the reporter of #234 had "never seen the photo, just
+ * the video", and prod play_logs showed the second item logging 0-1s durations while the first
+ * accumulated all the playtime.
+ *
+ * Starting from the top is only correct for a genuinely COLD start. If we were playing moments ago,
+ * the right thing is to carry on. Kept pure so the window arithmetic is testable without a device.
+ */
+object PlaybackResume {
+    /** How recently we must have been playing for a reload to count as a continuation. */
+    const val RESUME_WINDOW_MS = 90_000L
+
+    /**
+     * Index to begin scanning from. [savedIndex] < 0, an empty/short playlist, a stale save, or a
+     * clock that jumped backwards all fall back to 0 — i.e. to today's behaviour, so a real cold
+     * start is unaffected.
+     */
+    fun resumeIndex(savedIndex: Int, savedAtMs: Long, nowMs: Long, itemCount: Int): Int {
+        if (itemCount <= 0) return 0
+        if (savedIndex < 0 || savedIndex >= itemCount) return 0
+        if (savedAtMs <= 0L) return 0
+        val age = nowMs - savedAtMs
+        if (age < 0L || age > RESUME_WINDOW_MS) return 0
+        return savedIndex
+    }
+}
