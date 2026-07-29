@@ -89,6 +89,14 @@ class TransitionGLView(context: Context) : GLSurfaceView(context) {
     private val renderer = TxRenderer()
     @Volatile private var incoming: Job? = null
 
+    private companion object {
+        // ~4 frames at 60Hz. How long the finished overlay lingers (showing the destination image)
+        // before it is hidden, so the SurfaceFlinger hide can't beat the app's draw of the same image
+        // underneath. Generous on purpose: a slow panel misses more vsyncs, and the wait costs
+        // nothing visually because both layers hold identical pixels.
+        const val PARK_DELAY_MS = 64L
+    }
+
     init {
         setEGLContextClientVersion(2)
         setEGLConfigChooser(8, 8, 8, 8, 0, 0)  // alpha channel -> translucent surface
@@ -138,9 +146,14 @@ class TransitionGLView(context: Context) : GLSurfaceView(context) {
         override fun onDrawFrame(gl: GL10?) {
             incoming?.let { j -> incoming = null; active?.let { supersede(it) }; setup(j) } // pick up a new request
             val j = active
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            // Clear ONLY when a frame is actually going to be drawn over it. Clearing
+            // unconditionally painted the overlay black on every frame where there was nothing to
+            // draw — and the overlay is still VISIBLE at that moment, because finish() only POSTS
+            // the hide to the main thread. That was the one-or-two frame blank seen after each
+            // wipe, and the same flash on the failed/hard-cut path.
             if (j == null) return
             if (j.failed) { finish(j); return }
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             if (j.startNs == 0L) j.startNs = System.nanoTime()
             val p = ((System.nanoTime() - j.startNs).toFloat() / (j.durationMs * 1_000_000f)).coerceIn(0f, 1f)
             draw(j, p)
@@ -198,6 +211,12 @@ class TransitionGLView(context: Context) : GLSurfaceView(context) {
         // the overlay IF no newer wipe is queued.
         private fun finish(j: Job) {
             active = null
+            // Stop the render loop HERE, on the GL thread, rather than waiting for parkIfIdle() to
+            // run on the main thread. The front buffer currently holds the wipe's last frame — which
+            // is the destination image — so leaving it untouched and visible is seamless while the
+            // real content is mounted underneath. Any frame drawn in that gap is a regression:
+            // there is nothing left to draw, so it can only be an empty one.
+            renderMode = RENDERMODE_WHEN_DIRTY
             releaseGl()
             swapOnMain(j)
             parkIfIdle()
@@ -217,7 +236,23 @@ class TransitionGLView(context: Context) : GLSurfaceView(context) {
         // @Volatile and mutated only on the main thread (play), the same thread this posted block runs on,
         // so a newer play() either already set incoming (we skip park) or runs after (it re-shows) —
         // race-free, and never leaves a new wipe hidden.
-        private fun parkIfIdle() { post { if (incoming == null) { visibility = GONE; renderMode = RENDERMODE_WHEN_DIRTY } } }
+        private fun parkIfIdle() {
+            post {
+                if (incoming != null) return@post
+                // The overlay is currently showing the wipe's FINAL frame, which is the same picture
+                // that was just mounted underneath it. Hiding is therefore free to wait — and it must.
+                //
+                // This is a SurfaceView with setZOrderOnTop(true): its visibility change is applied by
+                // SurfaceFlinger in a transaction that is NOT synchronised with the app drawing the
+                // ImageView's new bitmap. Hiding in the same message-loop turn as the swap can land a
+                // vsync EARLIER than that draw, uncovering the previous photo for one frame. Holding
+                // the overlay (identical pixels) for a few frames removes the race outright; there is
+                // nothing to see during the wait because both layers show the same image.
+                postDelayed({
+                    if (incoming == null) { visibility = GONE; renderMode = RENDERMODE_WHEN_DIRTY }
+                }, PARK_DELAY_MS)
+            }
+        }
 
         private fun releaseGl() {
             if (texFrom != 0) { GLES20.glDeleteTextures(1, intArrayOf(texFrom), 0); texFrom = 0 }
