@@ -121,4 +121,23 @@ function purgeWorkspaces(dbConn, workspaceIds) {
   return (dbConn || db).prepare(`DELETE FROM device_settings WHERE workspace_id IN (${ph})`).run(...ids).changes;
 }
 
-module.exports = { snapshot, applyToDevice, listRemoved, getByFingerprint, purgeWorkspaces, validOrientation, ORIENTATIONS };
+/**
+ * Mirror a device's blocked flag onto its SAVED settings.
+ *
+ * applyToDevice deliberately restores `blocked` across a re-pair, so a block cannot be shrugged off
+ * by deleting the device. That is right — but it also means the saved copy is the real authority for
+ * anything that outlives the device row, and unblocking used to touch only `devices`. The saved copy
+ * stayed 1, so the very next delete-and-re-pair restored the block: from the operator's side, unblock
+ * simply did not take, and there was no way out of it from the dashboard at all.
+ *
+ * No-ops when the device has no fingerprint yet (nothing to key the saved row on).
+ */
+function setBlockedByDevice(deviceId, blocked) {
+  const fp = _fpForDevice.get(deviceId)?.fingerprint;
+  if (!fp) return false;
+  const r = db.prepare("UPDATE device_settings SET blocked = ?, last_seen = strftime('%s','now') WHERE fingerprint = ?")
+    .run(blocked ? 1 : 0, fp);
+  return r.changes > 0;
+}
+
+module.exports = { snapshot, applyToDevice, listRemoved, getByFingerprint, purgeWorkspaces, setBlockedByDevice, validOrientation, ORIENTATIONS };

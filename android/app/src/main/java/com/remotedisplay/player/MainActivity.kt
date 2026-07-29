@@ -495,6 +495,22 @@ class MainActivity : AppCompatActivity() {
         // #170: on a fresh network connection, clear stuck download backoff so content that failed
         // to download while the link was settling retries on the next sweep (the service also
         // requests a playlist refresh). Keeps single-flight; only touches failure/backoff state.
+        // #234: the server rejecting us (operator block, cleared credentials, reclaim settle) has
+        // to be VISIBLE. Only ProvisioningActivity ever assigned onUnpaired, and it is gone by the
+        // time playback is running — so a rejection left the screen sitting on "Connecting to
+        // server", and the player then blamed the URL. The server always says why; show that.
+        wsService?.onUnpaired = {
+            runOnUiThread {
+                val why = wsService?.lastRejectionReason ?: ""
+                val blocked = why.contains("block", ignoreCase = true)
+                Log.w("MainActivity", "server rejected this device ($why) — surfacing re-pair state")
+                showStatus(
+                    if (blocked) getString(R.string.device_blocked_status)
+                    else getString(R.string.device_unpaired_status)
+                )
+            }
+        }
+
         wsService?.onNetworkAvailable = {
             if (::downloadCoordinator.isInitialized) downloadCoordinator.resetAllBackoff()
         }

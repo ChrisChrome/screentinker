@@ -729,6 +729,15 @@ class WebSocketService : Service() {
 
     /** True from the first server rejection until the device is (re)paired — UI stays on re-pair. */
     fun isAwaitingRepair(): Boolean = awaitingRepair
+
+    /**
+     * Why the server last refused us, verbatim from device:auth-error (e.g. "Device blocked").
+     * The server always says why; the player used to throw it away and fall back to a generic
+     * connection failure, so an operator block read as "couldn't reach the server, check the url"
+     * and sent people off debugging their network. #234.
+     */
+    @Volatile var lastRejectionReason: String? = null
+        private set
     /** Milliseconds left in the reclaim-settle hold (0 once elapsed) — drives the UI countdown. */
     fun repairHoldRemainingMs(): Long = maxOf(0L, repairHoldUntilMs - SystemClock.elapsedRealtime())
     /** True only when the shown pairing code is server-accepted (pairable) — not a rejected/stale one. */
@@ -748,6 +757,7 @@ class WebSocketService : Service() {
      * scheduled retry, so the screen is stable — no register/reject/register churn.
      */
     private fun handleServerRejection(reason: String) {
+        lastRejectionReason = reason
         val settleSec = parseSettleSeconds(reason)
         Log.w("WebSocketService", "Server rejected device ($reason) — settle=${settleSec}s")
         pairingCodeLive = false // this registration was rejected — the local code is NOT pairable
@@ -778,6 +788,7 @@ class WebSocketService : Service() {
 
     /** Re-pair complete (device:paired, or a normal authenticated reconnect) — clear all repair state. */
     private fun resetRepairBackoff() {
+        lastRejectionReason = null
         repairRetryPending = false
         repairBackoffMs = 0L
         awaitingRepair = false
