@@ -845,8 +845,17 @@ class WebSocketService : Service() {
         connect()
     }
 
+    @Volatile private var lastRefreshAt = 0L
+
     fun requestPlaylistRefresh() {
         if (socket?.connected() != true || config.deviceId.isEmpty()) return
+        // #234 follow-up: this emits a FULL device:register (7+ server statements + the identity
+        // path + a playlist rebuild), and PlaylistController.next() calls it on every item advance.
+        // A 10-second image therefore re-registered six times a minute. The heartbeat already pulls
+        // a fresh playlist every 60s, so the per-item call bought nothing and cost a great deal.
+        val now = System.currentTimeMillis()
+        if (!RefreshThrottle.shouldRefresh(lastRefreshAt, now)) return
+        lastRefreshAt = now
         Log.i("WebSocketService", "Requesting playlist refresh")
         try {
             val data = org.json.JSONObject().apply {
