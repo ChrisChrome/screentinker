@@ -98,9 +98,22 @@ class SetupActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             findViewById<View>(R.id.notificationRow).visibility = View.VISIBLE
             findViewById<Button>(R.id.enableNotificationBtn).setOnClickListener {
-                ActivityCompat.requestPermissions(
-                    this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100
-                )
+                val granted = ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (granted) {
+                    // requestPermissions() does nothing once the answer is already given, so it
+                    // cannot be the way back. App notification settings can toggle it either way.
+                    try {
+                        startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                            putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                        })
+                    } catch (_: Exception) { openAppSettings() }
+                } else {
+                    ActivityCompat.requestPermissions(
+                        this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100
+                    )
+                }
             }
         }
 
@@ -173,12 +186,23 @@ class SetupActivity : AppCompatActivity() {
         // Battery-optimization exemption keeps the boot receiver from being deferred
         // and the app from being killed in standby (esp. on OEM / TV boxes).
         enableBatteryBtn.setOnClickListener {
-            try {
-                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:$packageName")
-                })
-            } catch (e: Exception) {
-                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            val exempt = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .isIgnoringBatteryOptimizations(packageName)
+            if (exempt) {
+                // ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS only ASKS to add an exemption — it
+                // offers no way to remove one, so it is a dead end for someone already exempt.
+                // The system list is where an exemption can actually be turned back off.
+                try { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                catch (_: Exception) { openAppSettings() }
+            } else {
+                try {
+                    startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    })
+                } catch (e: Exception) {
+                    try { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                    catch (_: Exception) { openAppSettings() }
+                }
             }
         }
 
@@ -200,6 +224,30 @@ class SetupActivity : AppCompatActivity() {
         updateStatuses()
     }
 
+    /**
+     * Bind a permission row's button. Granted rows used to set the button GONE, which left the
+     * choice one-way: every permission on this screen is granted in system Settings and the app
+     * cannot revoke any of them itself, so hiding the only route to that screen meant there was no
+     * way back. Reported on #234 — "if I make the app as Home launcher but later on want to remove
+     * it then how can I do it?".
+     *
+     * The button now stays put and relabels. Same tap target, same destination; the label is honest
+     * that Settings is where the change happens rather than promising we can revoke it ourselves.
+     */
+    private fun bindPermissionButton(btn: Button, granted: Boolean, enableLabel: String) {
+        btn.visibility = View.VISIBLE
+        btn.text = if (granted) "Manage" else enableLabel
+    }
+
+    /** Last-resort destination: this app's own settings page, where everything can be reached. */
+    private fun openAppSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+            })
+        } catch (_: Exception) { try { startActivity(Intent(Settings.ACTION_SETTINGS)) } catch (_: Exception) {} }
+    }
+
     private fun updateStatuses() {
         // Accessibility
         val accessibilityEnabled = isAccessibilityEnabled()
@@ -207,7 +255,7 @@ class SetupActivity : AppCompatActivity() {
         accessibilityStatus.setTextColor(
             if (accessibilityEnabled) 0xFF22C55E.toInt() else 0xFFEF4444.toInt()
         )
-        enableAccessibilityBtn.visibility = if (accessibilityEnabled) View.GONE else View.VISIBLE
+        bindPermissionButton(enableAccessibilityBtn, accessibilityEnabled, "Enable")
 
         // Install unknown apps
         val canInstall = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -217,7 +265,7 @@ class SetupActivity : AppCompatActivity() {
         installStatus.setTextColor(
             if (canInstall) 0xFF22C55E.toInt() else 0xFFEF4444.toInt()
         )
-        enableInstallBtn.visibility = if (canInstall) View.GONE else View.VISIBLE
+        bindPermissionButton(enableInstallBtn, canInstall, "Enable")
 
         // Notifications (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -228,8 +276,7 @@ class SetupActivity : AppCompatActivity() {
             notificationStatus.setTextColor(
                 if (hasNotif) 0xFF22C55E.toInt() else 0xFFEF4444.toInt()
             )
-            findViewById<Button>(R.id.enableNotificationBtn).visibility =
-                if (hasNotif) View.GONE else View.VISIBLE
+            bindPermissionButton(findViewById(R.id.enableNotificationBtn), hasNotif, "Enable")
         }
 
         // Launch on boot (full-screen intent — only restrictable on Android 14+)
@@ -237,7 +284,7 @@ class SetupActivity : AppCompatActivity() {
             val canFsi = getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
             fullscreenStatus.text = if (canFsi) "ON" else "OFF"
             fullscreenStatus.setTextColor(if (canFsi) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
-            enableFullscreenBtn.visibility = if (canFsi) View.GONE else View.VISIBLE
+            bindPermissionButton(enableFullscreenBtn, canFsi, "Enable")
         }
 
         // Battery optimization exemption
@@ -245,26 +292,26 @@ class SetupActivity : AppCompatActivity() {
             .isIgnoringBatteryOptimizations(packageName)
         batteryStatus.text = if (ignoringBattery) "ON" else "OFF"
         batteryStatus.setTextColor(if (ignoringBattery) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
-        enableBatteryBtn.visibility = if (ignoringBattery) View.GONE else View.VISIBLE
+        bindPermissionButton(enableBatteryBtn, ignoringBattery, "Enable")
 
         // Display over other apps
         val canOverlay = Settings.canDrawOverlays(this)
         overlayStatus.text = if (canOverlay) "ON" else "OFF"
         overlayStatus.setTextColor(if (canOverlay) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
-        enableOverlayBtn.visibility = if (canOverlay) View.GONE else View.VISIBLE
+        bindPermissionButton(enableOverlayBtn, canOverlay, "Enable")
 
         // #160 WRITE_SETTINGS (system brightness / screen-off timeout)
         val canWrite = Settings.System.canWrite(this)
         writeSettingsStatus.text = if (canWrite) "ON" else "OFF"
         writeSettingsStatus.setTextColor(if (canWrite) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
-        enableWriteSettingsBtn.visibility = if (canWrite) View.GONE else View.VISIBLE
+        bindPermissionButton(enableWriteSettingsBtn, canWrite, "Enable")
 
         // Default launcher (HOME): kiosk foreground stability requires being the default launcher.
         val isDefaultHome = isDefaultLauncher()
         val launcherStatus = findViewById<TextView>(R.id.launcherStatus)
         launcherStatus.text = if (isDefaultHome) "ON" else "OFF"
         launcherStatus.setTextColor(if (isDefaultHome) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
-        findViewById<Button>(R.id.enableLauncherBtn).visibility = if (isDefaultHome) View.GONE else View.VISIBLE
+        bindPermissionButton(findViewById(R.id.enableLauncherBtn), isDefaultHome, "Set")
 
         // Update continue button text
         val allGood = accessibilityEnabled && canInstall
@@ -272,6 +319,20 @@ class SetupActivity : AppCompatActivity() {
     }
 
     private fun isDefaultLauncher(): Boolean {
+        // Ask the SAME authority the action uses. This used to read resolveActivity(MATCH_DEFAULT_ONLY),
+        // which can name us when we are merely a HOME candidate rather than the chosen home app — so
+        // the row could say ON while the system still had the OEM launcher as home, and the button
+        // then opened the "become home" request dialog instead of the picker. Reported on #234:
+        // "in the apk I have granted the permission ... BUT in the settings of the tablet it still
+        // shows the tablet native launcher as home."
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val rm = getSystemService(android.app.role.RoleManager::class.java)
+                if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_HOME)) {
+                    return rm.isRoleHeld(android.app.role.RoleManager.ROLE_HOME)
+                }
+            } catch (_: Exception) { /* fall through to the pre-Q check */ }
+        }
         val ri = packageManager.resolveActivity(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
             PackageManager.MATCH_DEFAULT_ONLY
