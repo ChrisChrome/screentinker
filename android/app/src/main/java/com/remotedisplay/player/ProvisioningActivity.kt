@@ -288,6 +288,13 @@ class ProvisioningActivity : AppCompatActivity() {
 
         wsService?.onPaired = { deviceId, name ->
             runOnUiThread {
+                // ONE-SHOT. This callback's only job is the hand-off to MainActivity, but it was
+                // being left installed on a service that OUTLIVES this Activity — and the server
+                // sends device:paired on EVERY register, not just the first. So each register
+                // relaunched MainActivity with CLEAR_TASK, which re-registered, which paired again:
+                // a self-sustaining loop, ~1.3 relaunches/second measured on Android 12. On 12+ every
+                // launch draws a splash screen, which is the "white screen flashing" users report.
+                clearServiceCallbacks()
                 cancelStuckTimer()
                 stopRepairTicker()
                 statusText.text = "Paired as: $name"
@@ -298,6 +305,19 @@ class ProvisioningActivity : AppCompatActivity() {
                 finish()
             }
         }
+    }
+
+    /**
+     * Drop the callbacks this Activity installed on the long-lived service. MainActivity never
+     * assigns onRegistered/onUnpaired/onPaired, so nothing else would ever overwrite them — they
+     * would keep firing into a destroyed Activity for the life of the process (and keep it alive).
+     */
+    private fun clearServiceCallbacks() {
+        try {
+            wsService?.onPaired = null
+            wsService?.onUnpaired = null
+            wsService?.onRegistered = null
+        } catch (_: Throwable) { }
 
         // Re-pair path: the socket is usually already up (service kept running). Make sure it's
         // connecting, then render any pairing code the service already issued (race-free). If we're
@@ -315,6 +335,10 @@ class ProvisioningActivity : AppCompatActivity() {
     override fun onDestroy() {
         cancelStuckTimer()
         stopRepairTicker()
+        // Before unbinding: the service keeps running, so a callback left pointing here would both
+        // leak this Activity and keep firing. Matters when pairing never completes and the user
+        // backs out, where the one-shot clear above never runs.
+        clearServiceCallbacks()
         if (bound) {
             unbindService(connection)
             bound = false
