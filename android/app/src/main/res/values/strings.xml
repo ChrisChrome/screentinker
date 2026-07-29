@@ -39,4 +39,6 @@
     <string name="settings_perm_notifications">Notifications</string>
     <string name="settings_perm_hint">Tap \"Open\" to manage permissions in system settings</string>
     <string name="settings_perm_open">Open settings</string>
+    <string name="device_blocked_status">This screen has been blocked in the dashboard</string>
+    <string name="device_unpaired_status">This screen was unpaired — waiting to be re-paired</string>
 </resources>

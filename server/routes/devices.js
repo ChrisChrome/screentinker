@@ -282,6 +282,9 @@ router.post('/:id/block', (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;
   db.prepare("UPDATE devices SET blocked = 1, updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
+  // Mirror onto the saved settings so the block survives a delete + re-pair on purpose rather than
+  // by accident of whatever the saved copy happened to hold.
+  try { deviceSettings.setBlockedByDevice(req.params.id, true); } catch (e) { console.warn(`[blocked] save mirror failed: ${e.message}`); }
   console.warn(`[blocked] device ${req.params.id} blocked via dashboard (user ${req.user.id})`);
   res.json({ success: true, id: req.params.id, blocked: true });
 });
@@ -289,6 +292,10 @@ router.post('/:id/unblock', (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;
   db.prepare("UPDATE devices SET blocked = 0, updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
+  // MUST clear the saved copy too. applyToDevice() restores `blocked` on re-pair, so leaving the
+  // saved 1 in place made unblock temporary: the next delete + re-pair silently re-blocked the
+  // device, with nothing in the dashboard to explain it and no way for the operator to escape.
+  try { deviceSettings.setBlockedByDevice(req.params.id, false); } catch (e) { console.warn(`[blocked] save mirror failed: ${e.message}`); }
   console.log(`[blocked] device ${req.params.id} unblocked via dashboard (user ${req.user.id})`);
   res.json({ success: true, id: req.params.id, blocked: false });
 });
