@@ -127,6 +127,14 @@ module.exports = {
   // Disable public registration (OAuth auto-signup is also blocked when set).
   // First-user setup is still allowed so a fresh install can be initialized.
   disableRegistration: ['true', '1'].includes(String(process.env.DISABLE_REGISTRATION || '').toLowerCase()),
+  // #166 escape hatch: let players self-update EVEN WHEN an MDM/DPC owns the device.
+  // Off by default, because the default is the safe one — on a managed panel the install
+  // confirm dialog can't be reliably auto-dismissed and ends up sitting over customer content,
+  // and the MDM is normally the thing that pushes packages. Set this only when you run an MDM
+  // that does NOT distribute the player and you want ScreenTinker's OTA to own updates instead.
+  // Advertised to players in /api/update/check as `allow_managed`; a player that doesn't
+  // understand the field simply keeps its own behaviour.
+  otaAllowManagedDevices: ['true', '1'].includes(String(process.env.OTA_ALLOW_MANAGED_DEVICES || '').toLowerCase()),
   // Redirect / -> /app instead of serving the marketing landing page.
   // For self-hosted internal deployments that don't want the public homepage.
   disableHomepage: ['true', '1'].includes(String(process.env.DISABLE_HOMEPAGE || '').toLowerCase()),

@@ -759,6 +759,11 @@ app.get('/api/update/check', (req, res) => {
     download_url: '/download/apk',
     apk_size: updateAvailable ? apk.size : 0,
     apk_modified: updateAvailable ? apk.mtime : 0,
+    // #166 escape hatch (OTA_ALLOW_MANAGED_DEVICES). Tells a player it may self-update even when
+    // a foreign DPC owns the device. Always present, so a player can distinguish "the operator
+    // said no" from "this server is too old to have an opinion" — both mean stand down, but only
+    // the first is a decision.
+    allow_managed: !!config.otaAllowManagedDevices,
   });
 });
 

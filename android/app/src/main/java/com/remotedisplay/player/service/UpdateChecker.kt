@@ -138,6 +138,10 @@ class UpdateChecker(private val context: Context) {
                 val updateAvailable = json.optBoolean("update_available", false)
                 val latestVersion = json.optString("latest_version", currentVersion)
                 val downloadUrl = json.optString("download_url", "")
+                // #166 escape hatch: the operator set OTA_ALLOW_MANAGED_DEVICES, so self-update is
+                // permitted even under a foreign DPC. Defaults FALSE, which is also what an older
+                // server (that never sends the field) yields — absence must never read as consent.
+                val allowManaged = json.optBoolean("allow_managed", false)
 
                 Log.i(TAG, "Current: $currentVersion, Latest: $latestVersion, Update: $updateAvailable")
 
@@ -159,7 +163,8 @@ class UpdateChecker(private val context: Context) {
                     // Checked HERE rather than before the request: standing down early meant a
                     // stood-down panel never learned an update existed, so it reported ota_status
                     // 'none' — indistinguishable from up to date — and no dashboard ever flagged it.
-                    if (isManagedByForeignDeviceOwner()) {
+                    if (com.remotedisplay.player.admin.ManagedLogic.standDownFromSelfOta(
+                            isManagedByForeignDeviceOwner(), allowManaged)) {
                         val (managed, first) = OtaThrottle.onManagedStandDown(
                             otaState(), latestVersion, System.currentTimeMillis())
                         persistOta(managed)
@@ -169,6 +174,11 @@ class UpdateChecker(private val context: Context) {
                             announceOtaStatus() // transition -> 'manual_update_required' so the badge shows
                         }
                         return@Thread
+                    }
+                    if (allowManaged && isManagedByForeignDeviceOwner()) {
+                        // Loud on purpose: the operator overrode a safety default, and the confirm
+                        // dialog this may raise over customer content is the cost of that choice.
+                        Log.i(TAG, "Managed by a foreign DPC, but the server allows managed self-update — proceeding")
                     }
                     maybeUpdate(latestVersion, "${config.serverUrl}$downloadUrl")
                 }
