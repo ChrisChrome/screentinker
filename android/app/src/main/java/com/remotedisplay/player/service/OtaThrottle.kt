@@ -55,6 +55,26 @@ object OtaThrottle {
         return s to enteredBackoff
     }
 
+    /**
+     * A check found [latestVersion] available on a panel whose installs belong to a foreign DPC.
+     * We must not self-install — but we must not go quiet either: reporting nothing leaves the
+     * panel showing "no update pending" forever while it silently rots on an old build, which is
+     * precisely how one stayed 12 versions behind unnoticed. Park it in the same
+     * manual_update_required state a capped device reaches, and say so ONCE per target version
+     * (the check runs every cycle; the operator does not need to hear it every cycle).
+     */
+    fun onManagedStandDown(state: State, latestVersion: String, now: Long): Pair<State, Boolean> {
+        val s = if (isNewTarget(state, latestVersion)) State(targetVersion = latestVersion) else state
+        val report = !s.backoffReported
+        // attempts pinned at the cap and lastAttemptAt refreshed so statusFor() keeps reading
+        // manual_update_required for as long as the update is genuinely outstanding.
+        return s.copy(
+            attempts = MAX_INSTALL_ATTEMPTS,
+            lastAttemptAt = now,
+            backoffReported = true
+        ) to report
+    }
+
     /** A check found us already on the latest. True if there was pending OTA state to clear. */
     fun shouldClearOnUpToDate(state: State): Boolean = state.targetVersion.isNotEmpty()
 
