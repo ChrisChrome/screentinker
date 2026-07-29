@@ -87,7 +87,7 @@ function renderDeviceCard(device) {
   const checked = selectedDeviceIds.has(device.id);
   return `
     <div class="device-card${checked ? ' selected' : ''}" draggable="true" data-device-id="${device.id}" data-device-name="${esc(device.name)}" onclick="window.location.hash='/device/${device.id}'">
-      <label class="device-card-select" title="Select for wall" onclick="event.stopPropagation()">
+      <label class="device-card-select" title="${t('dashboard.select_for_wall')}" onclick="event.stopPropagation()">
         <input type="checkbox" class="device-select-cb" data-device-id="${device.id}"${checked ? ' checked' : ''}>
       </label>
       <div class="device-card-preview" id="preview-${device.id}">

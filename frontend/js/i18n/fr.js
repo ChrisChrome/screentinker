@@ -2,6 +2,12 @@
 // standard for software UIs in France; tu would feel underdressed for a B2B tool).
 // Native review recommended before publicizing as fully supported.
 export default {
+  'common.close': 'Fermer',
+  'switcher.manage_members': 'Gérer les membres',
+  'switcher.rename': 'Renommer l\'espace de travail',
+  'wall.rename': 'Renommer le mur',
+  'wall.remove_from_wall': 'Retirer du mur',
+  'dashboard.select_for_wall': 'Sélectionner pour le mur d\'images',
   'team.unavailable_desc': 'Cette fonctionnalité est indisponible pendant sa refonte pour fonctionner avec les espaces de travail. Les données des équipes existantes sont conservées.',
   'team.unavailable_title': 'Les équipes sont en cours de refonte',
   'settings.help_tip': 'Votre profil, votre mot de passe et la double authentification, ainsi que les jetons d\'API pour les intégrations et les outils d\'export ou d\'import de vos données.',

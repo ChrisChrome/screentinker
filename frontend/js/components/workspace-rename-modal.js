@@ -1,3 +1,4 @@
+import { t } from '../i18n.js';
 import { api } from '../api.js';
 
 // Open a rename modal for the given workspace. Uses the existing .modal-overlay
@@ -10,7 +11,7 @@ export function openWorkspaceRenameModal(workspace) {
     <div class="modal">
       <div class="modal-header">
         <h3>Rename workspace</h3>
-        <button class="btn-icon" type="button" data-rename-close aria-label="Close">
+        <button class="btn-icon" type="button" data-rename-close aria-label="${t('common.close')}">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
           </svg>

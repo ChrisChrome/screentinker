@@ -1,6 +1,12 @@
 // English translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  'common.close': 'Close',
+  'switcher.manage_members': 'Manage members',
+  'switcher.rename': 'Rename workspace',
+  'wall.rename': 'Rename wall',
+  'wall.remove_from_wall': 'Remove from wall',
+  'dashboard.select_for_wall': 'Select for video wall',
   'team.unavailable_desc': 'This feature is unavailable while it is redesigned to work with Workspaces. Existing team data is preserved.',
   'team.unavailable_title': 'Teams is being rebuilt',
   'settings.help_tip': 'Your profile, password and two-factor sign-in, plus API tokens for integrations and tools to export or import your data.',

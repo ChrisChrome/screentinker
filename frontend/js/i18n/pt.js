@@ -2,6 +2,12 @@
 // Reviewed for UI register (informal você). Native review recommended before
 // publicizing as fully supported.
 export default {
+  'common.close': 'Fechar',
+  'switcher.manage_members': 'Gerir membros',
+  'switcher.rename': 'Mudar o nome da área de trabalho',
+  'wall.rename': 'Mudar o nome do mural',
+  'wall.remove_from_wall': 'Remover do mural',
+  'dashboard.select_for_wall': 'Selecionar para o mural de vídeo',
   'team.unavailable_desc': 'Esta funcionalidade está indisponível enquanto é reformulada para funcionar com as Áreas de trabalho. Os dados das equipas existentes são preservados.',
   'team.unavailable_title': 'As equipas estão a ser reformuladas',
   'settings.help_tip': 'O seu perfil, palavra-passe e autenticação de dois fatores, além de tokens de API para integrações e ferramentas para exportar ou importar os seus dados.',

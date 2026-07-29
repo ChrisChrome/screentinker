@@ -192,7 +192,7 @@ async function renderWallEditor(container, wallId) {
     <div class="page-header" style="margin-bottom:12px">
       <h1 style="display:flex;align-items:center;gap:10px">
         <span id="wallTitleText">${esc(wall.name)}</span>
-        <button class="btn btn-sm" id="renameWallBtn" title="Rename wall" style="padding:2px 8px;font-size:12px">✎</button>
+        <button class="btn btn-sm" id="renameWallBtn" title="${t('wall.rename')}" style="padding:2px 8px;font-size:12px">✎</button>
       </h1>
       <div style="display:flex;gap:8px">
         <button class="btn btn-sm" id="centerViewBtn" title="Re-center and fit content to the viewport">Center</button>
@@ -387,7 +387,7 @@ async function renderWallEditor(container, wallId) {
         </div>
         ${renderNoteFor(s.device_id) ? `<div class="wall-screen-rendernote" style="font-size:9px;color:var(--warning,#e0a800);margin-top:2px;line-height:1.2">${esc(renderNoteFor(s.device_id))}</div>` : ''}
       </div>
-      <button class="wall-screen-remove" title="Remove from wall">×</button>
+      <button class="wall-screen-remove" title="${t('wall.remove_from_wall')}">×</button>
       ${resizeHandlesHtml()}
     `;
     el.querySelector('.wall-screen-remove').addEventListener('click', (ev) => {

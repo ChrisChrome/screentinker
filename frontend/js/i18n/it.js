@@ -1,6 +1,12 @@
 // Italian translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  'common.close': 'Chiudi',
+  'switcher.manage_members': 'Gestisci membri',
+  'switcher.rename': 'Rinomina spazio di lavoro',
+  'wall.rename': 'Rinomina parete',
+  'wall.remove_from_wall': 'Rimuovi dalla parete',
+  'dashboard.select_for_wall': 'Seleziona per la videowall',
   'team.unavailable_desc': 'Questa funzione non è disponibile mentre viene riprogettata per funzionare con gli Spazi di lavoro. I dati dei team esistenti vengono conservati.',
   'team.unavailable_title': 'I team sono in fase di riprogettazione',
   'settings.help_tip': 'Il tuo profilo, la password e l\'accesso a due fattori, oltre ai token API per le integrazioni e agli strumenti per esportare o importare i tuoi dati.',

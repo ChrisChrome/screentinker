@@ -114,3 +114,19 @@ test('a tip marker in a view always names a real string', () => {
   }
   assert.deepEqual(missing, [], missing.join('\n  '));
 });
+
+test('user-facing labels are translated, not hardcoded English', () => {
+  // A title= is a tooltip the user reads and an aria-label is what a screen reader says. Both
+  // were hardcoded English in a dozen places, so a French user hovering the only route to
+  // workspace members heard "Manage members". They are invisible to the key checks above
+  // precisely because they never call t().
+  const offenders = [];
+  for (const file of sourceFiles(FRONTEND)) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/(aria-label|title)="([A-Z][a-zA-Z ]{3,40})"/g)) {
+      offenders.push(`${path.relative(FRONTEND, file)}: ${m[1]}="${m[2]}"`);
+    }
+  }
+  assert.deepEqual(offenders, [],
+    `these ship English regardless of language:\n  ${offenders.join('\n  ')}`);
+});

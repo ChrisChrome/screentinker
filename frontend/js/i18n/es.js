@@ -1,6 +1,12 @@
 // Spanish translations. Reviewed for UI register (informal tú).
 // Native review still recommended before publicizing as fully supported.
 export default {
+  'common.close': 'Cerrar',
+  'switcher.manage_members': 'Gestionar miembros',
+  'switcher.rename': 'Renombrar espacio de trabajo',
+  'wall.rename': 'Renombrar muro',
+  'wall.remove_from_wall': 'Quitar del muro',
+  'dashboard.select_for_wall': 'Seleccionar para el videomuro',
   'team.unavailable_desc': 'Esta función no está disponible mientras se rediseña para funcionar con los Espacios de trabajo. Los datos de los equipos existentes se conservan.',
   'team.unavailable_title': 'Equipos está en rediseño',
   'settings.help_tip': 'Tu perfil, contraseña y verificación en dos pasos, además de tokens de API para integraciones y herramientas para exportar o importar tus datos.',
