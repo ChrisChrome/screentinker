@@ -20,6 +20,8 @@ function parseBillingRateTable(raw) {
   return null;
 }
 
+const { parseSize } = require('./lib/parse-size');
+
 module.exports = {
   port: process.env.PORT || 3001,
   httpsPort: process.env.HTTPS_PORT || 3443,
@@ -59,7 +61,13 @@ module.exports = {
   // #148 Item 4: TCP SO_KEEPALIVE idle delay — OS-level dead-peer probing independent of the
   // app ping, so a half-open TCP can't persist indefinitely.
   tcpKeepAliveMs: parseInt(process.env.TCP_KEEPALIVE_MS) || 20000,
-  maxFileSize:  process.env.MAX_FILE_SIZE || 500 * 1024 * 1024, // 500MB
+  // Upload ceiling, #233. Accepts bytes or a suffix (MAX_FILE_SIZE=2GB). An env var is a
+  // string, so this must be parsed rather than used directly — multer's limits.fileSize wants a
+  // number, and an unparseable value falls back to the default rather than becoming NaN, which
+  // would reject every upload. NOTE: a reverse proxy caps the request body independently
+  // (nginx client_max_body_size, and any CDN in front) and returns 413 before the app is
+  // reached, so raising this alone is not enough — see the README.
+  maxFileSize: parseSize(process.env.MAX_FILE_SIZE, 500 * 1024 * 1024), // default 500MB
   thumbnailWidth: 320,
   screenshotQuality: 70,
   // SSL: drop your Cloudflare Origin cert + key in certs/ folder

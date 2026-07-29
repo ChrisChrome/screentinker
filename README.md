@@ -136,7 +136,28 @@ Schema migrations run automatically on first boot — no manual migration comman
 | `PING_TIMEOUT` | Socket.IO Engine.IO pong wait (ms). Lower = faster dead-socket detection; higher = more forgiving of laggy clients. | `30000` |
 | `HEARTBEAT_INTERVAL` | App-level offline-checker frequency (ms). How often the server sweeps the device list looking for stale heartbeats. | `10000` |
 | `HEARTBEAT_TIMEOUT` | How long without an app-level heartbeat (ms) before marking a device offline. Raise for slow/jittery networks. | `45000` |
+| `MAX_FILE_SIZE` | Largest upload the server will accept. Bytes, or a suffix (`2GB`, `1500MB`). **A reverse proxy caps this independently** — see below. | `500MB` |
 | `COMMAND_QUEUE_TTL_MS` | How long the server holds commands and playlist-updates for a device that's offline at emit time (ms). Flushed in order on reconnect within this window; dropped past TTL. | `30000` |
+
+#### Raising the upload limit
+
+`MAX_FILE_SIZE` sets what **the application** accepts. It is usually not the only limit, and it
+is the last one in the chain — so raising it on its own often changes nothing and the upload
+still fails with a `413`:
+
+- **nginx** (or any reverse proxy) caps the request body with `client_max_body_size`. The
+  default is 1MB, and a typical signage deployment sets 500M. Raise it to match:
+
+  ```nginx
+  client_max_body_size 2048M;   # must be >= MAX_FILE_SIZE
+  ```
+
+- **Cloudflare** caps uploads per plan (100MB on Free/Pro at the time of writing) and returns
+  413 at the edge, before your server is involved. Large uploads need a plan that allows them,
+  or a route that bypasses the proxy.
+
+If an upload fails and nothing appears in the server log, the request never reached the app —
+check the proxy first.
 
 ### Optional Integrations
 
