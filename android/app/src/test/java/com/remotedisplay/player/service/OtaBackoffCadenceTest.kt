@@ -38,22 +38,32 @@ class OtaBackoffCadenceTest {
         return attemptsAt
     }
 
-    @Test fun the_first_three_attempts_burn_fast_at_the_check_cadence() {
-        val at = simulate(hours = 2)
-        assertEquals(3, at.size)
-        // Back to back on consecutive 30-min checks, so the cap is reached within about an hour.
-        assertEquals(listOf(0L, CHECK_INTERVAL, CHECK_INTERVAL * 2), at)
+    @Test fun the_opening_burst_runs_at_the_check_cadence_until_the_cap() {
+        val MAX = OtaThrottle.MAX_INSTALL_ATTEMPTS
+        // Long enough to burn the whole budget: MAX attempts at one per check interval.
+        val at = simulate(hours = (MAX * CHECK_INTERVAL / 3_600_000L).toInt() + 2)
+        assertEquals(MAX, at.size)
+        // Back to back on consecutive checks — no artificial spacing before the cap.
+        assertEquals(listOf(0L, CHECK_INTERVAL, CHECK_INTERVAL * 2), at.take(3))
+        assertEquals(CHECK_INTERVAL * (MAX - 1), at.last())
     }
 
-    @Test fun THE_QUESTION_after_the_cap_it_is_ONE_attempt_per_24h_not_three() {
-        val at = simulate(hours = 24 * 3 + 2)   // three full days
-        // 3 in the opening burst, then one per 24h window.
-        assertEquals(6, at.size)
-        val afterBurst = at.drop(3)
-        assertEquals(3, afterBurst.size)
+    @Test fun the_burst_now_spans_a_working_day_not_an_hour() {
+        // The reason for raising the cap: a confirm dialog needs a human to walk past, and three
+        // tries inside one hour gave up long before anyone realistically would.
+        val spanMs = OtaThrottle.MAX_INSTALL_ATTEMPTS * CHECK_INTERVAL
+        assert(spanMs >= 12 * 60 * 60 * 1000L) { "burst should cover a working day, was ${spanMs / 3_600_000}h" }
+    }
+
+    @Test fun THE_QUESTION_after_the_cap_it_is_ONE_attempt_per_24h_not_a_fresh_budget() {
+        val MAX = OtaThrottle.MAX_INSTALL_ATTEMPTS
+        val burstHours = (MAX * CHECK_INTERVAL / 3_600_000L).toInt()
+        val at = simulate(hours = burstHours + 24 * 3 + 2)
+        val afterBurst = at.drop(MAX)
+        assertEquals(3, afterBurst.size)          // three further days -> three retries, not 3x3
         for (i in 1 until afterBurst.size) {
-            val gap = afterBurst[i] - afterBurst[i - 1]
-            assertEquals("post-cap retries must be 24h apart", OtaThrottle.BACKOFF_MS, gap)
+            assertEquals("post-cap retries must be 24h apart",
+                OtaThrottle.BACKOFF_MS, afterBurst[i] - afterBurst[i - 1])
         }
     }
 

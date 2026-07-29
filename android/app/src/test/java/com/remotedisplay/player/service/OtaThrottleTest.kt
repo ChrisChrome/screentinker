@@ -80,19 +80,29 @@ class OtaThrottleTest {
         assertFalse(OtaThrottle.shouldClearOnUpToDate(OtaThrottle.State())) // nothing pending
     }
 
-    @Test fun statusForReflectsBackoffWindow() {
+    @Test fun statusForFlagsEarlyAndStaysFlaggedWhileStillRetrying() {
         val now = 10_000L
+        val FLAG = OtaThrottle.ATTEMPTS_BEFORE_FLAGGING
         // no target → none
         assertEquals("none", OtaThrottle.statusFor(OtaThrottle.State(), now))
-        // under the cap → pending
+        // below the flagging threshold → pending (it may still just work)
         assertEquals("pending", OtaThrottle.statusFor(
-            OtaThrottle.State(targetVersion = V, attempts = 1, lastAttemptAt = now), now))
-        // capped AND inside the window → manual update required
+            OtaThrottle.State(targetVersion = V, attempts = FLAG - 1, lastAttemptAt = now), now))
+        // at the threshold → a human is demonstrably needed, say so IMMEDIATELY. This is now far
+        // below the cap, so the dashboard flags in ~1h instead of waiting ~20h for the give-up.
         assertEquals("manual_update_required", OtaThrottle.statusFor(
-            OtaThrottle.State(targetVersion = V, attempts = MAX, lastAttemptAt = now), now + WINDOW - 1))
-        // capped but window elapsed (a retry is due) → pending, not stuck
-        assertEquals("pending", OtaThrottle.statusFor(
-            OtaThrottle.State(targetVersion = V, attempts = MAX, lastAttemptAt = now), now + WINDOW + 1))
+            OtaThrottle.State(targetVersion = V, attempts = FLAG, lastAttemptAt = now), now))
+        // ...and STAYS flagged while the device keeps retrying. It used to drop back to 'pending'
+        // once the backoff window elapsed, so a panel needing hands looked healthy between retries.
+        assertEquals("manual_update_required", OtaThrottle.statusFor(
+            OtaThrottle.State(targetVersion = V, attempts = FLAG, lastAttemptAt = now), now + WINDOW + 1))
+        assertEquals("manual_update_required", OtaThrottle.statusFor(
+            OtaThrottle.State(targetVersion = V, attempts = MAX, lastAttemptAt = now), now + WINDOW * 5))
+    }
+
+    @Test fun flagging_happens_far_before_giving_up() {
+        // The whole point of splitting the two thresholds.
+        assert(OtaThrottle.ATTEMPTS_BEFORE_FLAGGING < OtaThrottle.MAX_INSTALL_ATTEMPTS)
     }
 
     // ---- #166: managed stand-down (a foreign DPC owns installs on this panel) --------------------

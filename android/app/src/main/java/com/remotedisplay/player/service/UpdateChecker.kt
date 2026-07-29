@@ -267,7 +267,7 @@ class UpdateChecker(private val context: Context) {
                 "Force update: $latestVersion downloaded and verified, install launched — a confirm dialog must be accepted on the device unless an accessibility service does it")
         }
         if (enteredBackoff) {
-            report("warn", "Update $latestVersion available but not installing after ${afterLaunch.attempts} attempts — manual update required (backing off to one retry per ${OtaThrottle.BACKOFF_MS / 3_600_000L}h)")
+            report("warn", "Update $latestVersion downloaded and verified, but ${afterLaunch.attempts} install attempts have not completed — a human needs to accept the install prompt on this device (or the MDM needs to delegate install permission). Still retrying.")
             announceOtaStatus() // transition -> emits 'manual_update_required'
         }
     }
@@ -404,6 +404,17 @@ class UpdateChecker(private val context: Context) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 val installer = context.packageManager.packageInstaller
+                // Abandon our own leftover sessions first. Every attempt stages a FULL copy of the
+                // APK (~8.7MB) via openWrite, and a session whose confirm dialog is never accepted
+                // just sits there holding it. At three attempts that was a rounding error; at forty
+                // it would be ~350MB of staged installs on a panel nobody walks up to, on hardware
+                // that does not have it spare. Also keeps us clear of the per-app session limit,
+                // which would start throwing once enough accumulated.
+                try {
+                    for (s in installer.mySessions) {
+                        try { installer.abandonSession(s.sessionId) } catch (_: Throwable) { /* already gone */ }
+                    }
+                } catch (e: Throwable) { Log.w(TAG, "Session cleanup skipped: ${e.message}") }
                 val params = android.content.pm.PackageInstaller.SessionParams(
                     android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL
                 )
