@@ -4,6 +4,10 @@
 // and it boots a server and drives it. Run it deliberately:
 //
 //     npm run smoke                 (skips cleanly if no Chrome is installed)
+//
+// It lives OUTSIDE test/ on purpose: `node --test` globs that directory, so a file placed
+// there is picked up by `npm test` no matter what the intent was — which is exactly what
+// happened the first time, and it broke CI.
 //     CHROME=/path/to/chrome npm run smoke
 //
 // It exists because a whole class of defect is invisible to the unit suite, to a syntax check
@@ -61,7 +65,7 @@ const check = (name, ok, detail) => {
   const BASE = `http://127.0.0.1:${PORT}`;
   const logFile = path.join(os.tmpdir(), 'st-smoke.log');
   const srv = spawn('node', ['server.js'], {
-    cwd: path.join(__dirname, '..', '..'),
+    cwd: __dirname,
     env: { ...process.env, DATA_DIR, SELF_HOSTED: 'true', PORT: String(PORT), NODE_ENV: 'production' },
     stdio: ['ignore', fs.openSync(logFile, 'w'), fs.openSync(logFile, 'a')],
   });
