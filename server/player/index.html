@@ -2062,11 +2062,16 @@
       // Only the leader (or single, non-walled players) records a play_start —
       // followers would just spam duplicate proof-of-play rows for the same item.
       if (socket?.connected && (!wallConfig || wallConfig.is_leader)) {
+        // A widget item carries its id in widget_id and has NO content_id, so sending only
+        // content_id logged widget plays with nothing attached — the row existed but named
+        // neither what played nor which widget, and Reports read empty for any screen showing
+        // one. Send both; the server writes whichever column the id belongs in.
         socket.emit('device:play-event', {
           device_id: config.deviceId,
           event: 'play_start',
-          content_id: item.content_id,
-          content_name: item.filename,
+          content_id: item.content_id || null,
+          widget_id: item.widget_id || null,
+          content_name: item.filename || item.widget_name || item.title || null,
           duration_sec: item.duration_sec || null,
         });
       }
@@ -2095,8 +2100,10 @@
         socket.emit('device:play-event', {
           device_id: config.deviceId,
           event: 'play_end',
-          content_id: playlist[currentIndex].content_id,
-          content_name: playlist[currentIndex].filename,
+          content_id: playlist[currentIndex].content_id || null,
+          widget_id: playlist[currentIndex].widget_id || null,
+          content_name: playlist[currentIndex].filename || playlist[currentIndex].widget_name
+            || playlist[currentIndex].title || null,
           completed: true,
         });
       }

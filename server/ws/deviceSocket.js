@@ -1163,7 +1163,7 @@ module.exports = function setupDeviceSocket(io) {
     // Play event logging (proof-of-play)
     socket.on('device:play-event', (data) => {
       if (!requireDeviceAuth()) return;
-      const { device_id, event, content_id, content_name, zone_id, completed, duration_sec } = data;
+      const { device_id, event, content_id, widget_id, content_name, zone_id, completed, duration_sec } = data;
       if (device_id !== currentDeviceId) return;
       try {
         if (event === 'play_start') {
@@ -1181,15 +1181,21 @@ module.exports = function setupDeviceSocket(io) {
             // widget_id was simply never written. Write whichever column the id belongs
             // in; an id matching neither degrades to NULL references, so content_name
             // still records WHAT played instead of the event vanishing.
-            const isContent = content_id ? !!contentExists.get(content_id) : false;
-            const isWidget = (!isContent && content_id) ? !!widgetExists.get(content_id) : false;
+            // Prefer an EXPLICIT widget_id. A widget playlist item has no content_id at all, so
+            // sniffing content_id could never attribute it — those plays were recorded with both
+            // columns null, and Reports read empty for any screen showing a widget. Older players
+            // send only content_id (sometimes carrying a widget id), so the sniff stays as their
+            // fallback.
+            const explicitWidget = widget_id && widgetExists.get(widget_id) ? widget_id : null;
+            const isContent = (!explicitWidget && content_id) ? !!contentExists.get(content_id) : false;
+            const isWidget = (!explicitWidget && !isContent && content_id) ? !!widgetExists.get(content_id) : false;
             db.prepare(`
               INSERT INTO play_logs (device_id, content_id, widget_id, zone_id, content_name, started_at, trigger_type)
               VALUES (?, ?, ?, ?, ?, strftime('%s','now'), 'playlist')
             `).run(
               device_id,
               isContent ? content_id : null,
-              isWidget ? content_id : null,
+              explicitWidget || (isWidget ? content_id : null),
               zone_id || null,
               content_name || 'Unknown'
             );
@@ -1204,6 +1210,10 @@ module.exports = function setupDeviceSocket(io) {
             started_at: Date.now(),
           });
         } else if (event === 'play_end') {
+          // A widget play is closed by its widget id. Binding content_id to BOTH columns meant a
+          // widget row could never match itself, so it was never closed and never gained a
+          // duration — the other half of what made widget reporting useless.
+          // (Any comment must stay OUT of the template literal below; inside it, it becomes SQL.)
           db.prepare(`
             UPDATE play_logs SET ended_at = strftime('%s','now'),
               duration_sec = strftime('%s','now') - started_at,
@@ -1217,7 +1227,7 @@ module.exports = function setupDeviceSocket(io) {
               -- arbitrary one of the tied set.
               ORDER BY started_at DESC, id DESC LIMIT 1
             )
-          `).run(completed ? 1 : 0, device_id, content_id, content_id);
+          `).run(completed ? 1 : 0, device_id, content_id || null, widget_id || content_id || null);
         }
       } catch (err) {
         // Include the identifiers. Without them this is undiagnosable in production: it
