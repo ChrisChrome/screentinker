@@ -37,13 +37,32 @@ class STPolicy(context: Context) {
     } catch (_: Throwable) { emptyList() }
 
     /**
-     * A foreign DPC (MDM) manages this device: an active admin outside our package while we are NOT
-     * owner. Public getActiveAdmins() signal (a normal app can't read the owner component directly).
-     * Errs safe (managed => true) so self-OTA stands down on a managed panel. Single source for #166.
+     * A foreign DPC (MDM) OWNS this device — the condition under which self-OTA must stand down
+     * because the MDM pushes packages instead.
+     *
+     * This used to answer "is any device ADMIN active outside our package", on the belief that a
+     * normal app can't read the owner. It can: isDeviceOwnerApp/isProfileOwnerApp are public since
+     * API 21 and accept ANY package name. An active admin is a far weaker and much more common
+     * thing than an owner — Fire OS registers Amazon admins on a stock stick, and plenty of Android
+     * boxes ship one — so the broad reading made ordinary unmanaged panels declare themselves
+     * MDM-managed and opt out of updates permanently, with no MDM anywhere to push them an APK.
+     *
+     * Erring "managed" is only safe when something else is doing the updating. It isn't, so the
+     * question has to be asked precisely: an active admin outside our package that is the actual
+     * device owner, or the profile owner of the user we run as. Single source for #166.
      */
     fun hasForeignDeviceOwner(): Boolean = try {
-        if (isDeviceOwner()) false
-        else dpm?.activeAdmins?.any { it.packageName != pkg } == true
+        ManagedLogic.foreignDpcOwnsInstalls(
+            weCanInstallSilently = canInstallSilently(),
+            ourPackage = pkg,
+            admins = dpm?.activeAdmins.orEmpty().map {
+                ManagedLogic.Admin(
+                    packageName = it.packageName,
+                    isDeviceOwner = runCatching { dpm?.isDeviceOwnerApp(it.packageName) == true }.getOrDefault(false),
+                    isProfileOwner = runCatching { dpm?.isProfileOwnerApp(it.packageName) == true }.getOrDefault(false)
+                )
+            }
+        )
     } catch (_: Throwable) { false }
 
     /** Silent PackageInstaller (no confirm dialog): device owner OR delegated install scope. */
@@ -159,6 +178,48 @@ class STPolicy(context: Context) {
         // DevicePolicyManager.DELEGATION_PACKAGE_INSTALLATION — inlined to avoid an API-level guard on
         // the constant itself (it's a plain String since API 26; the value is stable AOSP).
         const val SCOPE_PACKAGE_INSTALLATION = "delegation-package-installation"
+    }
+}
+
+/**
+ * Pure "is this panel managed by someone else's DPC" decision, extracted so it's unit-testable
+ * without a device / DevicePolicyManager. STPolicy is the shell that reads real admin state.
+ */
+object ManagedLogic {
+    /** One active device admin, plus whether it actually OWNS this device / our user's profile. */
+    data class Admin(
+        val packageName: String,
+        val isDeviceOwner: Boolean = false,
+        val isProfileOwner: Boolean = false
+    )
+
+    /**
+     * True only when a package other than ours is the DEVICE OWNER, and we have no way to install
+     * for ourselves. Deliberately narrow, on evidence from a stock Fire TV stick (AFTKRT, Fire OS 7):
+     *
+     *   Profile Owner (User 0): com.amazon.tv.parentalcontrols   ← policies: wipe-data
+     *   Device Owner:           (none)
+     *
+     * So neither "any active admin" nor "device or profile owner" is usable — a retail stick out of
+     * the box satisfies both, and parental controls is plainly not going to install our APK for us.
+     * Only a genuine device owner implies a DPC that provisions packages.
+     *
+     * The asymmetry settles the remaining doubt. Standing down wrongly is silent and permanent: the
+     * panel opts out of updates and nothing ever retries. Attempting wrongly is bounded and visible:
+     * OtaThrottle caps it at MAX_INSTALL_ATTEMPTS and surfaces manual_update_required. When unsure,
+     * we should be the kind of wrong that shows up on a dashboard.
+     *
+     * Delegated install scope also counts as "we can do it ourselves" — a foreign owner that handed
+     * us DELEGATION_PACKAGE_INSTALLATION wants us installing, so standing down would defeat it.
+     */
+    fun foreignDpcOwnsInstalls(
+        weCanInstallSilently: Boolean,
+        ourPackage: String,
+        admins: List<Admin>
+    ): Boolean {
+        if (weCanInstallSilently) return false
+        // isProfileOwner is carried on Admin but intentionally NOT consulted — see above.
+        return admins.any { it.packageName != ourPackage && it.isDeviceOwner }
     }
 }
 

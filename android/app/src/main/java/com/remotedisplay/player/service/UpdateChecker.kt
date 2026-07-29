@@ -115,14 +115,6 @@ class UpdateChecker(private val context: Context) {
 
     fun checkForUpdate() {
         if (config.serverUrl.isEmpty()) return
-        // #155/#161: if a foreign device owner (an MDM/DPC) manages this panel, IT owns updates.
-        // Stand down — never self-install: on a managed device the self-install confirm dialog
-        // can't be reliably auto-dismissed and ends up over customer content. The MDM pushes the
-        // APK instead. Pure client-side safety net, independent of the server-side OTA switch.
-        if (isManagedByForeignDeviceOwner()) {
-            Log.i(TAG, "Managed by a foreign device owner (MDM) — self-OTA stands down; MDM owns updates")
-            return
-        }
 
         Thread {
             try {
@@ -159,6 +151,25 @@ class UpdateChecker(private val context: Context) {
                         announceOtaStatus() // transition -> emits 'none' so the badge clears promptly
                     }
                 } else if (downloadUrl.isNotEmpty()) {
+                    // #155/#161: if a foreign DPC genuinely OWNS this panel, IT owns updates. Stand
+                    // down — never self-install: on a managed device the confirm dialog can't be
+                    // reliably auto-dismissed and ends up over customer content. The MDM pushes the
+                    // APK instead. Client-side safety net, independent of the server OTA switch.
+                    //
+                    // Checked HERE rather than before the request: standing down early meant a
+                    // stood-down panel never learned an update existed, so it reported ota_status
+                    // 'none' — indistinguishable from up to date — and no dashboard ever flagged it.
+                    if (isManagedByForeignDeviceOwner()) {
+                        val (managed, first) = OtaThrottle.onManagedStandDown(
+                            otaState(), latestVersion, System.currentTimeMillis())
+                        persistOta(managed)
+                        Log.i(TAG, "Managed by a foreign DPC — self-OTA stands down; $latestVersion needs the MDM (or a human)")
+                        if (first) {
+                            report("warn", "Update $latestVersion available but this panel is managed by another device owner — self-install is disabled; push it from your MDM or update manually")
+                            announceOtaStatus() // transition -> 'manual_update_required' so the badge shows
+                        }
+                        return@Thread
+                    }
                     maybeUpdate(latestVersion, "${config.serverUrl}$downloadUrl")
                 }
             } catch (e: Exception) {

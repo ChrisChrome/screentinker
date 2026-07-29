@@ -94,4 +94,54 @@ class OtaThrottleTest {
         assertEquals("pending", OtaThrottle.statusFor(
             OtaThrottle.State(targetVersion = V, attempts = MAX, lastAttemptAt = now), now + WINDOW + 1))
     }
+
+    // ---- #166: managed stand-down (a foreign DPC owns installs on this panel) --------------------
+
+    @Test fun managed_standDown_reports_once_per_target_not_every_cycle() {
+        val now = 1_000_000L
+        val (s1, first) = OtaThrottle.onManagedStandDown(OtaThrottle.State(), V, now)
+        assertTrue("first sighting of this target must be reported", first)
+
+        // The check runs on a timer; the operator hears about it once, not forever.
+        val (s2, again) = OtaThrottle.onManagedStandDown(s1, V, now + 60_000)
+        assertFalse("same target must not re-report", again)
+        val (_, third) = OtaThrottle.onManagedStandDown(s2, V, now + 120_000)
+        assertFalse("still must not re-report", third)
+    }
+
+    @Test fun managed_standDown_reads_as_manual_update_required_not_none() {
+        // THE BUG: standing down before the check left ota_status 'none' — indistinguishable from
+        // "up to date", so a rotting panel looked healthy on the dashboard.
+        val now = 1_000_000L
+        val (s, _) = OtaThrottle.onManagedStandDown(OtaThrottle.State(), V, now)
+        assertEquals("manual_update_required", OtaThrottle.statusFor(s, now))
+        assertEquals(V, s.targetVersion)
+    }
+
+    @Test fun managed_standDown_stays_flagged_across_the_backoff_window() {
+        // A capped device flips back to "pending" once the window elapses, because a retry is due.
+        // A managed panel has no retry coming: refreshing lastAttemptAt each cycle keeps it honest.
+        val now = 1_000_000L
+        var (s, _) = OtaThrottle.onManagedStandDown(OtaThrottle.State(), V, now)
+        val later = now + WINDOW + 1
+        s = OtaThrottle.onManagedStandDown(s, V, later).first
+        assertEquals("manual_update_required", OtaThrottle.statusFor(s, later))
+    }
+
+    @Test fun a_newer_version_re_reports_because_it_is_news() {
+        val now = 1_000_000L
+        val (s1, _) = OtaThrottle.onManagedStandDown(OtaThrottle.State(), V, now)
+        val (s2, fresh) = OtaThrottle.onManagedStandDown(s1, "1.9.24", now + 5_000)
+        assertTrue("a different target is a new thing to say", fresh)
+        assertEquals("1.9.24", s2.targetVersion)
+    }
+
+    @Test fun managed_standDown_never_consumes_a_healthy_devices_budget() {
+        // It pins attempts at the cap by design; the point is that it is reached WITHOUT ever
+        // launching an install, so no APK was downloaded and no confirm dialog was thrown up.
+        val now = 1_000_000L
+        val (s, _) = OtaThrottle.onManagedStandDown(OtaThrottle.State(), V, now)
+        assertEquals(MAX, s.attempts)
+        assertTrue(s.backoffReported)
+    }
 }
