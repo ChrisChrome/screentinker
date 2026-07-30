@@ -1270,6 +1270,10 @@ export default {
   'admin.access_denied_desc': 'Platform admin access required.',
   'admin.all_users': 'All Users',
   'admin.plans': 'Subscription Plans',
+  'admin.col.accounts': 'Accounts',
+  'admin.col.screens': 'Screens',
+  'admin.plan_hidden': 'hidden',
+  'admin.plan_orphaned': 'Accounts on a plan that no longer exists',
   'admin.system': 'System',
   // #15: instance-level default branding
   'admin.branding.title': 'Default branding',

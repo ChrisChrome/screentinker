@@ -373,7 +373,10 @@ async function loadStatusDebug() {
 async function loadPlans() {
   const el = document.getElementById('plansTable');
   try {
-    const plans = await fetch('/api/subscription/plans').then(r => r.json());
+    // Admin endpoint, not /api/subscription/plans: that one filters `active = 1` because it feeds
+    // the pricing page, so a deliberately hidden plan (a comped or beta tier) was invisible to the
+    // operator too. Here we want every plan, plus who is actually on each one.
+    const { plans, orphaned } = await api.adminListPlans();
     el.innerHTML = `
       <div class="table-wrap">
       <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:500px">
@@ -383,20 +386,31 @@ async function loadPlans() {
           <th style="padding:8px;text-align:right;color:var(--text-muted)">${t('admin.col.storage')}</th>
           <th style="padding:8px;text-align:right;color:var(--text-muted)">${t('admin.col.monthly')}</th>
           <th style="padding:8px;text-align:right;color:var(--text-muted)">${t('admin.col.yearly')}</th>
+          <th style="padding:8px;text-align:right;color:var(--text-muted)">${t('admin.col.accounts')}</th>
+          <th style="padding:8px;text-align:right;color:var(--text-muted)">${t('admin.col.screens')}</th>
         </tr></thead>
         <tbody>
           ${plans.map(p => `
-            <tr style="border-bottom:1px solid var(--border)">
-              <td style="padding:8px;font-weight:500">${p.display_name}</td>
+            <tr style="border-bottom:1px solid var(--border)${p.active ? '' : ';opacity:.7'}">
+              <td style="padding:8px;font-weight:500">${esc(p.display_name)}
+                <span style="color:var(--text-muted);font-weight:400;font-size:11px">${esc(p.id)}</span>
+                ${p.active ? '' : `<span style="margin-left:6px;font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:8px;color:var(--text-muted)">${t('admin.plan_hidden')}</span>`}
+              </td>
               <td style="padding:8px;text-align:right">${p.max_devices === -1 ? t('admin.unlimited') : p.max_devices}</td>
               <td style="padding:8px;text-align:right">${p.max_storage_mb === -1 ? t('admin.unlimited') : p.max_storage_mb >= 1024 ? (p.max_storage_mb/1024)+'GB' : p.max_storage_mb+'MB'}</td>
               <td style="padding:8px;text-align:right">${p.price_monthly > 0 ? '$'+p.price_monthly : t('admin.free')}</td>
               <td style="padding:8px;text-align:right">${p.price_yearly > 0 ? '$'+p.price_yearly : '-'}</td>
+              <td style="padding:8px;text-align:right${p.user_count ? ';font-weight:500' : ';color:var(--text-muted)'}">${p.user_count}</td>
+              <td style="padding:8px;text-align:right;color:var(--text-muted)">${p.device_count}</td>
             </tr>
           `).join('')}
         </tbody>
       </table>
       </div>
+      ${(orphaned && orphaned.length) ? `
+        <p style="margin-top:10px;color:var(--danger);font-size:12px">
+          ${t('admin.plan_orphaned')}: ${orphaned.map(o => `<strong>${esc(o.plan_id)}</strong> (${o.user_count})`).join(', ')}
+        </p>` : ''}
     `;
   } catch (err) { el.innerHTML = `<p style="color:var(--danger)">${esc(err.message)}</p>`; }
 }
