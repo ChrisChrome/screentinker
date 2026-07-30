@@ -985,8 +985,8 @@ module.exports = function setupDeviceSocket(io) {
       if (telemetry && deviceExists(device_id)) {
         db.prepare(`
           INSERT INTO device_telemetry (device_id, battery_level, battery_charging, storage_free_mb, storage_total_mb,
-            ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds, local_ip)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           device_id,
           telemetry.battery_level ?? null,
@@ -998,7 +998,10 @@ module.exports = function setupDeviceSocket(io) {
           telemetry.cpu_usage ?? null,
           telemetry.wifi_ssid ?? null,
           telemetry.wifi_rssi ?? null,
-          telemetry.uptime_seconds ?? null
+          telemetry.uptime_seconds ?? null,
+          // Device-supplied text headed for a column the dashboard renders: trim and cap it.
+          // 45 chars is the longest legitimate value (a full IPv6 address).
+          typeof telemetry.local_ip === 'string' ? telemetry.local_ip.trim().slice(0, 45) || null : null
         );
         pruneTelemetry(device_id);
 

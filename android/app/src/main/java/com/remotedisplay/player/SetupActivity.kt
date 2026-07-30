@@ -160,6 +160,18 @@ class SetupActivity : AppCompatActivity() {
         // Default launcher / HOME: a kiosk MUST be the default launcher, else Android returns to the
         // stock launcher and tears down + recreates the player on a loop (it never renders). Request
         // the HOME role (clean system dialog on API 29+); fall back to the Home-app picker in Settings.
+        // OPTIONAL: location, solely so the device page can show the Wi-Fi network name. Requested
+        // only when someone taps this row — never at startup, and nothing else in the player depends
+        // on it. Once granted (or permanently denied) requestPermissions() stops prompting, so an
+        // already-answered row sends you to app settings where it can be changed either way.
+        findViewById<Button>(R.id.enableLocationBtn).setOnClickListener {
+            if (hasLocationPermission()) openAppSettings()
+            else ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+                101
+            )
+        }
         findViewById<Button>(R.id.enableLauncherBtn).setOnClickListener { promptSetDefaultLauncher() }
 
         // Launch-on-boot needs USE_FULL_SCREEN_INTENT, which Android 14+ auto-revokes
@@ -306,6 +318,13 @@ class SetupActivity : AppCompatActivity() {
         writeSettingsStatus.setTextColor(if (canWrite) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
         bindPermissionButton(enableWriteSettingsBtn, canWrite, "Enable")
 
+        // Optional Wi-Fi-name permission
+        val hasLoc = hasLocationPermission()
+        val locationStatus = findViewById<TextView>(R.id.locationStatus)
+        locationStatus.text = if (hasLoc) "ON" else "OFF"
+        locationStatus.setTextColor(if (hasLoc) 0xFF22C55E.toInt() else 0xFF64748B.toInt())
+        bindPermissionButton(findViewById(R.id.enableLocationBtn), hasLoc, "Enable")
+
         // Default launcher (HOME): kiosk foreground stability requires being the default launcher.
         val isDefaultHome = isDefaultLauncher()
         val launcherStatus = findViewById<TextView>(R.id.launcherStatus)
@@ -317,6 +336,11 @@ class SetupActivity : AppCompatActivity() {
         val allGood = accessibilityEnabled && canInstall
         continueBtn.text = if (allGood) "Continue to Setup" else "Continue Anyway"
     }
+
+    /** Either location permission is enough for the SSID; coarse suffices below Android 10. */
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun isDefaultLauncher(): Boolean {
         // Ask the SAME authority the action uses. This used to read resolveActivity(MATCH_DEFAULT_ONLY),

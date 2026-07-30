@@ -275,6 +275,8 @@ export default {
     // Info cards
   'device.info.status': 'Stato',
   'device.info.ip_address': 'Indirizzo IP',
+  'device.info.local_ip': 'IP locale',
+  'device.info.wifi_needs_location': 'Richiede permesso di posizione',
   'device.info.battery': 'Batteria',
   'device.info.storage': 'Archiviazione',
   'device.info.size_free': '{size} liberi',

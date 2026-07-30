@@ -30,6 +30,11 @@ class DeviceInfo(private val context: Context) {
             put("ram_total_mb", getRamTotalMB())
             put("cpu_usage", getCpuUsage())
             put("wifi_ssid", getWifiSSID())
+            // The screen's OWN address on the network. The server separately records the PUBLIC
+            // address it sees the connection from; showing only that had customers reading their
+            // ISP's address as their screen's IP. Needs no permission — read straight off the
+            // interfaces, so it works on Ethernet panels too, not just Wi-Fi.
+            put("local_ip", getLocalIp() ?: JSONObject.NULL)
             put("wifi_rssi", getWifiRSSI())
             put("uptime_seconds", getUptimeSeconds())
             // #74/#75: OS timezone + UTC clock (effective-tz resolution + dashboard skew indicator)
@@ -168,16 +173,49 @@ class DeviceInfo(private val context: Context) {
         }
     }
 
+    /**
+     * The connected Wi-Fi network name, or a value saying WHY we do not have it.
+     *
+     * Android 8.1+ hides the SSID from apps without location permission, returning the literal
+     * "<unknown ssid>". We report "Unknown" for that, which reads as a fault in the player — a
+     * customer reasonably assumed it needed device-owner access. It needs LOCATION, which this app
+     * deliberately does not require: a signage player asking for location to display a network name
+     * is a poor trade. It can be granted from the setup screen if someone wants the field filled in.
+     *
+     * So: "permission" when we are not allowed to know, null when there is genuinely no Wi-Fi (an
+     * Ethernet panel), and the name otherwise. The dashboard can then say something true.
+     */
     @Suppress("DEPRECATION")
-    private fun getWifiSSID(): String {
+    private fun getWifiSSID(): String? {
         return try {
             val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val info = wm.connectionInfo
-            info.ssid?.replace("\"", "") ?: "Unknown"
+            val raw = wm.connectionInfo?.ssid?.replace("\"", "")
+            when {
+                raw.isNullOrEmpty() -> null
+                // What the platform hands back when location is missing or switched off.
+                raw.equals("<unknown ssid>", ignoreCase = true) || raw == "0x" -> "permission"
+                else -> raw
+            }
         } catch (e: Exception) {
-            "Unknown"
+            null
         }
     }
+
+    /** First non-loopback IPv4 on any up interface (Wi-Fi or Ethernet). No permission needed. */
+    private fun getLocalIp(): String? = try {
+        var found: String? = null
+        val ifaces = java.net.NetworkInterface.getNetworkInterfaces()
+        while (ifaces != null && ifaces.hasMoreElements() && found == null) {
+            val iface = ifaces.nextElement()
+            if (!iface.isUp || iface.isLoopback) continue
+            val addrs = iface.inetAddresses
+            while (addrs.hasMoreElements()) {
+                val addr = addrs.nextElement()
+                if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) { found = addr.hostAddress; break }
+            }
+        }
+        found
+    } catch (e: Throwable) { null }
 
     @Suppress("DEPRECATION")
     private fun getWifiRSSI(): Int {

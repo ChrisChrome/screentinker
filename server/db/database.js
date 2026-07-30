@@ -348,6 +348,10 @@ const migrations = [
   // boot, so an `IS NULL` backfill would silently swallow the first alert of any outage
   // that began since the last restart. The one-time backfill is below, in schema_migrations.
   "ALTER TABLE devices ADD COLUMN offline_alert_heartbeat INTEGER",
+  // The device's OWN address on the local network, reported by the player. devices.ip_address is
+  // the PUBLIC address the server sees the connection arrive from — both are useful and they are
+  // not the same thing. A customer reading the public IP as "my screen's IP" prompted this.
+  "ALTER TABLE device_telemetry ADD COLUMN local_ip TEXT",
   // Backfill a unique 6-digit PIN for already-paired devices that predate the
   // settings_pin column (their next reconnect re-sends device:paired with it, so
   // the existing fleet isn't locked out of the on-device menu). Idempotent: the
