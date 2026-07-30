@@ -53,3 +53,48 @@ test('openapi: every documented path is a token-reachable (public) router, never
   }
   assert.deepEqual(offenders, [], 'spec documents non-public paths:\n' + offenders.join('\n'));
 });
+
+// The published spec version is what Redoc prints at the top of the API reference, so a stale
+// value tells integrators they are reading docs for a release that no longer exists. It HAD gone
+// stale — the spec said 1.9.0 while 1.9.25 was shipping — because bump-version.sh updated every
+// other version source and not this one. That step now exists; this test is what keeps it honest,
+// since the failure mode is silent and nobody reads a version number they already trust.
+test('openapi: the spec version tracks the shipped release', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  // Pre-release labels (1.9.26-beta.1) live on the build, not on the published API identity,
+  // so compare the numeric core the way bump-version.sh writes it.
+  const numeric = (v) => String(v).split('-')[0];
+  assert.equal(
+    numeric(spec.info.version),
+    numeric(pkg.version),
+    'docs/openapi.yaml info.version drifted from server/package.json — bump-version.sh should ' +
+    'have moved both; if you edited a version by hand, move this one too',
+  );
+});
+
+// Two addresses that are easy to mix up: ip_address is the public/WAN address the SERVER observed
+// on connect, local_ip is the LAN address the PLAYER reported about itself. An integrator reaching
+// a panel on site needs local_ip; one correlating sites needs ip_address. Both are returned by
+// GET /devices, so both must be documented and must not be described interchangeably.
+test('openapi: a device documents its WAN and LAN addresses distinctly', () => {
+  const props = spec.components.schemas.Device.properties;
+  for (const field of ['ip_address', 'local_ip']) {
+    assert.ok(props[field], `Device.${field} is returned by GET /devices but is not documented`);
+    assert.ok(
+      props[field].type.includes('null'),
+      `Device.${field} must be nullable — it is absent until a device reports/connects`,
+    );
+    assert.ok(props[field].description, `Device.${field} needs a description to be told apart`);
+  }
+  assert.match(props.ip_address.description, /WAN|public/i);
+  assert.match(props.local_ip.description, /local network|LAN/i);
+});
+
+// "permission" is a sentinel, not a network name: Android 10+ withholds the SSID without a
+// location permission ScreenTinker only requests if an operator opts in. An integrator who does
+// not know that will render it as the Wi-Fi name to an end user.
+test('openapi: the wifi_ssid permission sentinel is documented', () => {
+  const ssid = spec.components.schemas.Device.properties.wifi_ssid;
+  assert.ok(ssid, 'wifi_ssid is returned by GET /devices but is not documented');
+  assert.match(ssid.description, /permission/, 'the sentinel value must be explained');
+});

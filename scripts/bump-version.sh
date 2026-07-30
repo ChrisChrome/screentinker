@@ -80,8 +80,17 @@ sed -i -E "s/(versionCode.*\?:[[:space:]]*)\"[0-9]+\"/\1\"$((CODE + 1))\"/" andr
 NUMERIC="${NEW%%-*}"
 sed -i -E "/^<\?xml/! s/([[:space:]]version=\")[0-9][^\"]*(\")/\1${NUMERIC}\2/" tizen/config.xml
 
-# 5) commit + annotated tag (no push)
-git add VERSION server/package.json server/package-lock.json android/app/build.gradle.kts tizen/config.xml
+# 5) public API spec version. This is the number Redoc prints at the top of the published
+#    API reference (frontend/api-docs.html renders docs/openapi.yaml directly), so leaving it
+#    behind means customers read a version that has not existed for months — it had drifted to
+#    1.9.0 while shipping 1.9.25 precisely because this step did not exist. Anchored to the
+#    two-space `  version:` under `info:`; operation-level and schema-level keys are indented
+#    deeper and are not touched. As with Tizen, use the numeric form: the spec version is a
+#    published API identity, not a build label.
+sed -i -E "0,/^  version:/s/^(  version:[[:space:]]*).*/\1${NUMERIC}/" docs/openapi.yaml
+
+# 6) commit + annotated tag (no push)
+git add VERSION server/package.json server/package-lock.json android/app/build.gradle.kts tizen/config.xml docs/openapi.yaml
 git commit -q -m "chore(release): v$NEW"
 git tag -a "v$NEW" -m "ScreenTinker v$NEW"
 

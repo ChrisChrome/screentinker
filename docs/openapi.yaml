@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ScreenTinker Public API
-  version: 1.9.0
+  version: 1.9.25
   description: |
     Public, token-scoped REST API for ScreenTinker digital signage.
 
@@ -108,6 +108,60 @@ components:
           type: string
         created_at:
           type: integer
+
+        # --- Network addresses -------------------------------------------------------------
+        # Two different addresses, easy to confuse, so both are spelled out. They answer
+        # different questions and either can be null.
+        ip_address:
+          type: [string, "null"]
+          description: |
+            The device's **public (WAN)** address as observed by the server when the player
+            connected — i.e. what the internet sees. Behind a reverse proxy this is taken from
+            the first `X-Forwarded-For` entry, otherwise the socket peer address. Every device
+            on one site normally shares this. Null until the device has connected at least once.
+        local_ip:
+          type: [string, "null"]
+          description: |
+            The device's **own address on its local network** (e.g. `192.168.1.42`), as
+            reported by the player itself. This is the one to use to reach a panel directly on
+            site. Null on players that do not report it, or where the platform withholds it.
+
+        # --- Latest telemetry --------------------------------------------------------------
+        # Flattened from the most recent telemetry report. All null for a device that has
+        # never reported, and for platforms that cannot supply a given metric — treat every
+        # field here as optional rather than assuming a web player reports what Android does.
+        wifi_ssid:
+          type: [string, "null"]
+          description: |
+            Wi-Fi network name, or null on a wired/unknown connection.
+
+            Special value `"permission"` means the device is on Wi-Fi but the operating system
+            withheld the name — on Android 10+ reading the SSID requires a location permission
+            that ScreenTinker only asks for if an operator opts in. Treat `"permission"` as
+            "connected, name unavailable", not as a network literally called that.
+        wifi_rssi:
+          type: [integer, "null"]
+          description: Signal strength in dBm (negative; closer to zero is stronger).
+        battery_level:
+          type: [integer, "null"]
+          description: Battery percentage 0-100, or null on mains-powered hardware.
+        battery_charging:
+          type: [integer, "null"]
+          description: 1 charging, 0 not charging, null unknown.
+        storage_free_mb:
+          type: [integer, "null"]
+        storage_total_mb:
+          type: [integer, "null"]
+        ram_free_mb:
+          type: [integer, "null"]
+        ram_total_mb:
+          type: [integer, "null"]
+        cpu_usage:
+          type: [number, "null"]
+          description: Recent CPU utilisation as a percentage, where the platform exposes it.
+        uptime_seconds:
+          type: [integer, "null"]
+          description: Seconds since the device booted.
 
     Playlist:
       type: object
