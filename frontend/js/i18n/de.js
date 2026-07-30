@@ -259,6 +259,8 @@ export default {
   'device.playlist_picker.with_auto': '{name} (auto) — {n} Elemente',
   'device.info.status': 'Status',
   'device.info.ip_address': 'IP-Adresse',
+  'device.info.local_ip': 'Lokale IP',
+  'device.info.wifi_needs_location': 'Standortberechtigung erforderlich',
   'device.info.battery': 'Akku',
   'device.info.storage': 'Speicher',
   'device.info.size_free': '{size} frei',

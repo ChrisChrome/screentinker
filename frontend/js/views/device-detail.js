@@ -5,6 +5,16 @@ import { esc, livenessBadge, hydrateAuthImages } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showDeviceOwnerQRModal } from '../components/device-owner-qr-modal.js';
 
+// The player distinguishes three cases for the Wi-Fi name, because "--" was hiding a real
+// answer: Android 8.1+ refuses to reveal the SSID to an app without location permission, and a
+// customer reasonably read the blank as a bug in the player. "permission" means we are not
+// allowed to know; empty means there is genuinely no Wi-Fi (an Ethernet panel).
+function ssidLabel(ssid) {
+  if (ssid === 'permission') return esc(t('device.info.wifi_needs_location'));
+  if (!ssid) return '--';
+  return esc(ssid);
+}
+
 let currentDevice = null;
 let statusHandler = null;
 let screenshotHandler = null;
@@ -302,6 +312,13 @@ async function loadDevice(deviceId, activeTab = null) {
             <div class="info-card-label">${t('device.info.ip_address')}</div>
             <div class="info-card-value small">${device.ip_address || '--'}</div>
           </div>
+          <div class="info-card">
+            <!-- Two different addresses, and conflating them confused a customer into reading their
+                 ISP's address as the screen's. Above is where the connection comes FROM (public);
+                 this is what the screen calls itself on its own network. -->
+            <div class="info-card-label">${t('device.info.local_ip')}</div>
+            <div class="info-card-value small" id="telLocalIp">${device.local_ip || '--'}</div>
+          </div>
           ${device.android_version && !device.android_version.startsWith('Web/') ? `
           <div class="info-card">
             <div class="info-card-label">${t('device.info.battery')}</div>
@@ -330,7 +347,7 @@ async function loadDevice(deviceId, activeTab = null) {
           ${device.android_version && !device.android_version.startsWith('Web/') ? `
           <div class="info-card">
             <div class="info-card-label">${t('device.info.wifi')}</div>
-            <div class="info-card-value small" id="telWifi">${latestTelemetry.wifi_ssid || '--'}</div>
+            <div class="info-card-value small" id="telWifi">${ssidLabel(latestTelemetry.wifi_ssid)}</div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px" id="telRssi">${latestTelemetry.wifi_rssi ? latestTelemetry.wifi_rssi + ' dBm' : ''}</div>
           </div>
           ` : ''}
@@ -1868,7 +1885,8 @@ function updateTelemetryDisplay(telemetry) {
   };
   if (telemetry.battery_level != null) update('telBattery', telemetry.battery_level + '%');
   if (telemetry.storage_free_mb) update('telStorage', t('device.info.size_free', { size: formatBytes(telemetry.storage_free_mb) }));
-  if (telemetry.wifi_ssid) update('telWifi', telemetry.wifi_ssid);
+  if (telemetry.wifi_ssid !== undefined) update('telWifi', ssidLabel(telemetry.wifi_ssid));
+  if (telemetry.local_ip) update('telLocalIp', telemetry.local_ip);
   if (telemetry.wifi_rssi) update('telRssi', telemetry.wifi_rssi + ' dBm');
   if (telemetry.uptime_seconds) update('telUptime', formatUptime(telemetry.uptime_seconds));
   if (telemetry.ram_free_mb) update('telRam', t('device.info.size_free', { size: formatBytes(telemetry.ram_free_mb) }));

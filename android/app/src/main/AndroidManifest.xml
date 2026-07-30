@@ -9,6 +9,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- OPTIONAL, and never requested at startup. Android 8.1+ hides the connected Wi-Fi network
+         name from apps without location permission, so the device page can only show "unavailable"
+         without it. A signage player should not demand location to display a network name, so this
+         is opt-in from the setup screen and nothing else depends on it: not granting it changes
+         only that one field. Coarse is enough below Android 10; fine is required from 10 onwards. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

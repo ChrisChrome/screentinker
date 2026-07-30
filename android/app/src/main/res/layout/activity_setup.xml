@@ -446,6 +446,66 @@
                 android:paddingBottom="4dp" />
         </LinearLayout>
 
+        <!-- OPTIONAL: Wi-Fi network name. Android 8.1+ will not tell an app the connected SSID
+             without location permission, so the device page shows "unavailable" without this.
+             Nothing else in the player uses location, and nothing else changes if it is refused —
+             this row exists so it is a choice rather than a silent blank field. -->
+        <LinearLayout
+            android:id="@+id/locationRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="5dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Wi-Fi Name (optional)"
+                    android:textColor="#F1F5F9"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Android needs location permission to reveal the network name. Nothing else uses it."
+                    android:textColor="#64748B"
+                    android:textSize="8sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/locationStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OFF"
+                android:textColor="#EF4444"
+                android:textSize="9sp"
+                android:textStyle="bold"
+                android:layout_marginEnd="12dp" />
+
+            <Button
+                android:id="@+id/enableLocationBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
+                android:text="Enable"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:background="@drawable/button_primary"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp" />
+        </LinearLayout>
+
         <!-- Default launcher / HOME. A signage kiosk MUST be the device's default launcher, or Android
              keeps returning to the stock launcher and the player is torn down + recreated on a loop
              (never renders). Not applicable where you can't set a launcher (e.g. some Android TV). -->

@@ -22,7 +22,7 @@ router.get('/', (req, res) => {
   const devices = db.prepare(`
     SELECT d.*,
       t.battery_level, t.battery_charging, t.storage_free_mb, t.storage_total_mb,
-      t.ram_free_mb, t.ram_total_mb, t.wifi_ssid, t.wifi_rssi, t.uptime_seconds,
+      t.ram_free_mb, t.ram_total_mb, t.wifi_ssid, t.wifi_rssi, t.uptime_seconds, t.local_ip,
       t.cpu_usage,
       s.filepath as screenshot_path, s.captured_at as screenshot_at,
       u.email as owner_email, u.name as owner_name
