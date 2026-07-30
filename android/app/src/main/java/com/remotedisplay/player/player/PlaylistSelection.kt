@@ -76,3 +76,62 @@ object PlaybackResume {
         return savedIndex
     }
 }
+
+/**
+ * #157's deferral: when a playlist update drops the item that is CURRENTLY on screen, we let that
+ * item finish its turn instead of yanking it, and apply the new list at the next natural advance.
+ *
+ * The rule needs two guards it did not have, both found from a customer report where a playlist
+ * change appeared to be ignored entirely:
+ *
+ *  1. An EMPTY new list is not a rotation. Clearing a screen's playlist is an operator saying "stop
+ *     showing that", so it must take effect now. Deferring it left the old content up forever.
+ *  2. Deferring assumes an advance is coming. A YouTube item never advanced (see endsOnTimer), so
+ *     the pending swap was stranded permanently — the caller must pair this with a deadline.
+ *
+ * Pure so the rule can be checked without a device or a WebView.
+ */
+object PendingSwap {
+    /**
+     * How long a deferred swap may wait for "the next natural advance" before it is applied anyway.
+     * The deferral assumes an advance is coming; YouTube proved it might not be, and any future item
+     * type that ends on a callback could do the same. Must comfortably clear an ordinary dwell so it
+     * never pre-empts a normal rotation, while still being short enough that an operator watching
+     * the screen sees their change land.
+     */
+    const val DEADLINE_MS = 60_000L
+
+    /**
+     * Whether a playlist update should wait for the current item to finish.
+     * False means apply it immediately.
+     */
+    fun shouldDefer(
+        isRunning: Boolean,
+        wallFollower: Boolean,
+        hasContentOnScreen: Boolean,
+        currentlyPlayingId: String?,
+        newContentIds: List<String>,
+    ): Boolean {
+        if (!isRunning || wallFollower || !hasContentOnScreen) return false
+        if (currentlyPlayingId == null) return false
+        if (newContentIds.isEmpty()) return false            // guard 1: an explicit stop
+        return !newContentIds.contains(currentlyPlayingId)
+    }
+}
+
+/**
+ * Which items end on a TIMER versus a completion callback.
+ *
+ * video/youtube was in neither camp and so ended on nothing at all: it is played by loading an embed
+ * into a WebView, which reports no completion, and no advance was ever armed for it. The item's
+ * configured duration was passed to the player and dropped on the floor. A playlist containing a
+ * YouTube item simply stopped there for good, and any pending playlist change stopped with it.
+ *
+ * Local and remote video deliberately stay OFF the timer path — the player reports STATE_ENDED for
+ * those and a timer would cut a clip short at its configured duration.
+ */
+object ItemTiming {
+    fun endsOnTimer(mimeType: String, isWidget: Boolean): Boolean =
+        mimeType.startsWith("image/") || isWidget || mimeType == "video/youtube"
+}
+
