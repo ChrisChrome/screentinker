@@ -193,6 +193,7 @@ export const api = {
   getItemSchedules: (id, itemId) => request(`/playlists/${id}/items/${itemId}/schedules`),
   setItemSchedules: (id, itemId, blocks) => request(`/playlists/${id}/items/${itemId}/schedules`, { method: 'PUT', body: JSON.stringify({ blocks }) }),
   assignPlaylistToDevice: (playlistId, device_id) => request(`/playlists/${playlistId}/assign`, { method: 'POST', body: JSON.stringify({ device_id }) }),
+  clearDevicePlaylist: (device_id) => request(`/devices/${device_id}/playlist`, { method: 'DELETE' }),
   publishPlaylist: (id) => request(`/playlists/${id}/publish`, { method: 'POST' }),
   discardPlaylistDraft: (id) => request(`/playlists/${id}/discard`, { method: 'POST' }),
 

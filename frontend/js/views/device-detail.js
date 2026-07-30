@@ -446,6 +446,10 @@ async function loadDevice(deviceId, activeTab = null) {
               <input type="checkbox" id="otaToggle" ${device.ota_enabled === 0 ? '' : 'checked'}> ${t('device.ota.toggle')}
             </label>
             <div style="font-size:11px;color:var(--text-muted);margin:4px 0 0 24px">${t('device.ota.hint')}</div>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-top:8px">
+                <input type="checkbox" id="otaBetaToggle" ${device.ota_beta === 1 ? 'checked' : ''}> ${t('device.ota.beta')}
+              </label>
+              <div style="font-size:11px;color:var(--text-muted);margin:4px 0 0 24px">${t('device.ota.beta_hint')}</div>
           </div>
           <div class="form-group" style="max-width:280px">
             <label>${t('device.reboot_schedule.label')}</label>
@@ -977,6 +981,7 @@ function setupActions(device) {
         orientation: document.getElementById('deviceOrientation').value,
         default_content_id: document.getElementById('deviceDefaultContent').value || null,
         ota_enabled: document.getElementById('otaToggle')?.checked ? 1 : 0,
+        ota_beta: document.getElementById('otaBetaToggle')?.checked ? 1 : 0,
         reboot_schedule: document.getElementById('rebootSchedule')?.value || null,
       });
       showToast(t('device.toast.settings_saved'), 'success');
@@ -1039,10 +1044,15 @@ function setupActions(device) {
 
     playlistPicker.addEventListener('change', async () => {
       const newPlaylistId = playlistPicker.value;
-      if (!newPlaylistId) return; // Don't allow deselecting for now
       try {
-        await api.assignPlaylistToDevice(newPlaylistId, device.id);
-        device.playlist_id = newPlaylistId;
+        // Empty value is the "No playlist" option. It used to be discarded right here, so the
+        // option was offered, selecting it did nothing, and nothing said so (#234).
+        if (newPlaylistId) {
+          await api.assignPlaylistToDevice(newPlaylistId, device.id);
+        } else {
+          await api.clearDevicePlaylist(device.id);
+        }
+        device.playlist_id = newPlaylistId || null;
         const assignments = await api.getAssignments(device.id);
         const pc = document.getElementById('playlistContainer');
         pc.innerHTML = renderPlaylist(assignments);

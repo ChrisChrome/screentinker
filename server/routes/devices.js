@@ -215,11 +215,44 @@ router.get('/:id/preview-payload', (req, res) => {
 });
 
 // Update device
+// Clear a device's playlist — the "No playlist" option in the dashboard picker.
+//
+// There was no way to do this. PUT /devices/:id ignores playlist_id (it always has), and
+// POST /playlists/:id/assign can only ever SET one, so the picker carried a guard that
+// silently discarded the selection: `if (!newPlaylistId) return; // Don't allow deselecting`.
+// The option was offered, selecting it did nothing, and no error said so — reported on #234
+// as "I selected No playlist and it still showed the same video". It did.
+//
+// Device-scoped rather than playlist-scoped because there is no playlist to authorize
+// against when clearing; ownership is checked the same way every other device mutation
+// checks it. Clearing an already-clear device is a no-op success, so the button is safe to
+// press twice.
+router.delete('/:id/playlist', (req, res) => {
+  const device = checkDeviceOwnership(req, res);
+  if (!device) return;
+
+  db.prepare('UPDATE devices SET playlist_id = NULL, updated_at = ? WHERE id = ?')
+    .run(Math.floor(Date.now() / 1000), req.params.id);
+
+  // Push the now-empty playlist so the screen stops, rather than leaving the old content up
+  // until something else happens to update it.
+  try {
+    const io = req.app.get('io');
+    if (io) {
+      const { buildPlaylistPayload } = require('../ws/deviceSocket');
+      const commandQueue = require('../lib/command-queue');
+      commandQueue.queueOrEmitPlaylistUpdate(io.of('/device'), req.params.id, buildPlaylistPayload);
+    }
+  } catch (e) { /* silent — the DB is the source of truth, the push is best-effort */ }
+
+  res.json({ success: true });
+});
+
 router.put('/:id', (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;
 
-  const { name, notes, timezone, orientation, default_content_id, layout_id, ota_enabled, reboot_schedule } = req.body;
+  const { name, notes, timezone, orientation, default_content_id, layout_id, ota_enabled, ota_beta, reboot_schedule } = req.body;
   // #150: validate orientation against the known enum (previously accepted any string, which
   // let a bad value reach the player -> unknown rotation falls back to landscape silently).
   if (orientation !== undefined && !deviceSettings.ORIENTATIONS.has(orientation)) {
@@ -248,6 +281,11 @@ router.put('/:id', (req, res) => {
   // #155/#161: per-device self-update (OTA) toggle. Coerce to 0/1.
   if (ota_enabled !== undefined) {
     updates.push('ota_enabled = ?'); values.push(ota_enabled ? 1 : 0);
+  }
+  if (ota_beta !== undefined) {
+    // Per-display pre-release opt-in (#234 follow-up). Stops a test build being reverted by the
+    // next OTA check, which is what a prerelease version sorting below its own release causes.
+    updates.push('ota_beta = ?'); values.push(ota_beta ? 1 : 0);
   }
   // #12 scheduled reboot: device-local "HH:MM" (null/'' clears -> off). Reset the
   // once-per-day guard on any change so a newly-set time can still fire later today.

@@ -111,7 +111,7 @@ class PlaylistController(
         val item = currentItem ?: return
         val delay = FollowerExit.resumeDelayMs(
             isRunning = isRunning,
-            isImageOrWidget = item.mimeType.startsWith("image/") || item.isWidget,
+            isImageOrWidget = endsOnTimer(item),
             slotMs = slotMs(item),
             elapsedMs = System.currentTimeMillis() - itemStartedAt
         ) ?: return
@@ -220,8 +220,17 @@ class PlaylistController(
         // In solo playback, don't interrupt it: keep it up, stash the new list, and rotate out on the
         // next natural advance (video end / image duration). Excludes wallFollower + group-sync, whose
         // advance is driven by their tick, not next() — deferring there would strand the swap.
-        if (isRunning && !wallFollower && hasContentOnScreen && currentlyPlayingId != null &&
-            newItems.none { it.contentId == currentlyPlayingId }) {
+        // An EMPTY new list is never a deferral candidate. Clearing a screen's playlist is an
+        // explicit "stop showing that" from an operator, not an item rotating out — deferring it
+        // meant selecting "no playlist" left the old content up indefinitely, which is the opposite
+        // of what was asked for and looked like the setting had done nothing.
+        if (PendingSwap.shouldDefer(
+                isRunning = isRunning,
+                wallFollower = wallFollower,
+                hasContentOnScreen = hasContentOnScreen,
+                currentlyPlayingId = currentlyPlayingId,
+                newContentIds = newItems.map { it.contentId },
+            )) {
             var succ: String? = null
             if (items.isNotEmpty()) {
                 for (k in 1..items.size) {
@@ -232,11 +241,13 @@ class PlaylistController(
             pendingItems = newItems
             pendingSuccessorId = succ
             Log.i("PlaylistController", "Current item removed but still live — deferring rotation-out (successor=$succ)")
+            armPendingSwapDeadline()
             return
         }
         // A non-deferred structural update supersedes any pending swap.
         pendingItems = null
         pendingSuccessorId = null
+        cancelPendingSwapDeadline()
 
         items.clear()
         items.addAll(newItems)
@@ -330,6 +341,7 @@ class PlaylistController(
         isRunning = false
         cancelAdvance()
         cancelRetry()
+        cancelPendingSwapDeadline()   // else a stopped controller can still fire next()
         hasContentOnScreen = false
         pendingItems = null
         pendingSuccessorId = null
@@ -343,6 +355,7 @@ class PlaylistController(
         // Swap in the stashed list now and continue at the preserved successor (or first playable).
         pendingItems?.let { p ->
             pendingItems = null
+            cancelPendingSwapDeadline()
             val succ = pendingSuccessorId; pendingSuccessorId = null
             items.clear(); items.addAll(p)
             if (items.isEmpty()) { currentIndex = -1; cancelAdvance(); onPlaylistEmpty(); return }
@@ -373,6 +386,42 @@ class PlaylistController(
         next()
     }
 
+    /**
+     * Items whose turn ends on a TIMER rather than a completion callback.
+     *
+     * video/youtube belongs here and did not: it is played by loading an embed into a WebView, which
+     * fires no completion event, so nothing ever advanced past it. playYoutube() even takes a
+     * durationSec and never reads it. A playlist containing a YouTube item simply stopped there.
+     *
+     * That also stranded #157's deferred swap, which waits for "the next natural advance": assigning
+     * a different playlist while a YouTube item was on screen deferred forever, so the change looked
+     * like it had been ignored. Reported as "I assigned Playlist 2 and it kept showing the video".
+     *
+     * Local and remote non-YouTube video stay off this list — ExoPlayer reports STATE_ENDED and
+     * onVideoComplete drives those, and a timer would cut a clip short.
+     */
+    private var pendingSwapRunnable: Runnable? = null
+
+    /** Apply a deferred swap even if no advance arrives — see PENDING_SWAP_DEADLINE_MS. */
+    private fun armPendingSwapDeadline() {
+        cancelPendingSwapDeadline()
+        pendingSwapRunnable = Runnable {
+            if (pendingItems != null) {
+                Log.w("PlaylistController", "Deferred playlist swap never got an advance — applying it now")
+                next()
+            }
+        }
+        handler.postDelayed(pendingSwapRunnable!!, PendingSwap.DEADLINE_MS)
+    }
+
+    private fun cancelPendingSwapDeadline() {
+        pendingSwapRunnable?.let { handler.removeCallbacks(it) }
+        pendingSwapRunnable = null
+    }
+
+    private fun endsOnTimer(item: PlaylistItem): Boolean =
+        ItemTiming.endsOnTimer(item.mimeType, item.isWidget)
+
     private fun playCurrentItem() {
         cancelAdvance()
         cancelRetry()
@@ -395,7 +444,7 @@ class PlaylistController(
         // For images and widgets, auto-advance after duration. For videos, wait
         // for the completion callback. Wall followers never auto-advance — the
         // leader's wall:sync index drives every switch.
-        if (!wallFollower && (item.mimeType.startsWith("image/") || item.isWidget)) {
+        if (!wallFollower && endsOnTimer(item)) {
             // slotMs() floors a zero/negative duration to 10s (the max(1, duration||10)
             // contract shared with the web/Tizen players). A raw durationSec*1000 here let a
             // solo fullscreen widget with duration_sec=0 schedule a 0ms advance -> self-loop.

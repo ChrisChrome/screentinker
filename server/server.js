@@ -704,6 +704,7 @@ app.get('/api/update/check', (req, res) => {
   const currentVersion = req.query.version;
   const deviceId = req.query.device_id || null;   // #144: optional; beta4+ clients send it for per-device keying
   const latestVersion = VERSION;
+  let betaChannel = false;   // per-display pre-release opt-in, set from the device row below
 
   // #155/#161: self-update kill switch, enforced SERVER-SIDE so it covers EVERY client
   // version (not just ones with the client-side stand-down). If OTA is off globally
@@ -715,8 +716,12 @@ app.get('/api/update/check', (req, res) => {
     let otaDeviceOff = false;
     if (deviceId) {
       try {
-        const row = require('./db/database').db.prepare('SELECT ota_enabled FROM devices WHERE id = ?').get(deviceId);
+        const row = require('./db/database').db.prepare('SELECT ota_enabled, ota_beta FROM devices WHERE id = ?').get(deviceId);
         otaDeviceOff = !!row && row.ota_enabled === 0;
+        // #234 follow-up: per-display pre-release opt-in, read from the same row rather than a
+        // second query. Without it, handing someone a test build is a trap — a prerelease sorts
+        // BELOW its own release, so the next check "upgrades" the display straight back off it.
+        betaChannel = !!row && row.ota_beta === 1;
       } catch (_) { /* device unknown / pre-migration — treat as enabled */ }
     }
     if (otaGloballyOff || otaDeviceOff) {
@@ -731,7 +736,7 @@ app.get('/api/update/check', (req, res) => {
 
   // #144: circuit-breaker + phantom-version guard. Keys per device_id when present, else
   // per reported version (NOT IP — SNAT). Rate-trips a looping client in seconds.
-  const verdict = otaBreaker.decide(currentVersion, latestVersion, deviceId);
+  const verdict = otaBreaker.decide(currentVersion, latestVersion, deviceId, Date.now(), betaChannel);
 
   // #146 Item C: EARLY-RETURN before any filesystem work when we won't serve
   // (rate-backoff, up-to-date, phantom, client-newer, …). A looping client that gets
