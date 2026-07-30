@@ -252,7 +252,7 @@ router.put('/:id', (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;
 
-  const { name, notes, timezone, orientation, default_content_id, layout_id, ota_enabled, reboot_schedule } = req.body;
+  const { name, notes, timezone, orientation, default_content_id, layout_id, ota_enabled, ota_beta, reboot_schedule } = req.body;
   // #150: validate orientation against the known enum (previously accepted any string, which
   // let a bad value reach the player -> unknown rotation falls back to landscape silently).
   if (orientation !== undefined && !deviceSettings.ORIENTATIONS.has(orientation)) {
@@ -281,6 +281,11 @@ router.put('/:id', (req, res) => {
   // #155/#161: per-device self-update (OTA) toggle. Coerce to 0/1.
   if (ota_enabled !== undefined) {
     updates.push('ota_enabled = ?'); values.push(ota_enabled ? 1 : 0);
+  }
+  if (ota_beta !== undefined) {
+    // Per-display pre-release opt-in (#234 follow-up). Stops a test build being reverted by the
+    // next OTA check, which is what a prerelease version sorting below its own release causes.
+    updates.push('ota_beta = ?'); values.push(ota_beta ? 1 : 0);
   }
   // #12 scheduled reboot: device-local "HH:MM" (null/'' clears -> off). Reset the
   // once-per-day guard on any change so a newly-set time can still fire later today.

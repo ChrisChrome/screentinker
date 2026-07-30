@@ -299,6 +299,12 @@ const migrations = [
   // device an update (an MDM/operator owns its updates). Default 1 (self-update on).
   //   UPDATE devices SET ota_enabled = 0 WHERE id = '<device_id>';  (1 to re-enable)
   "ALTER TABLE devices ADD COLUMN ota_enabled INTEGER NOT NULL DEFAULT 1",
+  // Opt a single display into pre-release builds. Without this, handing someone a test build is a
+  // trap: a prerelease sorts BELOW its own release (1.9.25-fix234d < 1.9.25), so the next OTA check
+  // correctly "upgrades" the device straight back off the build you asked them to test — silently,
+  // within minutes. It cost a reporter on #234 an evening of testing code that had already been
+  // replaced under them. Set this and the display keeps a same-core prerelease.
+  "ALTER TABLE devices ADD COLUMN ota_beta INTEGER NOT NULL DEFAULT 0",
   // #161: privilege tier reported by the player (0 unprivileged / 1 device-admin / 2 owner-or-
   // delegated-install) + whether a foreign device owner (MDM) manages it. Drives dashboard gating
   // of Tier-2 controls (reboot/kiosk/time) — shown only for owned panels.

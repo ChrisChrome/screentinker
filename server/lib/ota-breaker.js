@@ -68,7 +68,7 @@ function isReleased(p) { return p.pre === null || /^patch\d+$/i.test(p.pre); }
 
 // decide(clientVersion, latestVersion, deviceId?, now?) ->
 //   { update_available, reason, retry_after_seconds?, log? }
-function decide(clientVersion, latestVersion, deviceId = null, now = Date.now()) {
+function decide(clientVersion, latestVersion, deviceId = null, now = Date.now(), betaChannel = false) {
   // ---- PHANTOM / unrecognized guard (immediate, version-based, no rate state) ----
   if (!clientVersion) return { update_available: false, reason: 'no-version' };
   const pc = parseVer(clientVersion), pl = parseVer(latestVersion);
@@ -76,8 +76,22 @@ function decide(clientVersion, latestVersion, deviceId = null, now = Date.now())
   const full = cmpParsed(pc, pl);
   if (full === 0) return { update_available: false, reason: 'up-to-date' };
   if (full > 0) return { update_available: false, reason: 'client-newer' };       // never offer a downgrade
-  if (!isReleased(pc) && coreCmp(pc, pl) < 0) {                                    // GENUINE superseded old-core prerelease (e.g. 1.9.1-beta4) — a -patchN release is NOT one, so it still gets offered
+  // betaChannel is exempt: this guard would otherwise strand the very displays we hand test
+  // builds to. A tester on 1.9.25-fix234d has an older core than a released 1.9.26, so without
+  // the exemption they are told "superseded" forever and never rejoin the release line — the
+  // opposite of what opting in should mean. Opting in must be reversible by shipping a release.
+  if (!betaChannel && !isReleased(pc) && coreCmp(pc, pl) < 0) {                                    // GENUINE superseded old-core prerelease (e.g. 1.9.1-beta4) — a -patchN release is NOT one, so it still gets offered
     return { update_available: false, reason: 'superseded-prerelease', log: logOnce(clientVersion, `[ota] superseded prerelease '${clientVersion}' (older core than latest=${latestVersion}) — no offer`) };
+  }
+
+  // A display opted into pre-release builds keeps a prerelease of the CURRENT core. Semver puts
+  // 1.9.25-fix234d below 1.9.25, so without this the only "upgrade" on offer is dropping the very
+  // build we asked this display to run — which is how a test build silently reverts. Scoped to the
+  // same core on purpose: an older-core prerelease is genuinely stale and still gets offered, and
+  // once 1.9.26 ships a 1.9.25-anything device is behind and updates normally. So opting in cannot
+  // strand a display on an abandoned branch.
+  if (betaChannel && !isReleased(pc) && coreCmp(pc, pl) === 0) {
+    return { update_available: false, reason: 'beta-channel' };
   }
 
   // ---- offerable (recent real older version) -> RATE breaker, keyed per device / per version ----
