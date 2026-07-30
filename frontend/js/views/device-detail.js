@@ -1039,10 +1039,15 @@ function setupActions(device) {
 
     playlistPicker.addEventListener('change', async () => {
       const newPlaylistId = playlistPicker.value;
-      if (!newPlaylistId) return; // Don't allow deselecting for now
       try {
-        await api.assignPlaylistToDevice(newPlaylistId, device.id);
-        device.playlist_id = newPlaylistId;
+        // Empty value is the "No playlist" option. It used to be discarded right here, so the
+        // option was offered, selecting it did nothing, and nothing said so (#234).
+        if (newPlaylistId) {
+          await api.assignPlaylistToDevice(newPlaylistId, device.id);
+        } else {
+          await api.clearDevicePlaylist(device.id);
+        }
+        device.playlist_id = newPlaylistId || null;
         const assignments = await api.getAssignments(device.id);
         const pc = document.getElementById('playlistContainer');
         pc.innerHTML = renderPlaylist(assignments);
