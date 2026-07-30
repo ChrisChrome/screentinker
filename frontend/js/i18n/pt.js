@@ -126,6 +126,8 @@ export default {
   'dashboard.prompt_group_name': 'Nome do grupo:',
   'dashboard.error_pairing_code': 'Digite um código de pareamento válido de 6 dígitos',
   'dashboard.confirm_add_to_group': '{name} já está em: {groups}\n\nAdicionar também a "{target}"?',
+  'dashboard.confirm_move_to_group': '{name} está atualmente em: {groups}\n\nMover para "{target}"?',
+  'dashboard.toast.move_partial': 'Não foi possível remover de {group} — continua em ambos',
   'dashboard.confirm_assign_playlist': 'Atribuir a playlist "{playlist}" a todos os dispositivos de "{group}"?',
   'dashboard.confirm_destructive_command': '{cmd} todos os {n} dispositivos de "{group}"?\n\nIsso não pode ser desfeito.',
   'dashboard.confirm_delete_group': 'Excluir este grupo? Os dispositivos não serão afetados.',

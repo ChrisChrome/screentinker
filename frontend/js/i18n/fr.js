@@ -126,6 +126,8 @@ export default {
   'dashboard.prompt_group_name': 'Nom du groupe :',
   'dashboard.error_pairing_code': 'Saisissez un code d\'appairage valide à 6 chiffres',
   'dashboard.confirm_add_to_group': '{name} est déjà dans : {groups}\n\nL\'ajouter aussi à « {target} » ?',
+  'dashboard.confirm_move_to_group': '{name} est actuellement dans : {groups}\n\nLe déplacer vers "{target}" ?',
+  'dashboard.toast.move_partial': 'Impossible de le retirer de {group} — il est encore dans les deux',
   'dashboard.confirm_assign_playlist': 'Attribuer la liste « {playlist} » à tous les appareils de « {group} » ?',
   'dashboard.confirm_destructive_command': '{cmd} les {n} appareils de « {group} » ?\n\nCette action est irréversible.',
   'dashboard.confirm_delete_group': 'Supprimer ce groupe ? Les appareils ne seront pas affectés.',
