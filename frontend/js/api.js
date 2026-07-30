@@ -242,6 +242,8 @@ export const api = {
   adminCreateUser: (data) => request('/admin/users', { method: 'POST', body: JSON.stringify(data) }),
   adminCreateOrg: (name) => request('/admin/orgs', { method: 'POST', body: JSON.stringify({ name }) }),
   adminListOrgs: () => request('/admin/orgs'),
+  // Platform-admin view: EVERY plan incl. hidden ones, with subscriber counts.
+  adminListPlans: () => request('/admin/plans'),
   adminDeleteOrg: (id) => request(`/admin/orgs/${id}`, { method: 'DELETE' }),
   adminDeleteWorkspace: (id) => request(`/admin/workspaces/${id}`, { method: 'DELETE' }),
   aiGetSettings: () => request('/ai/settings'),

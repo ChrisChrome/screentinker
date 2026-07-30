@@ -432,6 +432,34 @@ router.post('/trigger-update', requirePlatformAdmin, async (req, res) => {
 // distinct_accounts is the signal, not rejections. Values are counts only — the identifiers are
 // salted-hashed inside the telemetry module and never leave it, so this cannot become a roster
 // of a customer's email addresses. Platform-admin only, and in-memory (a restart clears it).
+// Platform-admin plan overview. Deliberately NOT the public /api/subscription/plans list, which
+// filters `active = 1` because that is what the pricing page renders — so an intentionally hidden
+// plan (a comped or beta tier) was invisible to the operator as well as to customers, with no way
+// to see it existed or who was on it. This returns EVERY plan plus how many accounts sit on each,
+// so a hidden tier is manageable rather than folklore.
+router.get('/plans', requirePlatformAdmin, (req, res) => {
+  const plans = db.prepare(`
+    SELECT p.*,
+           (SELECT COUNT(*) FROM users u WHERE u.plan_id = p.id) AS user_count,
+           (SELECT COUNT(*) FROM organizations o WHERE o.plan_id = p.id) AS org_count,
+           (SELECT COUNT(*) FROM devices d
+              JOIN workspaces w ON w.id = d.workspace_id
+              JOIN organizations o2 ON o2.id = w.organization_id
+              JOIN users u2 ON u2.id = o2.owner_user_id
+             WHERE u2.plan_id = p.id) AS device_count
+      FROM plans p
+     ORDER BY p.active DESC, p.sort_order ASC
+  `).all();
+  // Accounts whose plan_id no longer resolves would otherwise be invisible in a per-plan view —
+  // they are the ones that actually need attention (a deleted plan leaves them with no entitlements).
+  const orphaned = db.prepare(`
+    SELECT u.plan_id, COUNT(*) AS user_count FROM users u
+     WHERE u.plan_id IS NOT NULL AND u.plan_id NOT IN (SELECT id FROM plans)
+     GROUP BY u.plan_id
+  `).all();
+  res.json({ plans, orphaned });
+});
+
 router.get('/limiter-rejections', requirePlatformAdmin, (req, res) => {
   const rows = require('../lib/limiter-telemetry').snapshot();
   res.json({
