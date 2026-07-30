@@ -32,7 +32,7 @@ ScreenTinker is a free, open-source **digital signage CMS** you can self-host on
 - **Widgets** — clocks, weather, RSS tickers, text/HTML, webpages, social feeds, and Directory Board (scrolling lobby tenant/room/staff directories with dark/light themes, category management, and anti-burn-in motion)
 - **Kiosk mode** — interactive touchscreen interfaces
 - **Proof-of-play** — per-content and per-device analytics, hourly/daily breakdowns, CSV export for ad verification
-- **Device telemetry** — battery, storage, RAM, CPU, WiFi signal strength, and uptime reported by Android players
+- **Device telemetry** — battery, storage, RAM, CPU, Wi-Fi signal strength and uptime reported by the players, plus both of a display's addresses: its **local (LAN) IP** as the player sees itself, and the public/WAN address the server saw it connect from. Wi-Fi network name is included where the platform allows it (Android 10+ needs an opt-in location permission — see Device Setup)
 - **Offline resilience** — both web and Android players keep displaying cached content during server or internet outages (Android ContentCache, web player Service Worker); state syncs when connectivity returns
 - **Mobile-responsive** — full management dashboard and landing page work on phones and tablets
 - **Workspaces** — multi-tenant data model: organizations contain workspaces, workspaces contain devices/content/playlists/schedules; users can be members of multiple workspaces and switch via a dropdown in the sidebar
@@ -46,6 +46,7 @@ ScreenTinker is a free, open-source **digital signage CMS** you can self-host on
 - **Security** — JWT auth, bcrypt hashing, parameterized SQL, rate-limited endpoints, per-user ownership checks on all resources, ongoing auth/IDOR/XSS audits
 - **Built-in billing** — Stripe integration for SaaS subscriptions (optional)
 - **Auto-update** — OTA updates pushed to devices automatically
+- **Public REST API** — scoped personal access tokens (`read` / `write` / `full`) over the same resources the dashboard uses, workspace-confined by construction. Documented as an OpenAPI 3.1 contract ([`docs/openapi.yaml`](docs/openapi.yaml)) and browsable on any instance at `/docs` (served locally, no CDN, so it works air-gapped)
 - **Activity log** — full audit trail of user and system actions
 
 ## Architecture
@@ -92,7 +93,19 @@ Schema migrations run automatically the first time the server starts after a git
 
 ## Supported Platforms
 
-Android TV, Fire TV, Raspberry Pi, Windows, ChromeOS, LG webOS, Samsung Tizen, and any device with a web browser.
+Android TV, Fire TV, Raspberry Pi, Windows, ChromeOS, LG webOS, Samsung Tizen, BrightSign, and any
+device with a web browser.
+
+Anything with a reasonably modern browser can be a display without installing anything: point it at
+`/player`. The native players add what a browser cannot: the **Android APK** gives you unattended boot,
+OTA self-update, remote power and touch injection, and a content cache that survives a reboot; the
+**Tizen `.wgt`** gives you an installed app that launches itself on the TV. Tizen does not
+self-update — new versions are installed the same way the first one was.
+
+> **BrightSign** runs the unmodified browser player (verified on Series 5 / Chromium 120) and needs
+> no separate build. One caveat worth knowing before you rely on it: BrightSign's HTML widget does
+> not always survive the page reload the player performs when you deploy new content, and may need a
+> restart to come back. Treat it as working but less hands-off than the native players.
 
 ## Self-Hosting
 
@@ -161,6 +174,52 @@ Two things to know before enabling it:
 - **It is read by the player, not the server**, so only players new enough to understand
   `allow_managed` honour it. Older players keep standing down regardless.
 
+#### When a display will not update itself
+
+OTA is per-display and can be turned off per display. If one is not taking an update, the order to
+check is:
+
+1. **Is OTA enabled for it?** There is a per-display toggle; a display with it off will never
+   self-update, by design.
+2. **Is it standing down for an MDM?** It reports `manual_update_required` if so — see above.
+3. **Has it been retrying and failing?** Retrying and telling you about it are two separate
+   things, on purpose:
+
+   - After **3** failed installs the display **flags itself as needing attention** in the dashboard.
+     A human is demonstrably required by then, so it says so early rather than at the end.
+   - It **keeps retrying anyway**, up to 40 attempts. Attempts after the first are close to free —
+     the APK is downloaded and signature-checked once and then reused from cache, so retry number
+     twelve pulls no bytes.
+   - Past that it settles to about **one attempt a day**, indefinitely. It never gives up for good,
+     and a new version clears the count — so a display stuck for a week still picks up the next
+     release on its own.
+
+   The flag is what to watch for. Silence is not the signal.
+
+**Force update** — per display, or as a group command — deliberately ignores the back-off, the
+attempt count *and* the MDM stand-down, and tries straight away. It reports back either way,
+including "already up to date", so the button never just appears to do nothing. What it cannot do is
+invent permissions: if installs need a confirmation tap on that hardware, forcing still raises the
+dialog. It is the right button once you have fixed whatever was breaking the update.
+
+#### Deleting and re-pairing a display
+
+A display's settings are keyed to the hardware, not to its row in the database. Delete a display and
+pair the same panel again and it comes back with its previous **name, orientation, timezone, notes
+and assigned playlist** already set — you do not have to configure it twice, and a panel that is
+physically hard to reach does not need a visit. (The playlist only returns if it still exists; a
+deleted one is not resurrected.)
+
+Two consequences that are easy to misread:
+
+- The old playlist reappearing is ScreenTinker restoring it, not a bug. If you deleted the display
+  in order to *clear* it, change the playlist after re-pairing rather than before.
+- **A blocked display stays blocked**, deliberately. Blocking is a security control, so it must not
+  be defeatable by deleting the display and pairing again. Use **Unblock** — that clears the stored
+  block as well as the live one. (Before 1.9.25, Unblock only cleared the live one and the block came
+  back on the next re-pair; if you have a display that refuses to pair for no visible reason, unblock
+  it once on this version.)
+
 #### Raising the upload limit
 
 `MAX_FILE_SIZE` sets what **the application** accepts. It is usually not the only limit, and it
@@ -217,6 +276,19 @@ If you want to charge your users, plug in your own Stripe keys. Without them, al
 | `APP_URL` | Your public URL (e.g. `https://signage.yourcompany.com`) |
 
 The default plans are: Free (2 devices), Starter (8 devices), Pro (25 devices), and Enterprise (unlimited). Edit the `plans` table to change pricing, limits, or add/remove tiers. In self-hosted mode, the first user gets Enterprise automatically.
+
+#### Plans and comped accounts
+
+Platform admins get a plan overview under **Admin → Subscription Plans**: every plan on the instance with how
+many accounts, organizations and displays are on each, so you can see what people actually use
+before changing a price or retiring a tier. It also flags accounts pointing at a plan that no longer
+exists, which otherwise surfaces only as odd entitlement behaviour.
+
+A plan marked **inactive** disappears from the customer-facing pricing page but keeps working
+normally for anyone already on it. That is how you run a comped, beta or legacy tier without
+advertising it — put the account on the hidden plan and it simply gets those limits. The overview
+above deliberately lists hidden plans too (marked as such), because the previous behaviour was that
+a hidden plan was invisible to the operator as well as the customer.
 
 #### Google OAuth
 
@@ -527,6 +599,20 @@ keytool -genkey -v -keystore android/release-key.jks -keyalg RSA -keysize 2048 -
    - **Samsung Tizen TV / signage**: point the TV's URL Launcher (or browser) at `https://your-instance/player` - no signing needed. For an installed native app, see [tizen/README.md](tizen/README.md)
    - **Any browser**: Open `https://your-instance/player` in kiosk/fullscreen mode
 4. Enter the pairing code shown on the device
+
+On the Android player, the setup screen lists the permissions it wants and lets you revisit any of
+them later — each row stays visible once granted and turns into **Manage**, so you can check or
+revoke what you gave it rather than having the option disappear.
+
+One of those rows is **optional and off by default**: granting location lets the player report the
+**Wi-Fi network name** for the display. Android 10 and later will not reveal the SSID without it.
+Nothing else changes if you skip it — the display works identically and still reports signal
+strength, and the dashboard says the network name needs that permission rather than showing a blank.
+
+> **One playlist per display, and how to run more.** A display has a single playlist at a time.
+> To rotate between several, use **Scheduling** — "Playlist A 9am-5pm, Playlist B evenings", or
+> different playlists on different days — and the display switches on its own, offline included,
+> once the schedule has reached it.
 
 > **Troubleshooting a player** (stuck on "Connecting to server", re-pointing a
 > device to a different server, or connecting adb over Wi-Fi): see
