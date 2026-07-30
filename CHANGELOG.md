@@ -1,5 +1,71 @@
 # Changelog
 
+## 1.9.26
+
+**Android playback fixes for #234, and a way to hand someone a test build without it reverting.**
+The YouTube fault below was not specific to the reporter: any playlist containing a YouTube item
+stopped rotating at that item, on every Android display, indefinitely.
+
+### Fixed — Android playback
+- **A YouTube item now ends on its configured duration.** It never ended at all: images and widgets
+  get a timer, ordinary videos end on playback completion, and a YouTube link is played by loading
+  an embed into a WebView — which reports no completion, and had no timer armed for it. The item's
+  `duration_sec` was passed to the player and never read. The web and Tizen players already timed
+  YouTube off its duration; Android was the only player that did not, so this restores parity rather
+  than inventing behaviour. Local and remote video are untouched and still end on completion, so
+  clips are not cut short.
+- **A playlist change is no longer stranded behind an item that never ends.** #157 defers a change
+  when the item on screen is dropped from the new list, applying it at the next advance. With a
+  YouTube item that advance never came, so assigning a different playlist appeared to be ignored.
+  Two guards: an **empty** list is never deferred (clearing a playlist is an operator saying stop,
+  not an item rotating out), and a deferral now has a 60-second deadline so no future item type that
+  ends on a callback can strand one again.
+
+Verified on an Android 12 emulator against the reporter's exact shape (a 5s image and a long YouTube
+video set to 10s): thirteen clean cycles at exactly the configured durations, a playlist swap
+applying immediately while the YouTube item was on screen, and a clear stopping playback entirely.
+
+### Fixed — "No playlist" did nothing
+- **A display's playlist can now actually be cleared.** The dashboard offered a *No playlist* option
+  whose handler discarded the selection (`if (!newPlaylistId) return; // Don't allow deselecting for
+  now`) — no request, no change, no error. The guard was honest about why: there was no way to do it.
+  `PUT /devices/:id` has never read `playlist_id`, and `POST /playlists/:id/assign` can only set one.
+  New `DELETE /api/devices/:id/playlist`, device-scoped because there is no playlist to authorize
+  against when clearing, gated by the same ownership check as every other device mutation. Clearing
+  an already-clear display is a no-op success, and the empty playlist is pushed to the device so the
+  screen stops rather than holding the old content.
+
+### Added — per-display pre-release opt-in
+- **"Accept pre-release builds"**, a checkbox beside the existing self-update toggle
+  (`devices.ota_beta`, default off). Handing someone a test build was a trap: a prerelease sorts
+  *below* its own release (`1.9.25-fix234d` < `1.9.25`), so a sideloaded display asked for updates,
+  was correctly told the release was newer, and updated itself straight back off the build it had
+  been given — same versionCode, so Android installed it without complaint. Silent, within minutes.
+  It cost the #234 reporter an evening of testing code that had already been replaced under them.
+
+  Narrow where it should be: it holds only a prerelease of the core already installed. A plain
+  release, a `-patchN` build, an upgrade to a newer core, and a display ahead of the server all
+  behave exactly as before, and a fleet that never sets the flag is unaffected. Wide where it must
+  be: an opted-in display is exempt from the `superseded-prerelease` guard, which would otherwise
+  pin a tester on an old build permanently — opting in must never mean never updating again.
+
+  Note this is an opt-out of being reverted, **not** a second distribution channel: the server still
+  serves one APK, so a beta build is still installed by hand.
+
+### Documentation
+- The published API reference had drifted to **1.9.0** while 1.9.25 shipped, because
+  `bump-version.sh` updated every other version source and not `docs/openapi.yaml`. It now does, and
+  a contract test fails if the two diverge.
+- A device's two network addresses are documented and told apart — `ip_address` is the public/WAN
+  address the server observed on connect, `local_ip` is the display's own LAN address as reported by
+  the player — along with the rest of the telemetry block, none of which was in the spec despite
+  being returned. `wifi_ssid`'s `"permission"` value is documented as a sentinel, not a network name.
+- README catch-up: the public API, why a display might not self-update, what a delete-and-re-pair
+  restores (including that a block deliberately survives it), hidden plans, and the optional location
+  permission behind the Wi-Fi network name.
+- **CHANGELOG backfilled for 1.9.3 through 1.9.25**, which had no entries at all. `bump-version.sh`
+  now warns when a release is cut without one.
+
 ## 1.9.25
 
 **Android playback and account-admin fixes.** Closes #234 — a playlist that only ever showed its
