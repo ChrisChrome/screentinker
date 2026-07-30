@@ -80,7 +80,18 @@ sed -i -E "s/(versionCode.*\?:[[:space:]]*)\"[0-9]+\"/\1\"$((CODE + 1))\"/" andr
 NUMERIC="${NEW%%-*}"
 sed -i -E "/^<\?xml/! s/([[:space:]]version=\")[0-9][^\"]*(\")/\1${NUMERIC}\2/" tizen/config.xml
 
-# 5) commit + annotated tag (no push)
+# 5) CHANGELOG guard. Deliberately NOT auto-generated — a generated changelog reads like
+#    documentation while saying nothing, and the entry has to come from whoever knows what
+#    shipped. This only refuses to let a release be cut silently without one, which is how the
+#    file fell 23 versions behind.
+if ! grep -q "^## ${NEW}$" CHANGELOG.md 2>/dev/null; then
+  echo
+  echo "  WARNING: CHANGELOG.md has no '## $NEW' entry."
+  echo "  Add one before pushing the tag — the release notes are read from it."
+  echo
+fi
+
+# 6) commit + annotated tag (no push)
 git add VERSION server/package.json server/package-lock.json android/app/build.gradle.kts tizen/config.xml
 git commit -q -m "chore(release): v$NEW"
 git tag -a "v$NEW" -m "ScreenTinker v$NEW"

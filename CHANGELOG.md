@@ -1,5 +1,352 @@
 # Changelog
 
+## 1.9.25
+
+**Android playback and account-admin fixes.** Closes #234 — a playlist that only ever showed its
+first item — plus the registration loop feeding it, and three issues found by the same reporter in
+an afternoon of testing.
+
+### Fixed — Android playback (#234)
+- **A playlist no longer restarts at item one every time the Activity is rebuilt.** `PlaylistController`
+  is owned by `MainActivity`, so each rebuild handed it a fresh, empty instance; the playlist then
+  arrived, looked like a first load, and playback began from index 0. On a device rebuilding at every
+  item boundary the second item held the screen for ~135ms — invisible, which is why it read as "only
+  one item plays" rather than "it glitches". Playback position now lives outside the object being
+  rebuilt and resumes if the save is recent (cold starts, stale saves and shrunk playlists all still
+  begin at item one).
+- **A player no longer re-registers itself once per playlist item.** Every advance asked for a
+  playlist refresh, and a refresh emits a full `device:register` — so a 10-second image re-registered
+  six times a minute, per device, forever, each one running the whole identity path and pushing a
+  playlist back down. The heartbeat already refreshes every 60s, so the per-item call was duplicating
+  a pull that happens anyway. Measured on the reproduction: 9 registrations for 9 plays → 3.
+- **A leaked callback no longer relaunches the app in a loop.** `ProvisioningActivity` left its
+  service callbacks attached after pairing, so later events re-entered a finished activity and
+  restarted it — a white flash on every cycle, since Android 12+ draws a splash screen on each
+  relaunch. Measured: 240 activity starts in 180s → 0.
+
+### Fixed — account administration
+- **Unblock now sticks.** Per-device settings are keyed to the hardware and deliberately restore
+  `blocked` across a delete + re-pair, so a block cannot be shrugged off by deleting the display.
+  Unblock only ever cleared the live copy, so the saved copy put the block straight back on the next
+  re-pair and there was no way out from the dashboard. Unblock now clears both; blocking still
+  survives a re-pair, which is the property that made this worth getting right.
+- **A refused device says why.** A blocked panel sat on "Connecting to server" with nothing surfacing
+  the server's rejection.
+
+### Added
+- **Every plan is visible to platform admins,** with how many accounts, organizations and displays
+  are on each, plus a flag for accounts pointing at a plan that no longer exists. A plan hidden from
+  the public pricing page was previously invisible to the operator too.
+- **Player permissions can be reviewed and revoked from the setup screen.** Each row stays visible
+  once granted and becomes *Manage*, instead of disappearing and leaving no way back.
+
+## 1.9.24
+
+**OTA control for managed panels.** Everything here is about not stranding a display: an operator
+override, a retry budget that reflects what a retry actually costs, and a stand-down that only fires
+when it should.
+
+### Fixed — OTA
+- **Self-OTA now stands down only for a genuine foreign device owner.** The check was broad enough
+  that a stock Android panel with no MDM at all logged "self-OTA stands down" and stopped updating.
+- **`OTA_ALLOW_MANAGED_DEVICES`** lets an operator override the stand-down when they run an MDM that
+  does not distribute the player. Off by default. See the README before enabling — it does not grant
+  the ability to install silently.
+- **The install retry budget went from 3 attempts to 40, and flagging moved to 3.** Telling an
+  operator a panel needs a human and giving up on that panel are separate decisions, and they were
+  wired to the same number. A retry is nearly free — the APK is downloaded and signature-checked once
+  and reused from cache, so later attempts pull no bytes. Past the budget it settles to about one
+  attempt a day, indefinitely; a new version clears the count.
+- **"Force update" is now actually forceful, and reports back.** It ignores the back-off, the attempt
+  count and the MDM stand-down, and says what happened — including "already up to date", which used
+  to return in silence and made a working button look broken.
+
+### Fixed — playback
+- **A wipe hands the frame back cleanly at the end,** instead of briefly revealing the outgoing image
+  through the transition surface.
+- **Turning off follower mode re-arms self-advance,** so a display taken out of a synchronized group
+  no longer freezes on whatever was on screen.
+
+## 1.9.23
+
+**Scheduling on a touchscreen, and internationalization.** The weekly calendar becomes directly
+manipulable, and a large batch of user-facing strings that were never translated go through `t()`.
+
+### Added
+- **The week calendar is directly manipulable** — drag and resize blocks, with grab targets big
+  enough for a finger, gestures that work on a touchscreen, pointer handlers bound once rather than
+  per render, and a single-day view for when a week will not fit.
+- **Schedules that run past midnight draw correctly.**
+- **The calendar opens on the working day** and explains what it is for.
+- **Empty states tell you what to do next,** based on what the account actually contains.
+- **`MAX_FILE_SIZE` is parsed properly** (bytes or a `2GB` / `1500MB` suffix), and the README
+  documents the reverse proxy and CDN limits that cap an upload independently — raising the app limit
+  alone often changes nothing (#233).
+- **An opt-in browser smoke test,** deliberately kept out of `npm test`.
+
+### Fixed
+- **Untranslated keys are no longer shipped as user-facing text.**
+- **Teams says it is switched off** rather than showing an empty list.
+- **Proof-of-play attributes a widget play to the widget that played.**
+- **Members is in the nav,** titles reveal on touch, and a stale heartbeat no longer kills a live
+  socket.
+- **A player re-establishes a socket the server closed.**
+
+## 1.9.22
+
+**Player identity.** Two panels running the same build could collapse into one dashboard row.
+
+### Fixed
+- **Each player install gets its own identity.** The web player's fingerprint was derived from
+  hardware characteristics alone, so two identical panels produced the same value and merged into a
+  single device row. Identity is now per install.
+- **A screen-only panel can clear its identity from the URL,** giving a way to split a panel that had
+  already merged.
+- **Crash reports record where a player crashed,** not only what it said.
+
+## 1.9.21
+
+**Measurement fixes.** Small, all about not lying in the numbers.
+
+### Fixed
+- Event-loop lag reports zero for a window with no samples, instead of a stale figure.
+- Auth rate-limit rejections are recorded, so they can be measured rather than inferred.
+- A device fingerprint is only stored against a device that still exists.
+
+## 1.9.20
+
+**Scheduling across a fleet, and alerting that does not repeat itself.**
+
+### Added
+- **Every screen's schedule on one calendar,** rather than one screen at a time.
+- **A schedule is stored in the timezone its screen runs in,** so a fleet spanning timezones behaves
+  the way an operator means it to.
+- **An unpaired player can be recovered without a keyboard** — relevant on signage hardware with a
+  remote and no text input.
+- **A BrightSign capability probe.**
+- Italian translation updated (#232).
+
+### Fixed
+- **One alert per outage** instead of one per dedup window.
+- Kiosk style values are validated as CSS rather than as HTML.
+- A device's OTA rate state is cleared once it proves its identity.
+
+## 1.9.19
+
+### Fixed
+- Proof-of-play resolves content references rather than trusting a reported id.
+- `sharp` updated to 0.35.x, and the corrupt PNG fixture that update exposed was repaired.
+
+## 1.9.18
+
+### Fixed
+- **Device serialization is scoped to what each endpoint actually needs,** rather than returning a
+  whole device row everywhere.
+- **A solo widget stays mounted** and sizes its keyboard to the viewport.
+- Weather-radar example: the map stays centred and bounded, and counts only the warnings on screen.
+
+## 1.9.17
+
+### Added
+- **Self-service password reset.**
+
+### Fixed
+- **A pairing code expires on device liveness, not row age,** so a slow setup no longer runs out of
+  time while the panel is sitting on the code.
+
+## 1.9.16
+
+**Hardening pass.** Findings from an internal auth/authorization review, described here in the same
+neutral terms as the commits: this is a public repository and detail that only helps an attacker adds
+nothing for an operator deciding whether to upgrade. Upgrade.
+
+### Security / hardening
+- Break-glass admin recovery is backed by a revocable, auditable grant.
+- Access-gating six-digit codes are generated with a CSPRNG.
+- The screenshot route is authorized against the device's workspace.
+- Password login is bounded per account, not only per IP.
+- The unauthenticated telemetry store is bounded and no longer writes rows.
+- `CF-Connecting-IP` is trusted only from a Cloudflare peer, not from any trusted proxy.
+- An upload's stored type is derived from file content, and uploads are never served as documents.
+
+### Fixed
+- The release tarball keeps `.env.example`, and CI asserts it is there.
+
+## 1.9.15
+
+### Fixed
+- **Webpage widgets carry an honest note:** sites that refuse embedding do not work on a device, and
+  no client-side signal can reliably tell "blocked" from "loading" (#230).
+- The "Reload now" update toast is actually clickable (#229).
+
+### Changed
+- Session token resolution centralised across the manual verify sites; the unused `optionalAuth`
+  middleware dropped.
+
+## 1.9.14
+
+### Fixed
+- **Trial expiry auto-downgrade actually fires** (#228).
+- 11 of 13 npm advisories resolved (lockfile only) (#225).
+
+### Added
+- Stripe checkout accepts promotion codes (#227).
+
+## 1.9.13
+
+**Content library.** A batch of workflow features for libraries bigger than a handful of files.
+
+### Added
+- Multi-file upload (#222), multi-select with batch delete and batch move (#224).
+- Server-side search, type filter and sort (#221).
+- Subtitle / caption support as a content property (#223).
+- **Unstable-connection mode** — caps YouTube at 720p for weak Wi-Fi (#220).
+- The Add Display modal shows the server URL, and `/download/apk` links GitHub Releases (#210).
+
+### Fixed
+- YouTube ENDED safety net for Shorts and flaky Android TV (#219).
+- Visible D-pad focus stroke on the Android setup buttons (#218).
+- Uploads respect the current folder (#211).
+
+## 1.9.12
+
+### Added
+- **TOTP two-factor authentication** and **email verification on signup**.
+- **Proof-of-play on Android and Tizen,** closing the Tizen parity gaps.
+- Tizen SSSP install.
+- Designer-made widgets can be edited in the designer again, including reconstruction of legacy ones
+  (#207).
+
+### Fixed
+- Web player cold-start crash from a hoisting error in `renderSeq`.
+- The advance timer is reconciled on group/wall mode transitions (#200, #208).
+- Weather elements can switch to metric (#206).
+
+## 1.9.11
+
+### Added
+- **Transition engine** — GL wipes across the web, Tizen and Android players, including image↔video
+  transitions (#204).
+
+### Fixed
+- Android supersede wedge and leak, plus a stale-video guard on web and Tizen (#205).
+
+## 1.9.10
+
+**Directory board and widget stability.**
+
+### Added
+- Directory board: panel-ring scroll, in-place refresh, per-device frame diagnostic (#203), and
+  JSON/CSV import with logo-replaces-title (#195).
+
+### Fixed
+- **A zero-duration widget no longer self-loops.** It pegged the Android main thread (#198), and the
+  server now floors `duration_sec` so no player can be handed the condition (#199).
+- Buffered widget swap and schedule-aware solo-board hold, killing the directory-board black flicker
+  (#202); decode-gated image double-buffer does the same for Tizen stills (#193, #187).
+- Directory board scroll stutter from a seamless-loop gap mismatch (#197).
+- The cross-origin header is set on the route that actually serves content (#196).
+- Modals scroll instead of overflowing the viewport (#194).
+
+## 1.9.9
+
+### Fixed
+- **Pairing:** closed a deferred-offline reclaim race and made same-code adopt idempotent (#192).
+
+## 1.9.8
+
+### Added
+- **Directory-search widget** — interactive search of a directory board, live-synced (#188).
+- Dashboard version loading indicator with an immediate first poll (#181).
+
+### Fixed
+- YouTube Shorts render 9:16 instead of in a landscape frame (#184, #189).
+- A stuck download back-off resets on content change and network reconnect (#170, #190).
+- The soft keyboard appears for PIN/URL dialogs over immersive fullscreen (#191).
+- Thumbnail images use `data-auth-src` in modals and views (#182), with hydration lazy by default
+  (#185).
+- Raspberry Pi setup handles both `chromium-browser` and `chromium` package names (#183).
+
+## 1.9.7
+
+### Added
+- **SMTP transport** as an alternative to Microsoft Graph for email (#173, #179).
+
+### Fixed
+- **A reinstalled panel reclaims its device row** instead of being blocked (#180).
+
+## 1.9.6
+
+### Added
+- **Device incident log** — offline cause, network-vs-reboot, display-sleep (#175).
+- IndexNow and landing-page optimization (#177); integrations internal linking (#178).
+
+### Fixed
+- **Tizen portrait and flipped video via AVPlay hardware-plane rotation** — CSS rotation cannot touch
+  the hardware video plane and produced a black screen (#170, #174).
+- `/integrations/` is served explicitly so the nav link is not the login page.
+- CI uses OS-assigned ephemeral ports for subprocess suites, ending a port-collision flake (#176).
+
+## 1.9.5
+
+**Group sync, device-owner foundation, and agency folders.** The largest release in the 1.9.x line.
+
+### Added
+- **Per-group synchronized playback** — every member of a group derives the same (index, position)
+  from a server-disciplined clock and a deterministic schedule, so displays start and end each item
+  together. Offline-native (no server needed at play time) and split-brain-proof (no leader role).
+  Includes snap-on-load, a warm next-clip double buffer, and in-place duration edits (#167).
+- **Device-owner tier foundation** — QR provisioning, content expiry, and the tier substrate the
+  Tier-2 controls build on (#168).
+- **Tier 0/1 system controls with no device-owner dependency** — volume, brightness and screen
+  timeout on ordinary panels (#160, #169).
+- **Per-token upload folder for agency tokens** — auto-created and subtree-confined (#158, #171).
+- **OTA self-update kill switch** — global, per-device, and MDM auto-detect (#166).
+- Dashboard version indicator with a GHCR update check (#165).
+
+### Fixed
+- **Rotation-aware media** — a portrait photo is upright on both the dashboard and the player
+  (#170, #172).
+- `bump-version.sh` handles the env-overridable Android version (#168).
+
+## 1.9.4
+
+### Added
+- **Hidden settings menu on Android,** opened by a multi-tap BACK/ESC sequence and gated by a PIN;
+  the PIN is server-provisioned per device and surfaced on the dashboard, replacing a hardcoded
+  `0000` (#152).
+
+### Fixed
+- **A player sends its device id and token on reconnect before pairing** (#164).
+- Android provisioning and playback robustness.
+- Playlist `GET /:id` returns item schedules, so the editor shows them (#156).
+- Draft preview runs in a server-side session to bypass CSP (#151).
+- Tizen player wedge on a shared `#stage` (same class as #162).
+
+## 1.9.3
+
+**Liveness contract v4 and per-device settings that survive a re-pair.** Follows 1.9.2-patch3.
+
+### Added
+- **Exit-signal contract v1** — a player tells the server it is going away, across the server, the
+  APK, the `.wgt` and the browser player, so "offline" can distinguish a clean exit from a
+  disappearance. Surfaced in the dashboard as an offline annotation with a tooltip, a filter drill-in
+  and a list label.
+- **Liveness contract v4** — uniform heartbeat acknowledgement, ack-gap tracking, a throttle-aware
+  client watchdog, browser lifecycle triggers, and an identity block, implemented across the server,
+  the APK, the `.wgt` and the browser player. Includes a three-state dashboard liveness badge.
+- **Per-device settings survive delete + re-pair,** keyed to the hardware fingerprint: a re-paired
+  panel comes back with its name, orientation, timezone, notes and playlist already set (#150).
+
+### Fixed
+- **Legacy `-patchN` builds are treated as released versions,** so the existing fleet is offered
+  updates.
+- Tizen: watchdog config-proofing, teardown hygiene, dead-screen self-heal, offline snapshot,
+  keep-awake re-assert and a suspend/resume handler.
+- Dashboard: `device-detail.js` parse and runtime errors that took out the whole view; liveness badge
+  filter regression; list-view legibility.
+- CSP allows the Cloudflare Web Analytics beacon to load *and* report.
+
 ## 1.9.2-patch2
 
 **Server/CMS-only field-safe net for #148 — NO Android APK, players unchanged.** Makes the
