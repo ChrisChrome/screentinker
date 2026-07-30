@@ -126,6 +126,8 @@ export default {
   'dashboard.prompt_group_name': 'Nombre del grupo:',
   'dashboard.error_pairing_code': 'Ingresa un código de vinculación válido de 6 dígitos',
   'dashboard.confirm_add_to_group': '{name} ya está en: {groups}\n\n¿Agregarlo también a "{target}"?',
+  'dashboard.confirm_move_to_group': '{name} está actualmente en: {groups}\n\n¿Moverla a "{target}"?',
+  'dashboard.toast.move_partial': 'No se pudo quitar de {group}: sigue en ambos',
   'dashboard.confirm_assign_playlist': '¿Asignar la lista "{playlist}" a todos los dispositivos de "{group}"?',
   'dashboard.confirm_destructive_command': '¿{cmd} todos los {n} dispositivos de "{group}"?\n\nEsto no se puede deshacer.',
   'dashboard.confirm_delete_group': '¿Eliminar este grupo? Los dispositivos no se verán afectados.',

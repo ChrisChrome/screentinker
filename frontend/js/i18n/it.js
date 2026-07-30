@@ -127,6 +127,8 @@ export default {
   'dashboard.prompt_group_name': 'Nome gruppo:',
   'dashboard.error_pairing_code': 'Inserisci un codice di associazione valido di 6 cifre',
   'dashboard.confirm_add_to_group': '{name} è già presente in: {groups}\n\nAggiungerlo anche a "{target}"?',
+  'dashboard.confirm_move_to_group': '{name} è attualmente in: {groups}\n\nSpostarlo in "{target}"?',
+  'dashboard.toast.move_partial': 'Impossibile rimuoverlo da {group}: è ancora in entrambi',
   'dashboard.confirm_assign_playlist': 'Assegnare la playlist "{playlist}" a tutti i dispositivi in "{group}"?',
   'dashboard.confirm_destructive_command': 'Eseguire {cmd} su tutti i {n} dispositivi in "{group}"?\n\nL\'azione è irreversibile.',
   'dashboard.confirm_delete_group': 'Eliminare questo gruppo? I dispositivi non verranno rimossi dal sistema.',

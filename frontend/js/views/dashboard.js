@@ -767,13 +767,28 @@ function attachGroupHandlers(groupsWithDevices, allDevices) {
         showToast(t('dashboard.toast.already_in_group', { name: deviceName, group: targetGroup.name }), 'info');
         return;
       }
-      // If the device is in another group, mirror the Manage modal's confirm.
-      const others = (groupsByDeviceId.get(deviceId) || []).map(g => g.name);
+      // Dragging a screen onto a group MOVES it. This used to borrow the Manage modal's
+      // "add it too?" confirm and then only add — so the screen ended up in both groups while the
+      // toast claimed it had moved, the page still showed the old group, and a second attempt said
+      // "already in group 2". Reported by a customer doing exactly that with two screens.
+      // The Manage modal keeps add/remove checkboxes: multi-group membership is deliberate THERE.
+      // It is not deliberate here, and it is not harmless — deviceSyncGroup() picks arbitrarily
+      // when a device is in several sync-enabled groups, so a half-move leaves sync ambiguous.
+      const others = groupsByDeviceId.get(deviceId) || [];
       if (others.length > 0) {
-        if (!confirm(t('dashboard.confirm_add_to_group', { name: deviceName, groups: others.join(', '), target: targetGroup.name }))) return;
+        if (!confirm(t('dashboard.confirm_move_to_group', {
+          name: deviceName, groups: others.map(g => g.name).join(', '), target: targetGroup.name,
+        }))) return;
       }
       try {
+        // Add first, then drop the old memberships: if the add fails the screen keeps the group it
+        // had rather than being left ungrouped by a half-finished move.
         await api.addDeviceToGroup(groupId, deviceId);
+        for (const g of others) {
+          if (g.id === groupId) continue;
+          try { await api.removeDeviceFromGroup(g.id, deviceId); }
+          catch (e) { showToast(t('dashboard.toast.move_partial', { group: g.name }), 'warning'); }
+        }
         showToast(t('dashboard.toast.moved_device', { name: deviceName, group: targetGroup.name }), 'success');
         loadDashboard();
       } catch (err) { showToast(err.message, 'error'); }

@@ -126,6 +126,8 @@ export default {
   'dashboard.prompt_group_name': 'Gruppenname:',
   'dashboard.error_pairing_code': 'Geben Sie einen gültigen 6-stelligen Kopplungscode ein',
   'dashboard.confirm_add_to_group': '{name} ist bereits in: {groups}\n\nAuch zu „{target}“ hinzufügen?',
+  'dashboard.confirm_move_to_group': '{name} ist derzeit in: {groups}\n\nNach "{target}" verschieben?',
+  'dashboard.toast.move_partial': 'Entfernen aus {group} fehlgeschlagen — Bildschirm ist noch in beiden',
   'dashboard.confirm_assign_playlist': 'Playlist „{playlist}“ allen Geräten in „{group}“ zuweisen?',
   'dashboard.confirm_destructive_command': '{cmd} alle {n} Geräte in „{group}“?\n\nDies kann nicht rückgängig gemacht werden.',
   'dashboard.confirm_delete_group': 'Diese Gruppe löschen? Geräte sind nicht betroffen.',
