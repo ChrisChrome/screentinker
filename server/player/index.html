@@ -3282,8 +3282,24 @@
 
     // ==================== UI Helpers ====================
     function showStatus(msg) {
-      document.getElementById('statusOverlay').style.display = 'flex';
-      document.getElementById('statusText').textContent = msg;
+      const overlay = document.getElementById('statusOverlay');
+      if (!overlay) return;
+      overlay.style.display = 'flex';
+      // #statusText can be GONE: the suspended-account branch replaces the whole overlay with its
+      // own markup, which does not contain it. Reading .textContent off null then threw a TypeError
+      // out of every later showStatus call — the player reported itself "crashed" on each refresh
+      // beat, and worse, showNothingScheduled() throws BEFORE arming its 30s re-check, so a screen
+      // whose dayparts had all closed was stranded on the stale suspended card with no retry.
+      // Rebuild the element rather than bail, so the message the caller wanted is actually shown.
+      let text = document.getElementById('statusText');
+      if (!text) {
+        overlay.innerHTML = '';
+        text = document.createElement('p');
+        text.id = 'statusText';
+        text.style.cssText = 'color:#94a3b8;font-size:20px;font-family:sans-serif;text-align:center';
+        overlay.appendChild(text);
+      }
+      text.textContent = msg;
     }
 
     function hideStatus() {
