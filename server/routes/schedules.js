@@ -358,33 +358,58 @@ function expandSchedule(schedule, rangeStart, rangeEnd) {
   }
 
   const recEnd = schedule.recurrence_end ? new Date(schedule.recurrence_end) : rangeEnd;
-  let current = new Date(start);
-  let count = 0;
-  const maxIterations = 366;
 
-  while (current <= rangeEnd && current <= recEnd && count < maxIterations) {
-    const instanceEnd = new Date(current.getTime() + durationMs);
+  // Walk DAY BY DAY across the visible range and draw every day the rule actually fires.
+  //
+  // The old loop stepped by the recurrence unit from the schedule's original start, which got both
+  // of the common presets wrong:
+  //   - WEEKLY advanced a whole week at a time, so dayOfWeek never changed and a
+  //     FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR rule matched only its start day — one event a week, or
+  //     none at all if it had been created on a weekend.
+  //   - Starting from the original start with a 366-iteration cap meant a schedule begun more than
+  //     a year ago never reached the current week, so it drew nothing whatsoever.
+  // The engine meanwhile evaluates day-of-week directly, so it ran Mon-Fri regardless. The calendar
+  // is the operator's only view of what is scheduled, and it disagreed with reality in both
+  // directions. Iterating the range instead means the drawing follows the same rule the engine
+  // applies, and the cost is bounded by the window being displayed rather than by history.
+  const dayMs = 24 * 60 * 60 * 1000;
+  const startTimeOfDay = { h: start.getHours(), m: start.getMinutes(), s: start.getSeconds() };
 
-    if (current >= rangeStart || instanceEnd >= rangeStart) {
-      const dayOfWeek = current.getDay();
-      const matchesDay = !rule.byDay || rule.byDay.includes(dayOfWeek);
+  // First candidate day: the later of the schedule's start and the window's start.
+  let cursor = new Date(Math.max(start.getTime(), rangeStart.getTime()));
+  cursor.setHours(startTimeOfDay.h, startTimeOfDay.m, startTimeOfDay.s, 0);
+  if (cursor.getTime() + durationMs < rangeStart.getTime()) cursor = new Date(cursor.getTime() + dayMs);
 
-      if (matchesDay) {
-        events.push({
-          ...schedule,
-          instance_start: current.toISOString(),
-          instance_end: instanceEnd.toISOString()
-        });
-      }
-    }
+  const lastDay = new Date(Math.min(rangeEnd.getTime(), recEnd.getTime()));
+  const interval = Math.max(1, rule.interval || 1);
 
+  while (cursor <= lastDay) {
+    const instanceEnd = new Date(cursor.getTime() + durationMs);
+    let fires = false;
     switch (rule.freq) {
-      case 'DAILY': current.setDate(current.getDate() + (rule.interval || 1)); break;
-      case 'WEEKLY': current.setDate(current.getDate() + 7 * (rule.interval || 1)); break;
-      case 'MONTHLY': current.setMonth(current.getMonth() + (rule.interval || 1)); break;
-      default: current.setDate(current.getDate() + 1);
+      case 'DAILY':
+        // Honour the interval by counting whole days from the original start.
+        fires = Math.floor((cursor - start) / dayMs) % interval === 0;
+        break;
+      case 'WEEKLY':
+        // byDay is what makes Mon-Fri work. Without it, weekly means "the start's weekday".
+        fires = rule.byDay ? rule.byDay.includes(cursor.getDay()) : cursor.getDay() === start.getDay();
+        break;
+      case 'MONTHLY':
+        fires = cursor.getDate() === start.getDate();
+        break;
+      default:
+        fires = true;
     }
-    count++;
+    if (fires && (cursor >= rangeStart || instanceEnd >= rangeStart)) {
+      events.push({
+        ...schedule,
+        instance_start: cursor.toISOString(),
+        instance_end: instanceEnd.toISOString(),
+      });
+    }
+    cursor = new Date(cursor.getTime() + dayMs);
+    cursor.setHours(startTimeOfDay.h, startTimeOfDay.m, startTimeOfDay.s, 0);   // DST-safe re-anchor
   }
 
   return events;
@@ -410,3 +435,6 @@ function parseRRule(rrule) {
 }
 
 module.exports = router;
+// Exported for testing, the same way playlists.js exports publishPlaylist. The calendar's
+// correctness is arithmetic and deserves to be checked without standing up a server.
+module.exports.expandSchedule = expandSchedule;
