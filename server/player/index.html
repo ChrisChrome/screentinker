@@ -1977,6 +1977,18 @@
         if (stillThereIdx !== -1) {
           currentIndex = stillThereIdx;
           isPlaying = true;
+          // ...unless it is a WIDGET whose content was edited. Identity is content/widget id, and
+          // editing a widget does not change its id, so an edited widget "survives" and the
+          // re-render is skipped — which is exactly why an edit never reached the screen. The new
+          // revision sat in the playlist unused, because a solo widget deliberately never
+          // re-renders on a timer (that would reset a directory board's scroll). Re-render through
+          // the buffered swap, which is flash-free by design, so this costs nothing visually.
+          const oldItem = oldPlaylist[oldAnchorIdx];
+          const newItem = playlist[stillThereIdx];
+          if (newItem && newItem.widget_id && oldItem && (oldItem.widget_rev || 0) !== (newItem.widget_rev || 0)) {
+            console.log('Widget edited - re-rendering in place');
+            renderContent(newItem);
+          }
           return;
         }
       }
