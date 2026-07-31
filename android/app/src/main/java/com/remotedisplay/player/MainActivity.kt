@@ -1328,6 +1328,19 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         remoteStreaming = false
+        // Everything below this line exists for the same reason the wall/group shutdown does, and
+        // was missing: these Handlers are on the MAIN LOOPER, which outlives the Activity.
+        //
+        // PlaylistController kept advancing after the Activity was destroyed. Each tick wrote the
+        // resume index and emitted play_start/play_end through the still-live WebSocketService, so
+        // after a relaunch (the "launch" command, Relauncher after OTA/boot, a re-pair, or a config
+        // change outside the ones we handle) TWO controllers were reporting playback for one screen
+        // — inflating Total Plays and Hours in Reports, and racing over the resume position that
+        // #234 relies on. Widget items also re-entered showWidget on a WebView nobody owned.
+        if (::playlistController.isInitialized) playlistController.stop()
+        if (::updateChecker.isInitialized) updateChecker.shutdown()
+        // The 30s failure-check loop and anything else this Activity posted.
+        handler.removeCallbacksAndMessages(null)
         // Kill the wall/group leader tick BEFORE releasing media. The Handler is on the main looper
         // (outlives this Activity), so a surviving tick would keep broadcasting sync frames against
         // the released player forever — the zombie-leader / split-brain / garbage-position leak.

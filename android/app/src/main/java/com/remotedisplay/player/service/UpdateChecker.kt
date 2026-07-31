@@ -38,6 +38,8 @@ class UpdateChecker(private val context: Context) {
     private val CHECK_INTERVAL = 30 * 60 * 1000L
 
     private var installReceiverRegistered = false
+    // Held so shutdown() can unregister it; without a handle the receiver outlives the Activity.
+    private var installReceiver: BroadcastReceiver? = null
 
     // #139: report OTA status to the dashboard (device:log, tag "ota"). Wired by MainActivity
     // to WebSocketService.sendLog; null until then. Read lazily so binding order doesn't matter.
@@ -92,6 +94,7 @@ class UpdateChecker(private val context: Context) {
             @Suppress("UnspecifiedRegisterReceiverFlag") context.registerReceiver(receiver, filter)
         }
         installReceiverRegistered = true
+        installReceiver = receiver
     }
 
     fun startPeriodicCheck() {
@@ -111,6 +114,25 @@ class UpdateChecker(private val context: Context) {
     fun stopPeriodicCheck() {
         checkTimer?.let { handler.removeCallbacks(it) }
         checkTimer = null
+    }
+
+    /**
+     * Full teardown for an Activity that is going away.
+     *
+     * stopPeriodicCheck alone leaves the install receiver registered against a dead Context, and
+     * installReceiverRegistered is per-instance — so each Activity recreate produced another
+     * checker polling /api/update/check and another receiver for INSTALL_COMPLETE. N of those means
+     * one STATUS_PENDING_USER_ACTION fires N confirm dialogs over customer content, and concurrent
+     * checkers race in tryPackageInstaller, which begins by abandoning ALL of this app's installer
+     * sessions — so one can abandon another's staged session mid-flight and the update never lands.
+     */
+    fun shutdown() {
+        stopPeriodicCheck()
+        if (installReceiverRegistered) {
+            installReceiver?.let { r -> try { context.unregisterReceiver(r) } catch (_: Throwable) { /* already gone */ } }
+            installReceiver = null
+            installReceiverRegistered = false
+        }
     }
 
     /**
