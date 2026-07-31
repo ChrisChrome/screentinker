@@ -75,6 +75,22 @@ function snapshot(deviceId, now = Math.floor(Date.now() / 1000)) {
 function applyToDevice(deviceId, fingerprint) {
   const s = db.prepare('SELECT * FROM device_settings WHERE fingerprint = ?').get(fingerprint);
   if (!s) return null;
+
+  // A snapshot only ever applies inside the workspace it was taken in.
+  //
+  // The lookup keys on fingerprint alone, and a fingerprint is hardware-derived: the same panel
+  // moved between customers presents the same one. Without this comparison, a screen deleted from
+  // one workspace and paired into another inherited the FIRST workspace's playlist_id, blocked flag
+  // and team_id — and the per-field guards below did not stop it, because they only check that the
+  // referenced row still exists, never who it belongs to. The manual restore route already compares
+  // workspaces before calling this (routes/devices.js), so the automatic re-pair path was the one
+  // place the check was missing.
+  //
+  // Mismatch is a no-op, not an error: re-pairing a second-hand panel into a new workspace is a
+  // legitimate thing to do, it just must not drag the previous owner's configuration along.
+  const dev = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
+  if (!dev) return null;
+  if (s.workspace_id && dev.workspace_id && s.workspace_id !== dev.workspace_id) return null;
   const sets = [], vals = [];
   const put = (col, val) => { sets.push(`${col} = ?`); vals.push(val); };
 
