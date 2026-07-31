@@ -198,9 +198,28 @@ PlaylistPlayer.prototype.load = function (assignments) {
   // #157: removed-but-live in solo playback -> don't interrupt; rotate out on the next advance
   // (the current item's video onended / image timer still fires advance()). Group-sync (schedule-
   // driven) and wall followers reconcile via their own tick, so play through immediately as before.
-  if (this.hasContentOnScreen() && !this.wallFollower && !this.scheduleDriven) {
+  // ...but only when an advance is actually coming. Single-item playback here deliberately has
+  // none: `single` makes renderImage, renderVideo and renderWidget all skip their timer (a solo
+  // item is meant to sit there), so replacing the one item of a one-item playlist deferred forever
+  // and the old content stayed on the screen. On Tizen this strands IMAGES too, not just video and
+  // widgets as on the web player, because the timer is skipped for every type.
+  var outgoingNeverAdvances = !this.items || this.items.length <= 1;
+  if (this.hasContentOnScreen() && !this.wallFollower && !this.scheduleDriven && !outgoingNeverAdvances) {
     this._deferredRotation = true;
     this._deferredSuccessorId = this.itemIdentity(items[nextIdx]);
+    // Safety net: a deferral is a bet that an advance will arrive. If it does not, apply the
+    // change anyway rather than leave the screen on content the operator has replaced.
+    var self = this;
+    if (this._deferredDeadline) clearTimeout(this._deferredDeadline);
+    this._deferredDeadline = setTimeout(function () {
+      if (!self._deferredRotation) return;
+      self._deferredRotation = false;
+      var di = -1;
+      for (var k = 0; k < self.items.length; k++) {
+        if (self.itemIdentity(self.items[k]) === self._deferredSuccessorId) { di = k; break; }
+      }
+      self.startPlaybackAt(di === -1 ? 0 : di);
+    }, 60000);
     return;
   }
 
@@ -250,6 +269,7 @@ PlaylistPlayer.prototype.advance = function () {
   // stashed list and continue at the preserved successor instead of interrupting/restarting.
   if (this._deferredRotation) {
     this._deferredRotation = false;
+    if (this._deferredDeadline) { clearTimeout(this._deferredDeadline); this._deferredDeadline = null; }
     var sid = this._deferredSuccessorId; this._deferredSuccessorId = null;
     var to = sid ? this.indexOfIdentity(this.items, sid) : -1;
     this.startPlaybackAt(to >= 0 ? to : 0);

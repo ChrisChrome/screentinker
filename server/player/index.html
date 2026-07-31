@@ -404,6 +404,7 @@
     // (e.g. it just expired) in solo playback, we keep it up and rotate to deferredSuccessorId on
     // the next natural advance instead of interrupting/restarting.
     let deferredRotation = false;
+    let deferredRotationDeadline = null;   // a deferral must not wait forever — see the #157 block
     let deferredSuccessorId = null;
     function itemIdentity(x) { return x ? `${x.content_id || ''}|${x.widget_id || ''}|${x.remote_url || ''}|${x.filepath || ''}` : ''; }
 
@@ -2025,10 +2026,30 @@
       // video onended still fires nextItem). Schedule-driven modes (wall follower / group-sync)
       // advance via their own tick, so they reconcile immediately as before.
       const scheduleDriven = isWallFollower() || !!groupSync;
-      if (isPlaying && !scheduleDriven) {
+      // #157 defers so a live item is not yanked mid-play — but it assumes an advance is coming,
+      // and for a ONE-ITEM playlist that is never true. Single-item rendering deliberately never
+      // advances: a video gets `loop = (playlist.length === 1)`, a YouTube embed the same, and a
+      // solo widget is "held" on a self-re-arming refresh that never calls nextItem (reloading it
+      // would reset a directory board's scroll). So replacing the single item of a one-item
+      // playlist deferred forever — the old promo, board or clip kept playing while the dashboard
+      // showed the new playlist published and the device healthy. Only a reboot or a refresh
+      // command cleared it.
+      const outgoingNeverAdvances = oldPlaylist.length <= 1;
+      if (isPlaying && !scheduleDriven && !outgoingNeverAdvances) {
         deferredRotation = true;
         deferredSuccessorId = itemIdentity(playlist[nextIdx]);
         console.log('#157: current item removed but still live — deferring rotation-out');
+        // Safety net for anything else that turns out not to advance: a deferral is a bet that
+        // one is coming, and if it never arrives the change must still land rather than strand
+        // the screen on content the operator has already replaced.
+        if (deferredRotationDeadline) clearTimeout(deferredRotationDeadline);
+        deferredRotationDeadline = setTimeout(() => {
+          if (!deferredRotation) return;
+          console.warn('#157: deferred rotation never got an advance — applying it now');
+          deferredRotation = false;
+          const di = deferredSuccessorId ? playlist.findIndex(x => itemIdentity(x) === deferredSuccessorId) : -1;
+          startPlaybackAt(di === -1 ? 0 : di);
+        }, 60000);
         return;
       }
 
@@ -2116,6 +2137,7 @@
       // into the (already-swapped) list at the preserved successor instead of interrupting.
       if (deferredRotation) {
         deferredRotation = false;
+        if (deferredRotationDeadline) { clearTimeout(deferredRotationDeadline); deferredRotationDeadline = null; }
         const sid = deferredSuccessorId; deferredSuccessorId = null;
         let idx = sid ? playlist.findIndex(x => itemIdentity(x) === sid) : -1;
         if (idx < 0) idx = 0;
