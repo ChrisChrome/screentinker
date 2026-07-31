@@ -2,7 +2,20 @@ import { showToast } from '../components/toast.js';
 import { t } from '../i18n.js';
 import { esc } from '../utils.js';
 
-const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
+// A refused request must reject, not resolve.
+//
+// This helper used to end in `.then(r => r.json())`, so a 403/404/500 body resolved as an ordinary
+// value and the surrounding try/catch was unreachable — every handler took the failure for success.
+// Concretely: deleting a built-in layout template showed "Layout deleted" while the server had
+// returned 403 and the template was still there, and a rejected platform-role change showed "Role
+// updated" while the dropdown kept displaying a value the server refused (its revert lives only in
+// the dead catch). The shared client in api.js has always thrown on !res.ok; these local copies did
+// not. Same contract now, including the 401 session-expiry reload.
+const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(async (r) => {
+  if (r.status === 401) { localStorage.removeItem('token'); window.location.reload(); throw new Error('Session expired'); }
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || `Request failed (${r.status})`); }
+  return r.json();
+});
 
 export async function render(container) {
   const hash = window.location.hash;
