@@ -220,9 +220,20 @@ router.get('/:id/render', (req, res) => {
   // widgets render blank in the web player. Drop it here; the sandbox - not
   // X-Frame-Options - is what isolates the widget (it can't read the dashboard JWT).
   res.removeHeader('X-Frame-Options');
-  // Never cache the render: widget data (clock/weather/rss/directory) changes, and
-  // a cached copy from before the X-Frame-Options change would keep showing blank.
-  res.setHeader('Cache-Control', 'no-store');
+  // Caching is keyed on whether the caller pinned a revision.
+  //
+  // A URL carrying ?rev=<widget.updated_at> is content-addressed: those exact bytes cannot change
+  // without the rev changing, so it is safe to cache hard — and it NEEDS to be, because a player
+  // that loses its network must still be able to render its widgets. Offline resilience is the
+  // point of the player's cache, and no-store made widgets the one thing it could never keep.
+  //
+  // A URL with no rev is the old shape and stays uncacheable: nothing distinguishes one render
+  // from the next, so a cached copy could serve content the operator has already changed.
+  if (req.query.rev) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  } else {
+    res.setHeader('Cache-Control', 'no-store');
+  }
   res.setHeader('Content-Type', 'text/html');
   res.send(renderWidgetHtml(widget.widget_type, config));
 });

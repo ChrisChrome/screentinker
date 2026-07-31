@@ -1848,7 +1848,10 @@
       // stale cached playlist and never applies the new transitions. This bug hid every transition edit.
       // STRUCTURAL fingerprint only (identity + order + schedules + transition). duration_sec is
       // deliberately EXCLUDED so a duration-only edit is applied IN PLACE (not a full change/restart).
-      const fingerprint = (items) => items.map(a => `${a.content_id || ''}|${a.widget_id || ''}|${a.remote_url || ''}|${a.filepath || ''}|${a.filename || ''}|${JSON.stringify(a.schedules || [])}|${JSON.stringify(a.transition || null)}`).join(',');
+      // widget_rev is in here for the same reason as schedules and transition: a widget's IDENTITY
+      // does not change when it is EDITED, so a content edit produced an identical fingerprint, the
+      // update was treated as "unchanged", and the screen kept the old render until a reload.
+      const fingerprint = (items) => items.map(a => `${a.content_id || ''}|${a.widget_id || ''}|${a.widget_rev || ''}|${a.remote_url || ''}|${a.filepath || ''}|${a.filename || ''}|${JSON.stringify(a.schedules || [])}|${JSON.stringify(a.transition || null)}`).join(',');
       const newFp = fingerprint(newItems);
       const oldFp = fingerprint(playlist);
 
@@ -2381,7 +2384,7 @@
       discardPendingSwap();
 
       const iframe = document.createElement('iframe');
-      iframe.src = `${config.serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}`;
+      iframe.src = `${config.serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}&rev=${item.widget_rev||0}`;
       // Positioned + sized by the `#playerContainer > iframe` CSS rule. Hidden while it
       // loads so its black background never shows over the outgoing content.
       iframe.style.background = '#000';
@@ -2932,7 +2935,7 @@
           if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
         } else if (item.widget_id) {
           const iframe = document.createElement('iframe');
-          iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}`;
+          iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}&rev=${item.widget_rev||0}`;
           iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           iframe.allow = 'autoplay; fullscreen';
           // Sandbox into a unique origin so widget scripts can't read window.parent
@@ -3046,7 +3049,7 @@
       // Android player, which keys off the assignment's widget_type.
       if (a.widget_id) {
         const iframe = document.createElement('iframe');
-        iframe.src = `${config.serverUrl}/api/widgets/${a.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}`;
+        iframe.src = `${config.serverUrl}/api/widgets/${a.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}&rev=${a.widget_rev||0}`;
         // Sandbox into a unique origin so widget scripts can't read window.parent
         // state (localStorage / JWT). allow-scripts keeps inline widget code running.
         iframe.setAttribute('sandbox', 'allow-scripts');

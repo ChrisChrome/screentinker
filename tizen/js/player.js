@@ -148,7 +148,10 @@ PlaylistPlayer.prototype.load = function (assignments) {
     // transition-engine: include the per-item transition, or a transition change keeps the same
     // signature -> "unchanged" -> the player never applies the new transitions.
     // duration_sec is EXCLUDED so a duration edit applies in place (below), not as a restart.
-    return [a.content_id, a.widget_id, a.remote_url, a.mime_type, a.schedules || [], a.transition || null];
+      // widget_rev for the same reason as schedules and transition above: a widget's IDENTITY
+      // is unchanged when it is EDITED, so a content edit produced an identical signature, the
+      // update was treated as unchanged, and the screen kept the old render until a restart.
+      return [a.content_id, a.widget_id, a.widget_rev || 0, a.remote_url, a.mime_type, a.schedules || [], a.transition || null];
   }));
   if (sig === this.sig && this.items.length) {
     // In-place duration refresh: patch duration_sec on the live items so a duration edit takes effect
@@ -821,7 +824,7 @@ PlaylistPlayer.prototype.renderYouTube = function (item, single) {
 
 PlaylistPlayer.prototype.renderWidget = function (item, single) {
   var self = this;
-  var src = this.getBase() + '/api/widgets/' + item.widget_id + '/render' + (this.getDeviceId() ? '?device=' + encodeURIComponent(this.getDeviceId()) : '');
+  var src = this.getBase() + '/api/widgets/' + item.widget_id + '/render' + (this.getDeviceId() ? '?device=' + encodeURIComponent(this.getDeviceId()) : '?d=') + '&rev=' + (item.widget_rev || 0);
   // Anti-flash (#directory-board, parity with the web player): build the new iframe hidden ON TOP of the
   // current content and reveal it on load, THEN drop everything else — so a widget/directory-board
   // reload never black-flashes the stage (playCurrent skipped the pre-clear for widgets).
@@ -1037,7 +1040,7 @@ ZoneRenderer.prototype.showItem = function (zone, list, index) {
       zone.el.appendChild(zrFrame(ysrc, 'autoplay; encrypted-media', yvert));
       if (multi) this.scheduleAdvance(zone, dur, advance);
     } else if (a.widget_type || (a.widget_id && !a.content_id)) {
-      zone.el.appendChild(zrFrame(this.getBase() + '/api/widgets/' + a.widget_id + '/render' + (this.getDeviceId() ? '?device=' + encodeURIComponent(this.getDeviceId()) : '')));
+      zone.el.appendChild(zrFrame(this.getBase() + '/api/widgets/' + a.widget_id + '/render' + (this.getDeviceId() ? '?device=' + encodeURIComponent(this.getDeviceId()) : '?d=') + '&rev=' + (a.widget_rev || 0)));
       if (multi) this.scheduleAdvance(zone, dur, advance);
     } else if (mime.indexOf('video/') === 0) {
       var v = document.createElement('video');
