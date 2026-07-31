@@ -525,7 +525,7 @@ export default {
   'device.debug.hint': 'Streams player/zone logs from this device in real time. Turns off on its own when the device reconnects.',
   'device.ota.toggle': 'Self-update (OTA)',
   'device.ota.beta': 'Accept pre-release builds',
-  'device.ota.beta_hint': 'Keeps this display on a test build instead of updating it back to the current release. Only affects pre-releases of the version already installed — once a newer release ships, this display updates to it normally.',
+  'device.ota.beta_hint': 'Puts this display on the pre-release channel: it receives the beta build if the server has one published, and keeps a test build instead of being updated back to the current release. Untick to move it back to the release build. Does nothing if no beta is published.',
   'device.ota.hint': 'When off, this device is never offered an update — an MDM or operator owns its updates instead. Turn OFF for MDM-managed panels (e.g. Pivot/MAXHUB) so the app never shows a self-install dialog.',
   'device.reboot_schedule.label': 'Nightly reboot',
   'device.reboot_schedule.hint': 'Reboot this panel once a day at this device-local time (leave blank for off). A clean nightly reboot clears memory leaks and re-syncs the clock. Silent on device-owner panels; a no-op on panels that can\'t self-reboot.',

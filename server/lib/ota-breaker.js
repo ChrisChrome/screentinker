@@ -68,14 +68,35 @@ function isReleased(p) { return p.pre === null || /^patch\d+$/i.test(p.pre); }
 
 // decide(clientVersion, latestVersion, deviceId?, now?) ->
 //   { update_available, reason, retry_after_seconds?, log? }
-function decide(clientVersion, latestVersion, deviceId = null, now = Date.now(), betaChannel = false) {
+function decide(clientVersion, latestVersion, deviceId = null, now = Date.now(), betaChannel = false, wasOnBeta = false) {
   // ---- PHANTOM / unrecognized guard (immediate, version-based, no rate state) ----
   if (!clientVersion) return { update_available: false, reason: 'no-version' };
   const pc = parseVer(clientVersion), pl = parseVer(latestVersion);
   if (!pc || !pl) return { update_available: false, reason: 'unrecognized-version', log: logOnce(clientVersion, `[ota] unrecognized client version '${clientVersion}' — no offer (latest=${latestVersion})`) };
   const full = cmpParsed(pc, pl);
   if (full === 0) return { update_available: false, reason: 'up-to-date' };
-  if (full > 0) return { update_available: false, reason: 'client-newer' };       // never offer a downgrade
+  if (full > 0) {
+    // Normally a client ahead of the server is left alone — never offer a downgrade. But a display
+    // running a PRE-RELEASE while not opted into betas is a display someone has just switched back
+    // to the release line, and stable is legitimately "older" than the beta it is replacing. Without
+    // this it is stranded on the beta build forever, and unticking the box would appear to do
+    // nothing — the same silent no-op the opt-in exists to remove.
+    //
+    // A client ahead on a genuine RELEASE still gets client-newer: that is a rolled-back server, and
+    // pushing it backwards would be wrong.
+    //
+    // NOTE: the server can only OFFER. Android refuses to install a lower versionCode, so a beta
+    // build must be cut with a versionCode no higher than the stable it branches from — equal is
+    // ideal, since equal codes install in both directions. A beta with a higher code cannot be
+    // returned to stable without an uninstall, whatever this endpoint says.
+    // wasOnBeta is the evidence that this display was actually being served the beta channel. A
+    // display that has simply always run its own pre-release build is left alone, exactly as
+    // before — #144's protection for a tester ahead of the server is untouched.
+    if (!betaChannel && wasOnBeta && !isReleased(pc)) {
+      return { update_available: true, reason: 'channel-return' };
+    }
+    return { update_available: false, reason: 'client-newer' };
+  }
   // betaChannel is exempt: this guard would otherwise strand the very displays we hand test
   // builds to. A tester on 1.9.25-fix234d has an older core than a released 1.9.26, so without
   // the exemption they are told "superseded" forever and never rejoin the release line — the
