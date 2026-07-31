@@ -434,12 +434,28 @@ load(); setInterval(load, 300000);
 }
 
 function renderText(c) {
-  // Designer preview uses fontSize/10 vw, but older published HTML used fontSize*10.8 px.
-  // Convert any px-based font sizes to vw so they scale to any viewport: px / 108 = vw
   let html = c.html || '<p style="color:white;padding:20px">Empty text widget</p>';
-  html = html.replace(/font-size:\s*([\d.]+)px/g, (match, px) => {
-    return `font-size:${(parseFloat(px) / 108).toFixed(2)}vw`;
-  });
+
+  // LEGACY DESIGNER RESCUE — deliberately narrow.
+  //
+  // The Content Designer used to publish absolute font sizes as fontSize*10.8 px; today it emits
+  // cqw (see designer.js). Converting px/108 back to vw restores the author's intended size and
+  // makes those old widgets scale to any screen.
+  //
+  // It must NOT touch hand-authored HTML. This regex used to run over EVERY text widget, so
+  // someone writing `font-size:16px` in the Text/HTML editor got 0.15vw — 2.8px on a 1080p
+  // screen, and smaller still on anything narrower. Their text was not clipped or hidden; it was
+  // rendered too small to read, in the one widget whose whole purpose is hand-written HTML.
+  //
+  // Designer output is identified by its absolutely-positioned elements, the same signal the
+  // dashboard uses to decide whether a text widget can be reopened in the designer. Hand-written
+  // markup keeps its px exactly as typed.
+  const isDesignerAuthored = /position:\s*absolute;\s*left:/.test(html);
+  if (isDesignerAuthored) {
+    html = html.replace(/font-size:\s*([\d.]+)px/g, (match, px) => {
+      return `font-size:${(parseFloat(px) / 108).toFixed(2)}vw`;
+    });
+  }
 
   // What to do when the text is taller than the screen. It used to be clipped in silence: the
   // document was overflow:hidden with no scrollbar and nothing to scroll it, so on a display
