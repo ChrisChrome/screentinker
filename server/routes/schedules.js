@@ -261,13 +261,36 @@ router.post('/', (req, res) => {
     if (zErr) return res.status(zErr.status).json({ error: zErr.error });
   }
 
+  // A content-only schedule is turned into a playlist holding that one item.
+  //
+  // The dialog offers "Content (single item, optional)" and the value was stored faithfully — but
+  // the engine only ever acts on layout_id and playlist_id, so content_id was read by nothing at
+  // all. The schedule fired, changed nothing, and the calendar drew a block labelled with the
+  // filename as confirmation that it would. Rather than add a third override path through the
+  // engine and every player, give the item the same shape everything already understands: its own
+  // playlist. That reuses the whole published/assign/push pipeline as-is.
+  let effectivePlaylistId = playlist_id || null;
+  if (!effectivePlaylistId && content_id) {
+    const c = db.prepare('SELECT filename FROM content WHERE id = ?').get(content_id);
+    const genId = uuidv4();
+    db.prepare('INSERT INTO playlists (id, name, workspace_id, user_id, status) VALUES (?, ?, ?, ?, ?)')
+      .run(genId, `Scheduled: ${(c && c.filename) || 'item'}`, targetWorkspaceId, req.user.id, 'published');
+    db.prepare('INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec) VALUES (?, ?, 0, 10)')
+      .run(genId, content_id);
+    // Publish through the shared path rather than hand-rolling the snapshot: players read
+    // denormalized fields (filename, mime_type, filepath, remote_url, schedules...) out of
+    // published_snapshot, and duplicating that shape here would rot the moment it changes.
+    require('./playlists').publishPlaylist(genId);
+    effectivePlaylistId = genId;
+  }
+
   const id = uuidv4();
   db.prepare(`
     INSERT INTO schedules (id, user_id, workspace_id, device_id, group_id, zone_id, content_id, widget_id, layout_id, playlist_id, title,
       start_time, end_time, timezone, recurrence, recurrence_end, priority, color)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, req.user.id, targetWorkspaceId, device_id || null, group_id || null, zone_id || null, content_id || null, widget_id || null,
-    layout_id || null, playlist_id || null, title || '', start_time, end_time, timezone || targetTz || 'UTC',
+    layout_id || null, effectivePlaylistId, title || '', start_time, end_time, timezone || targetTz || 'UTC',
     recurrence || null, recurrence_end || null, priority || 0, color || '#3B82F6');
 
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(id);
