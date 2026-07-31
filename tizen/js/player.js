@@ -1323,7 +1323,15 @@ GroupSyncController.prototype.target = function () {
 };
 GroupSyncController.prototype.tick = function () {
   if (!this.groupId || !this.player.items.length) return;
-  var t = this.target(); if (!t) return;
+  // No target means every item is currently outside its daypart. Returning here left the whole
+  // group displaying (or looping) whatever was in-window last, out of hours — while an identical
+  // ungrouped screen correctly showed the idle card. Group members are schedule-driven, so no
+  // renderer arms a timer and nothing else was watching for this.
+  var t = this.target();
+  if (!t) {
+    if (this.player.hasContentOnScreen()) this.player.nothingScheduled();
+    return;
+  }
   // Double buffer: warm the next clip ~6s before the boundary (once per boundary).
   if (t.nextIndex !== t.index && t.secToBoundary >= 0 && t.secToBoundary <= 6) {
     this.player.preloadVideo(t.nextIndex);   // warm next clip (video-only; no-ops otherwise)

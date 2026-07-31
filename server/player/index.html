@@ -1720,7 +1720,19 @@
     function groupScheduleTick() {
       if (!groupSync || playlist.length === 0) return;
       const t = groupScheduleTarget();
-      if (!t) return;
+      if (!t) {
+        // period === 0 means every item is currently outside its daypart. Solo playback routes the
+        // same condition into showNothingScheduled(); group playback just returned, so nothing was
+        // watching — group members are scheduleDriven, so renderContent arms no advanceTimer, and
+        // a group-rendered video is created with loop = !!groupSync. Out of hours the whole group
+        // therefore kept displaying (or looping) whatever had been in-window last, while an
+        // identical ungrouped screen correctly showed the idle card.
+        if (isPlaying) {
+          teardownCurrentMedia();
+          showNothingScheduled();
+        }
+        return;
+      }
       // Double buffer: warm the next clip ~6s before the boundary (once per boundary).
       if (t.nextIndex !== t.index && t.secToBoundary >= 0 && t.secToBoundary <= 6 && groupPreloadIdx !== t.nextIndex) {
         groupPreloadNext(t.nextIndex);
