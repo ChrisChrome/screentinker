@@ -310,6 +310,14 @@ const migrations = [
   // first may be pulled back to stable. Without it, publishing a beta would drag every existing
   // pre-release tester backwards, which is the harm the opt-in exists to prevent.
   "ALTER TABLE devices ADD COLUMN ota_channel_served TEXT",
+  // Repair for schedules orphaned by a group deletion before the conversion carried workspace_id.
+  // Such rows are invisible (list/calendar filter on workspace), undeletable (PUT/DELETE 403 on a
+  // null workspace) and still firing (the scheduler has no workspace filter) — so an operator
+  // cannot fix them from the dashboard at all. Recover the workspace from the device the schedule
+  // targets; anything still unresolvable is left alone rather than guessed at.
+  `UPDATE schedules SET workspace_id = (SELECT d.workspace_id FROM devices d WHERE d.id = schedules.device_id)
+     WHERE workspace_id IS NULL AND device_id IS NOT NULL
+       AND (SELECT d.workspace_id FROM devices d WHERE d.id = schedules.device_id) IS NOT NULL`,
   // #161: privilege tier reported by the player (0 unprivileged / 1 device-admin / 2 owner-or-
   // delegated-install) + whether a foreign device owner (MDM) manages it. Drives dashboard gating
   // of Tier-2 controls (reboot/kiosk/time) — shown only for owned panels.
