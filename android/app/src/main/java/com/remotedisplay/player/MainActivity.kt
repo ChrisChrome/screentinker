@@ -591,9 +591,12 @@ class MainActivity : AppCompatActivity() {
                 val currentLayoutId = zoneManager?.currentLayoutId
 
                 // Build a signature of current assignments to detect content changes
+                // widget_rev belongs in here for the same reason it is in the fullscreen playlist
+                // signature: editing a widget changes its CONTENT, never its id, so without it a
+                // zone assignment looked identical and the re-render was skipped as "unchanged".
                 val assignmentSig = (0 until assignments.length()).map { i ->
                     val a = assignments.getJSONObject(i)
-                    "${a.optString("content_id")}:${a.optString("zone_id")}:${a.optString("widget_id")}"
+                    "${a.optString("content_id")}:${a.optString("zone_id")}:${a.optString("widget_id")}:${a.optLong("widget_rev", 0L)}"
                 }.sorted().joinToString("|")
                 val changed = assignmentSig != zoneManager?.lastAssignmentSig
 
