@@ -152,6 +152,7 @@ class MediaPlayerManager(
     // Plain image mount (visibility flip + set bitmap). Shared by the transition-done swap and the
     // no-transition hard cut.
     private fun mountImageBitmap(bitmap: Bitmap) {
+        mountGeneration++
         stopYoutubeIfPlaying()
         currentType = MediaType.IMAGE
         currentWidgetUrl = null   // surface reused - a later widget show must reload
@@ -183,6 +184,7 @@ class MediaPlayerManager(
 
     fun playYoutube(embedUrl: String, durationSec: Int = 0, muted: Boolean = false) {
         Log.i("MediaPlayerManager", "Playing YouTube: $embedUrl (muted=$muted)")
+        mountGeneration++
         currentType = MediaType.YOUTUBE
         currentWidgetUrl = null   // surface reused - a later widget show must reload
         youtubeMuted = muted || wallMute
@@ -260,6 +262,7 @@ class MediaPlayerManager(
             return
         }
         Log.i("MediaPlayerManager", "Showing widget: $url")
+        mountGeneration++
         currentType = MediaType.WIDGET
         currentWidgetUrl = url
 
@@ -277,6 +280,7 @@ class MediaPlayerManager(
 
     fun playVideoFromUrl(url: String, muted: Boolean = false) {
         Log.i("MediaPlayerManager", "Streaming video from URL: $url (muted=$muted)")
+        mountGeneration++
         stopYoutubeIfPlaying()
         currentType = MediaType.VIDEO
         currentWidgetUrl = null   // surface reused - a later widget show must reload
@@ -293,13 +297,36 @@ class MediaPlayerManager(
         }
     }
 
+    /**
+     * Bumped by every request to put something on screen. An async decode captures it and drops its
+     * result if the value has moved on — the same drop-if-replaced token PipOverlay.loadImageInto
+     * already carries.
+     *
+     * Without it a slow remote image (ImageLoader allows 10s connect + 30s read, against a slot
+     * that is usually 10s) finished long after the playlist had advanced and mounted itself over
+     * whatever was playing. If that was a video, the mount also called exoPlayer.stop(), which
+     * lands in STATE_IDLE — and the advance listener only fires onVideoComplete on STATE_ENDED or a
+     * playback error, so no advance was ever scheduled and the playlist stopped for good. The 60s
+     * refresh could not rescue it either: the playlist signature was unchanged, so the update
+     * returned early.
+     */
+    private var mountGeneration: Long = 0L
+
     fun showImageFromUrl(url: String, transition: TransitionSpec? = null) {
         Log.i("MediaPlayerManager", "Loading remote image: $url")
         // Capture the outgoing frame NOW, on the main thread, before the decode thread swaps it out.
         val from = if (transition != null) captureCurrentFrame() else null
+        val myGeneration = ++mountGeneration
         Thread {
             val bitmap = ImageLoader.decodeUrl(url, ImageLoader.screenWidth(context), ImageLoader.screenHeight(context))
             mainHandler.post {
+                // Something else has been asked for since this decode started — including the
+                // error branch, whose onImageError posts next() and would otherwise cut short
+                // whatever is now playing.
+                if (myGeneration != mountGeneration) {
+                    Log.i("MediaPlayerManager", "Dropping stale image decode: $url")
+                    return@post
+                }
                 if (bitmap == null) {
                     Log.w("MediaPlayerManager", "Skipping unloadable remote image: $url")
                     onImageError?.invoke(); return@post
@@ -352,6 +379,7 @@ class MediaPlayerManager(
     }
 
     private fun mountVideo(file: File, muted: Boolean = false) {
+        mountGeneration++
         stopYoutubeIfPlaying()
         currentType = MediaType.VIDEO
         currentWidgetUrl = null   // surface reused - a later widget show must reload
