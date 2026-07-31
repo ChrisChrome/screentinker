@@ -193,7 +193,12 @@ class PlaylistController(
         // so timing edits take effect without interrupting playback or resetting the index.
         // transition included so a transition-only edit re-renders instead of being de-duped (a
         // cached-playlist device otherwise silently ignores it — the web/Tizen fingerprint bug).
-        fun sig(it: PlaylistItem) = it.contentId + "|" + (it.widgetId ?: "") + "|" + (if (it.muted) "m" else "") + "|" +
+        // widgetRev for the same reason as muted and transition above: a widget's identity does not
+        // change when it is EDITED, so a content edit produced a byte-identical signature, the
+        // update was de-duped, and the player kept its old items — including the old rev, so the
+        // render URL never changed and the WebView reuse held. The screen only caught up on an app
+        // restart. Found on the emulator; the code read looked correct without it.
+        fun sig(it: PlaylistItem) = it.contentId + "|" + (it.widgetId ?: "") + "|" + it.widgetRev + "|" + (if (it.muted) "m" else "") + "|" +
             it.schedules.joinToString(";") { b ->
                 b.days.sorted().joinToString(",") + "@" + b.start + "-" + b.end + ":" + (b.startDate ?: "") + "~" + (b.endDate ?: "")
             } + "|" + (it.transition?.sig() ?: "")
