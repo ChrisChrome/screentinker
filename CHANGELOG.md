@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.9.27
+
+**A real pre-release channel: publish a second APK and choose which displays get it.**
+1.9.26 added a per-display opt-in, but it was passive — it stopped a sideloaded test build being
+reverted, while the build itself still had to be installed by hand on every display. This makes the
+opt-in mean something the server can act on.
+
+### Added — beta channel
+- **A second APK slot.** Put `ScreenTinker-beta.apk` beside the stable one and it is served only to
+  displays with **Accept pre-release builds** ticked. Everyone else continues to get the stable APK,
+  unchanged.
+- **The beta build must declare its version**, in a sidecar `ScreenTinker-beta.apk.version` holding
+  just the version (e.g. `1.9.27-rc1`). This is not optional and it fails closed: a beta with no
+  declared version — or an unparseable one — does not activate the channel at all, and opted-in
+  displays keep getting stable. The server cannot infer it (stable's version is the server's own
+  constant because the two ship together, and reading it from the APK means parsing binary
+  `AndroidManifest.xml` on the request path), and advertising a version that does not match the
+  bytes served is exactly the condition that produces an update loop.
+- **The check and the download resolve the channel identically**, and fall back to stable
+  identically, so `apk_size` always describes the bytes actually delivered. An unrecognised channel
+  serves stable rather than failing.
+- **No player update is required.** The client already fetches whatever `download_url` the server
+  hands back, so displays already in the field can be moved between channels from the dashboard.
+
+### Fixed — switching back off a beta
+- **Unticking the box now actually moves the display.** Stable is semver-*older* than the beta it
+  replaces, so the ordinary "never offer a downgrade" rule stranded the display and unticking would
+  have been another silent no-op. It is now offered the release build, reported as `channel-return`.
+- The return requires **evidence that the display was actually served the beta channel**
+  (`devices.ota_channel_served`, written once when it changes rather than on every check). Returning
+  every non-opted-in display that happens to run a pre-release would have dragged existing testers
+  back to stable the moment their server upgraded — the precise harm the opt-in exists to prevent.
+  A tester who is ahead of the server on a build of their own is left alone, as before.
+
+> **Cut beta builds with the same `versionCode` as the stable release they branch from.** Android
+> refuses to install a lower `versionCode`, so a beta numbered above stable can be installed but
+> never returned without uninstalling the app — which loses the display's pairing. Equal numbers
+> install in both directions, and that is what makes switching back physically possible.
+
+Verified end to end against a live server with two real signed APKs: stable served 1.9.26, beta
+served 1.9.27-rc1, an unknown channel fell back to stable, deleting the version file deactivated the
+channel mid-run, and the opt-in → serve → switch-back lifecycle produced `offer`, `up-to-date` and
+`channel-return` in order.
+
 ## 1.9.26
 
 **Android playback fixes for #234, and a way to hand someone a test build without it reverting.**
