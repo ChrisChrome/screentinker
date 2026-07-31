@@ -252,6 +252,14 @@ class ZoneManager(
                         override fun onPlaybackStateChanged(state: Int) {
                             if (state == Player.STATE_ENDED) handler.post { advance() }
                         }
+                        // Same reason MediaPlayerManager treats a playback error as a completion
+                        // ("Root-2: a corrupt/undecodable video used to freeze the playlist
+                        // forever"): an error lands in STATE_IDLE, never STATE_ENDED, so without
+                        // this the zone stops rotating and goes black until the layout changes or
+                        // the app restarts — while every other zone keeps going.
+                        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                            handler.post { advance() }
+                        }
                     })
                     prepare()
                     playWhenReady = true

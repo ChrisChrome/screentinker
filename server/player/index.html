@@ -3091,7 +3091,16 @@
         video.loop = !multi; // single-item zone loops; multi advances on end
         video.playsInline = true;
         video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
-        if (multi) video.onended = advance;
+        if (multi) {
+          video.onended = advance;
+          // A zone video advanced ONLY on `ended`, with no error handler and — alone among the zone
+          // branches — no timer either. A 404, an unreachable remote_url, an undecodable clip, or an
+          // `ended` that simply never fires left that region black for days while the other zones
+          // kept rotating: the screen looks half broken and nothing self-heals. The fullscreen web
+          // path and Tizen's ZoneRenderer both already carry these two guards.
+          video.onerror = advance;
+          zoneTimers[zone.id] = setTimeout(advance, dur + 5000);
+        }
         div.appendChild(video);
       } else {
         const img = document.createElement('img');
