@@ -575,8 +575,21 @@ class MainActivity : AppCompatActivity() {
                 }.sorted().joinToString("|")
                 val changed = assignmentSig != zoneManager?.lastAssignmentSig
 
+                // The ZONES themselves can change without the layout id changing — editing a layout
+                // in place (adding a 4th zone to a 3-zone layout) keeps the same id. Rebuilding only
+                // on an id change meant the new zone never appeared: the geometry stayed as it was
+                // and only the assignments re-rendered into the OLD zones, so the change looked like
+                // it had been ignored until the app was force-stopped. Reported on #234.
+                val zoneSig = (0 until layoutZones.length()).map { i ->
+                    val z = layoutZones.getJSONObject(i)
+                    "${z.optString("id")}:${z.optDouble("x_percent", -1.0)}:${z.optDouble("y_percent", -1.0)}:" +
+                        "${z.optDouble("width_percent", -1.0)}:${z.optDouble("height_percent", -1.0)}:" +
+                        "${z.optInt("z_index", 0)}:${z.optString("zone_type")}:${z.optString("fit_mode")}"
+                }.sorted().joinToString("|")
+                val zonesChanged = zoneSig != zoneManager?.lastZoneSig
+
                 com.remotedisplay.player.util.DebugLog.i("Player", "Layout: MULTI-ZONE (${layoutZones.length()} zones, layout=$layoutId), ${assignments.length()} assignments")
-                if (zoneManager?.hasZones() != true || layoutId != currentLayoutId) {
+                if (zoneManager?.hasZones() != true || layoutId != currentLayoutId || zonesChanged) {
                     Log.i("MainActivity", "Multi-zone layout with ${layoutZones.length()} zones (layout=$layoutId, was=$currentLayoutId)")
                     handler.post {
                         hideStatus()
@@ -587,6 +600,7 @@ class MainActivity : AppCompatActivity() {
                         zoneManager?.setupZones(layoutZones, layoutId)
                         zoneManager?.renderAssignments(assignments, config.serverUrl, contentCache, config.deviceId)
                         zoneManager?.lastAssignmentSig = assignmentSig
+                        zoneManager?.lastZoneSig = zoneSig
                     }
                 } else if (changed) {
                     Log.i("MainActivity", "Multi-zone assignments changed, re-rendering")
@@ -1285,6 +1299,22 @@ class MainActivity : AppCompatActivity() {
             View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
             View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
         )
+    }
+
+    /**
+     * Nothing in the Android lifecycle pauses a WebView, so a YouTube embed kept playing with the
+     * app in the background and the panel kept making noise with the app "closed". Reported on
+     * #234. onStop (not onPause) is the right hook: onPause also fires for a transient dialog or a
+     * permission prompt, and pausing playback for those would be a visible stutter on a wall.
+     */
+    override fun onStop() {
+        super.onStop()
+        if (::mediaPlayer.isInitialized) mediaPlayer.onAppBackgrounded()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (::mediaPlayer.isInitialized) mediaPlayer.onAppForegrounded()
     }
 
     override fun onDestroy() {

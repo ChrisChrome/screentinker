@@ -209,11 +209,40 @@ class MediaPlayerManager(
     // would restart the video and flicker. Main thread only (WebView access).
     private fun setYoutubeMuted(muted: Boolean) {
         youtubeMuted = muted
-        val func = if (muted) "mute" else "unMute"
+        postYoutubeCommand(if (muted) "mute" else "unMute")
+    }
+
+    /** Send one IFrame-API command to the embed. Main thread only (WebView access). */
+    private fun postYoutubeCommand(func: String) {
         val js = "(function(){try{var f=document.querySelector('iframe');" +
             "if(f&&f.contentWindow){f.contentWindow.postMessage(" +
             "JSON.stringify({event:'command',func:'$func',args:[]}),'*');}}catch(e){}})()"
         youtubeWebView?.let { wv -> wv.post { try { wv.evaluateJavascript(js, null) } catch (_: Throwable) {} } }
+    }
+
+    /**
+     * The app is going to the background. Stop making noise.
+     *
+     * A WebView keeps running when its Activity stops — nothing in the lifecycle pauses it — so a
+     * YouTube embed carried on playing with the app closed and the audio kept coming out of the
+     * panel: "I closed the app and I can still hear the sound... I force stop the app and then open
+     * again." A signage player that is not on screen must be silent.
+     *
+     * Pause rather than blank, so returning to the foreground resumes in place instead of
+     * restarting the clip. pauseTimers() is process-wide, which is fine here (one WebView) and is
+     * what actually stops the embed's own scripted playback.
+     */
+    fun onAppBackgrounded() {
+        if (currentType == MediaType.YOUTUBE) postYoutubeCommand("pauseVideo")
+        youtubeWebView?.let { wv -> wv.post { try { wv.onPause(); wv.pauseTimers() } catch (_: Throwable) {} } }
+        exoPlayer?.pause()
+    }
+
+    /** Back in the foreground: undo onAppBackgrounded. */
+    fun onAppForegrounded() {
+        youtubeWebView?.let { wv -> wv.post { try { wv.resumeTimers(); wv.onResume() } catch (_: Throwable) {} } }
+        if (currentType == MediaType.YOUTUBE) postYoutubeCommand("playVideo")
+        if (currentType == MediaType.VIDEO) exoPlayer?.play()
     }
 
     // Fullscreen widget render (single-zone / "fullscreen" layouts). Reuses the

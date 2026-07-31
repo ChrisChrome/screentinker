@@ -51,6 +51,9 @@ class ZoneManager(
     var currentLayoutId: String? = null
         private set
     var lastAssignmentSig: String? = null
+    // Geometry of the zones currently built. Editing a layout in place keeps its id, so the id
+    // alone cannot tell "same layout, same zones" from "same layout, zones changed".
+    var lastZoneSig: String? = null
 
     // #74/#75: device-effective IANA timezone for per-item schedule evaluation.
     @Volatile private var effectiveTimezone: String? = null
