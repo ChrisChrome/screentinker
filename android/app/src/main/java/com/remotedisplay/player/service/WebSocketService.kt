@@ -737,6 +737,12 @@ class WebSocketService : Service() {
      * and sent people off debugging their network. #234.
      */
     @Volatile var lastRejectionReason: String? = null
+    /**
+     * True when the last rejection came with a settle window — the server is asking us to wait and
+     * try again, not telling us we are gone. This service already holds, retries once and recovers
+     * on its own, so a listener must not tear the player down over it.
+     */
+    @Volatile var lastRejectionTransient: Boolean = false
         private set
     /** Milliseconds left in the reclaim-settle hold (0 once elapsed) — drives the UI countdown. */
     fun repairHoldRemainingMs(): Long = maxOf(0L, repairHoldUntilMs - SystemClock.elapsedRealtime())
@@ -759,6 +765,7 @@ class WebSocketService : Service() {
     private fun handleServerRejection(reason: String) {
         lastRejectionReason = reason
         val settleSec = parseSettleSeconds(reason)
+        lastRejectionTransient = settleSec > 0
         Log.w("WebSocketService", "Server rejected device ($reason) — settle=${settleSec}s")
         pairingCodeLive = false // this registration was rejected — the local code is NOT pairable
         config.clearDeviceCredentials()

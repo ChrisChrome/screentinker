@@ -503,11 +503,33 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 val why = wsService?.lastRejectionReason ?: ""
                 val blocked = why.contains("block", ignoreCase = true)
-                Log.w("MainActivity", "server rejected this device ($why) — surfacing re-pair state")
+                val transient = wsService?.lastRejectionTransient == true
+                Log.w("MainActivity", "server rejected this device ($why, transient=$transient)")
                 showStatus(
                     if (blocked) getString(R.string.device_blocked_status)
                     else getString(R.string.device_unpaired_status)
                 )
+
+                // A TRANSIENT rejection (the reclaim-settle hold: "retry after N seconds") is one
+                // the service recovers from by itself — it holds, retries once and comes back. Tear
+                // nothing down for it. The previous handler did the opposite: it wiped the offline
+                // playlist cache and jumped to provisioning on every rejection, so a self-healing
+                // hold cost the panel its cache and forced a full re-download after re-pairing.
+                //
+                // A terminal rejection means this device really is gone from the server, and the
+                // operator needs the pairing code, so provisioning is right. The cache is kept
+                // either way: it is what lets the screen keep showing content while someone walks
+                // over to re-pair it, and re-pairing restores the settings anyway.
+                if (!transient && !blocked) {
+                    handler.post {
+                        startActivity(Intent(this@MainActivity, ProvisioningActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+                            // Server-initiated re-pair (known-good URL): show the code, not URL entry.
+                            putExtra("EXTRA_REPAIR", true)
+                        })
+                        finish()
+                    }
+                }
             }
         }
 
@@ -853,19 +875,6 @@ class MainActivity : AppCompatActivity() {
             ackedContent.clear()
         }
 
-        wsService?.onUnpaired = {
-            Log.w("MainActivity", "Device removed from server, going to provisioning for re-pair")
-            config.clearPlaylistCache()
-            handler.post {
-                startActivity(Intent(this, ProvisioningActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
-                    // Tell provisioning this is a server-initiated re-pair (known-good URL) so it
-                    // shows a "waiting for re-pair" status + the code instead of the URL entry.
-                    putExtra("EXTRA_REPAIR", true)
-                })
-                finish()
-            }
-        }
     }
 
     // Root-2 content-ack de-dup. Re-acking content state (SEED-A) fixes the CMS "stuck downloading"
