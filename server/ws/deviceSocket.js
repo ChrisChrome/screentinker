@@ -782,7 +782,18 @@ module.exports = function setupDeviceSocket(io) {
           // null-token device" path is removed — that was the re-provisioning vector.
           const tokenToSend = device.device_token;
 
-          if (device_info) applyDeviceInfo(device_id, device_info);
+          // An EMPTY device_info means "I have nothing new to tell you", not "wipe what you know".
+          // The web/BrightSign player's refresh-register sends `device_info: {}` on a 300s timer,
+          // and `{}` is truthy — so every five minutes applyDeviceInfo, which is a blind full-row
+          // overwrite with no per-field presence check, bound `undefined` for all 17 columns.
+          // better-sqlite3 stores those as NULL rather than throwing, so the write succeeded:
+          // android_version, app_version, screen_width/height, render_*, ota_*, tier, the four
+          // capability flags and the four volume/brightness columns were all nulled. Fleet view,
+          // resolution diagnostics and version-based logic read blank for exactly the client family
+          // that cannot be inspected any other way. The code around this already anticipates the
+          // shape — recordReconnect/persistIdentity are gated behind `if (!isPlaylistRefresh)` —
+          // this call was the one that was not.
+          if (device_info && Object.keys(device_info).length > 0) applyDeviceInfo(device_id, device_info);
 
           heartbeat.registerConnection(device_id, socket.id);
           // #134: a same-socket re-register is a playlist REFRESH (~45-60s), NOT a reconnect and NOT
