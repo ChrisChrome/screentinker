@@ -157,6 +157,30 @@ router.put('/:id', (req, res) => {
   if (name) db.prepare('UPDATE widgets SET name = ?, updated_at = strftime(\'%s\',\'now\') WHERE id = ?').run(name, req.params.id);
   if (config) db.prepare('UPDATE widgets SET config = ?, updated_at = strftime(\'%s\',\'now\') WHERE id = ?').run(JSON.stringify(config), req.params.id);
 
+  // Push the change to any display currently showing this widget. Editing a widget used to
+  // notify nothing at all: the render endpoint serves live config, but a player that already has
+  // the widget on screen keeps its WebView (deliberately — re-navigating a widget every duration
+  // is a visible flash and destroys widget state). With no push and no change to the URL, an edit
+  // reached the screen only when the app was restarted. Reported on #234: "I changed the text and
+  // the new text did not appear on the screen. I had to close the app and then open again."
+  //
+  // The push is what makes it prompt; the rev in the payload is what makes the player reload.
+  try {
+    const io = req.app.get('io');
+    if (io) {
+      const { buildPlaylistPayload } = require('../ws/deviceSocket');
+      const commandQueue = require('../lib/command-queue');
+      const affected = db.prepare(`
+        SELECT DISTINCT d.id FROM devices d
+        JOIN playlist_items pi ON pi.playlist_id = d.playlist_id
+        WHERE pi.widget_id = ?
+      `).all(req.params.id);
+      for (const d of affected) {
+        commandQueue.queueOrEmitPlaylistUpdate(io.of('/device'), d.id, buildPlaylistPayload);
+      }
+    }
+  } catch (e) { /* best-effort; the heartbeat refresh still picks it up */ }
+
   res.json(db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id));
 });
 
@@ -405,6 +429,68 @@ function renderText(c) {
   html = html.replace(/font-size:\s*([\d.]+)px/g, (match, px) => {
     return `font-size:${(parseFloat(px) / 108).toFixed(2)}vw`;
   });
+
+  // What to do when the text is taller than the screen. It used to be clipped in silence: the
+  // document was overflow:hidden with no scrollbar and nothing to scroll it, so on a display
+  // shorter than the content the bottom simply vanished — reported as "text goes to bottom and
+  // disappears. It dont fit."
+  //
+  //   fit    (default) shrink until it fits. A no-op when the content already fits, so this
+  //          rescues widgets that are currently losing text without altering ones that are fine.
+  //   scroll pan through it on a loop, with a pause at each end. For content that is genuinely
+  //          longer than a screen, where shrinking it would make it unreadable.
+  //   clip   the old behaviour, kept because a designer-positioned layout may deliberately run
+  //          past the edge and must not be rescaled underneath the author.
+  const overflowMode = ['fit', 'scroll', 'clip'].includes(c.overflow) ? c.overflow : 'fit';
+
+  // Runs inside the sandboxed iframe (allow-scripts, null origin). Measures after layout, after
+  // web fonts settle, and on resize — a rotation or a resized zone changes the answer, and fonts
+  // loading late is the classic cause of a fit that was computed against the wrong height.
+  const fitScript = overflowMode === 'clip' ? '' : `<script>
+  (function () {
+    var mode = ${JSON.stringify(overflowMode)};
+    var wrap = document.getElementById('st-wrap');
+    if (!wrap) return;
+    var anim = null;
+    function apply() {
+      // Reset before measuring, or we measure the previous transform's result.
+      wrap.style.transform = '';
+      if (anim) { anim.cancel(); anim = null; }
+      var avail = document.documentElement.clientHeight;
+      var need = wrap.scrollHeight;
+      if (!avail || !need || need <= avail + 1) return;   // already fits: leave it alone
+      if (mode === 'fit') {
+        var k = avail / need;
+        wrap.style.transformOrigin = 'top center';
+        wrap.style.transform = 'scale(' + k + ')';
+        return;
+      }
+      // scroll: hold, pan the overflow, hold, return. Speed is distance-based so a long
+      // document is not unreadably fast and a short one is not tediously slow.
+      var over = need - avail;
+      var panMs = Math.max(4000, (over / 40) * 1000);
+      var holdMs = 2000;
+      var total = panMs * 2 + holdMs * 2;
+      var p1 = holdMs / total, p2 = (holdMs + panMs) / total, p3 = (holdMs * 2 + panMs) / total;
+      anim = wrap.animate(
+        [
+          { transform: 'translateY(0)', offset: 0 },
+          { transform: 'translateY(0)', offset: p1 },
+          { transform: 'translateY(' + (-over) + 'px)', offset: p2 },
+          { transform: 'translateY(' + (-over) + 'px)', offset: p3 },
+          { transform: 'translateY(0)', offset: 1 },
+        ],
+        { duration: total, iterations: Infinity, easing: 'linear' }
+      );
+    }
+    addEventListener('resize', apply);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(apply).catch(function(){});
+    // Late images change the height too; rAF lets first layout finish before measuring.
+    addEventListener('load', function () { requestAnimationFrame(apply); });
+    requestAnimationFrame(apply);
+  })();
+  </script>`;
+
   // Security: c.html / c.css are intentionally raw user-authored content, but the
   // render is public and same-origin with the dashboard - injected <script> could
   // otherwise read the dashboard's localStorage JWT. Render the user content inside
@@ -413,8 +499,11 @@ function renderText(c) {
   const inner = `<!DOCTYPE html><html><head><style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:100vw; height:100vh; overflow:hidden; }
+  /* The wrapper is what gets scaled or panned. It must be allowed to exceed the viewport,
+     otherwise there is nothing to measure and nothing to move. */
+  #st-wrap { width:100%; min-height:100%; will-change:transform; }
   ${c.css || ''}
-</style></head><body>${html}</body></html>`;
+</style></head><body><div id="st-wrap">${html}</div>${fitScript}</body></html>`;
   return `<!DOCTYPE html><html><head><style>
   * { margin:0; padding:0; }
   html, body { width:100vw; height:100vh; overflow:hidden; background:${safeCss(c.background, 'transparent')}; }

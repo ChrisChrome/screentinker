@@ -186,6 +186,23 @@ function resolveGroupSync(device, deviceId) {
   return { group_id: group.id, is_leader: leaderId === deviceId };
 }
 
+// A widget's CONTENT is always live — /api/widgets/:id/render reads the current config — but the
+// playlist payload is a snapshot taken at publish time, so a widget edited afterwards still carried
+// its published revision. The player keeps a widget's WebView while its URL is unchanged (re-
+// navigating a widget every duration is a visible flash and destroys widget state), so an unchanged
+// URL meant an edit only reached the screen after an app restart.
+//
+// Refreshing the rev here, at send time, makes the URL differ exactly when the content differs —
+// and only then, so the anti-flash reuse still holds for widgets nobody has touched.
+const widgetRevOf = db.prepare('SELECT updated_at FROM widgets WHERE id = ?').pluck();
+function refreshWidgetRevs(assignments) {
+  if (!Array.isArray(assignments)) return;
+  for (const a of assignments) {
+    if (!a || !a.widget_id) continue;
+    try { a.widget_rev = widgetRevOf.get(a.widget_id) ?? a.widget_rev ?? 0; } catch (_) { /* keep published */ }
+  }
+}
+
 function buildPlaylistPayload(deviceId) {
   const device = db.prepare('SELECT playlist_id, layout_id, orientation, wall_id, timezone, reported_timezone FROM devices WHERE id = ?').get(deviceId);
 
@@ -194,6 +211,7 @@ function buildPlaylistPayload(deviceId) {
     const playlist = db.prepare('SELECT published_snapshot FROM playlists WHERE id = ?').get(device.playlist_id);
     if (playlist?.published_snapshot) {
       try { assignments = JSON.parse(playlist.published_snapshot); } catch (e) { assignments = []; }
+      refreshWidgetRevs(assignments);
     }
   }
 

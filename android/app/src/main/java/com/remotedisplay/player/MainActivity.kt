@@ -876,8 +876,11 @@ class MainActivity : AppCompatActivity() {
         // layouts; multi-zone widgets go through ZoneManager). Previously unhandled,
         // so widgets were blank/broken in default-fullscreen and the fullscreen template.
         if (item.isWidget) {
+            // rev makes the URL change when — and only when — the widget's content changed, so an
+            // edit reloads while an untouched widget still hits the no-flash reuse path.
             val url = "${config.serverUrl}/api/widgets/${item.widgetId}/render" +
-                (if (config.deviceId.isNotEmpty()) "?device=" + android.net.Uri.encode(config.deviceId) else "")
+                (if (config.deviceId.isNotEmpty()) "?device=" + android.net.Uri.encode(config.deviceId) else "?d=") +
+                "&rev=${item.widgetRev}"
             Log.i("MainActivity", "Playing widget fullscreen: $url")
             mediaPlayer.showWidget(url)
             wsService?.sendPlaybackState(item.contentId.ifEmpty { item.widgetId ?: "" }, 0f)
