@@ -94,6 +94,19 @@ function workspaceAccess(req, workspaceId) {
 // / layout / playlist refs (where workspace_id IS NULL is the platform-template
 // path and is always allowed) and for devices / device_groups (where
 // workspace_id is required - those tables never carry template rows).
+// layout_zones has no workspace_id of its own — a zone belongs to a layout, and the layout carries
+// the workspace. zone_id was the one polymorphic reference missing from the ownership checks, so a
+// schedule could be pointed at a zone in someone else's workspace.
+function checkZoneInWorkspace(zoneId, workspaceId) {
+  const row = db.prepare(
+    'SELECT l.workspace_id FROM layout_zones z JOIN layouts l ON l.id = z.layout_id WHERE z.id = ?'
+  ).get(zoneId);
+  if (!row) return { status: 404, error: 'zone not found' };
+  if (row.workspace_id === workspaceId) return null;
+  if (row.workspace_id == null) return null;          // platform-template layout
+  return { status: 403, error: 'zone is not in this workspace' };
+}
+
 function checkRefInWorkspace(table, id, workspaceId, opts = { allowNullWorkspace: false }) {
   const row = db.prepare(`SELECT workspace_id FROM ${table} WHERE id = ?`).get(id);
   if (!row) return { status: 404, error: `${table.replace(/_/g, ' ').slice(0, -1)} not found` };
@@ -242,6 +255,10 @@ router.post('/', (req, res) => {
     if (!id) continue;
     const err = checkRefInWorkspace(table, id, targetWorkspaceId, { allowNullWorkspace: allowNull });
     if (err) return res.status(err.status).json({ error: err.error });
+  }
+  if (zone_id) {
+    const zErr = checkZoneInWorkspace(zone_id, targetWorkspaceId);
+    if (zErr) return res.status(zErr.status).json({ error: zErr.error });
   }
 
   const id = uuidv4();
