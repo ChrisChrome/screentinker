@@ -24,7 +24,12 @@ export function computeSteps({ devices = [], content = [], playlists = [] } = {}
   const hasPlaylist = playlists.length > 0;
   // "On screen" is the only step that cannot be faked by creating an object and walking away:
   // some screen has to actually be pointed at something.
-  const isAssigned = devices.some((d) => d.playlist_id || d.default_content_id || d.layout_id);
+  // default_content_id is deliberately NOT counted. No player reads it — grep the whole tree and
+  // it appears only in this checklist, the device route, the settings snapshot and the schema —
+  // so counting it ticked "content assigned" for a screen that goes on showing "waiting for
+  // content". A checklist that lies about the one thing it is there to confirm is worse than no
+  // checklist. The field itself is left alone; that is a separate decision.
+  const isAssigned = devices.some((d) => d.playlist_id || d.layout_id);
 
   const steps = [
     {
