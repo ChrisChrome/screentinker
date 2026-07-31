@@ -152,6 +152,7 @@ class MediaPlayerManager(
     // Plain image mount (visibility flip + set bitmap). Shared by the transition-done swap and the
     // no-transition hard cut.
     private fun mountImageBitmap(bitmap: Bitmap) {
+        stopYoutubeIfPlaying()
         currentType = MediaType.IMAGE
         currentWidgetUrl = null   // surface reused - a later widget show must reload
         playerView.visibility = android.view.View.GONE
@@ -160,6 +161,24 @@ class MediaPlayerManager(
         exoPlayer?.stop()
         try { imageView.setImageBitmap(bitmap) }
         catch (e: Throwable) { Log.e("MediaPlayerManager", "setImageBitmap failed: ${e.message}"); onImageError?.invoke() }
+    }
+
+    /**
+     * Stop a YouTube embed that is being switched away from.
+     *
+     * Hiding the WebView does NOT stop it — visibility is not playback state, so the video kept
+     * running behind the next item and its audio carried on over the top. Reported after YouTube
+     * items started advancing at all (before that they never ended, so nothing ever switched away
+     * from one and this could not surface): "even when the picture is there the sound from the
+     * video continues playing".
+     *
+     * Blanking is what stop() already does, and it is safe here because playYoutube always reloads
+     * the embed from scratch anyway. Guarded on the OUTGOING type so it must be called before
+     * currentType is reassigned, and so it never blanks a widget that is being reused.
+     */
+    private fun stopYoutubeIfPlaying() {
+        if (currentType != MediaType.YOUTUBE) return
+        youtubeWebView?.loadUrl("about:blank")
     }
 
     fun playYoutube(embedUrl: String, durationSec: Int = 0, muted: Boolean = false) {
@@ -229,6 +248,7 @@ class MediaPlayerManager(
 
     fun playVideoFromUrl(url: String, muted: Boolean = false) {
         Log.i("MediaPlayerManager", "Streaming video from URL: $url (muted=$muted)")
+        stopYoutubeIfPlaying()
         currentType = MediaType.VIDEO
         currentWidgetUrl = null   // surface reused - a later widget show must reload
 
@@ -303,6 +323,7 @@ class MediaPlayerManager(
     }
 
     private fun mountVideo(file: File, muted: Boolean = false) {
+        stopYoutubeIfPlaying()
         currentType = MediaType.VIDEO
         currentWidgetUrl = null   // surface reused - a later widget show must reload
 
