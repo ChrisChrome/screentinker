@@ -1,5 +1,99 @@
 # Changelog
 
+## 1.9.28
+
+**Platform-wide QA sweep — 25 fixes.** Findings from an audit of the Android player, the browser and
+Tizen players, and the server and dashboard, plus the issues a customer reported on #234 while
+testing. Several are data-loss or isolation defects reachable by an ordinary user doing an ordinary
+thing.
+
+### Fixed — data loss and isolation
+- **Saving a layout no longer destroys zone bindings and schedules.** Zones were deleted and
+  re-inserted with the same ids, on the assumption that reusing an id preserved what pointed at
+  them. It does not: SQLite runs referential actions on the DELETE, so every multi-zone playlist item
+  was un-assigned (`ON DELETE SET NULL`) and every zone-bound schedule was permanently deleted
+  (`ON DELETE CASCADE`). Nudging one zone by a pixel did this, and returned 200. Zones are now
+  diffed; only genuinely removed zones are deleted, where those cascades are correct.
+- **Schedules that outlive a deleted device group keep their workspace.** The conversion INSERT
+  omitted `workspace_id`, so converted rows were invisible in the list and calendar, undeletable
+  (403), and still fired every 60 seconds. A boot migration repairs rows already orphaned.
+- **A saved device snapshot only applies inside the workspace it was taken in.** The lookup keyed on
+  the hardware fingerprint alone, so a panel deleted from one workspace and paired into another
+  inherited the first workspace's playlist and blocked flag.
+- **Overlay pushes are held to the same write check as every other fleet action.** The three PiP
+  routes carried only a token-scope check, which is a deliberate pass-through for dashboard sessions.
+- **A schedule's zone is checked against the caller's workspace** — the one polymorphic reference
+  missing from the existing validation.
+- **Relayed playback progress is stamped with the authenticated device**, rather than trusting the
+  id in the payload.
+
+### Fixed — Android
+- **Per-item scheduling works on Android 7.** `java.time` is API 26 and `minSdk` is 24 with no core
+  library desugaring, so dayparting threw `NoClassDefFoundError` — an Error, which sailed past the
+  deliberate fail-open guard, aborted the playlist update before content downloaded and then cleared
+  the cache. Those panels sat on "waiting for content" and a reboot did not help. Verified on a real
+  API 24 image.
+- **A slow image decode can no longer strand a screen.** A remote image that finished after the
+  playlist moved on mounted itself over the current item and called `exoPlayer.stop()`, landing in
+  `STATE_IDLE` where no advance is ever scheduled.
+- **The playlist and OTA checker stop when the Activity is destroyed.** Both kept running on the main
+  looper, so every relaunch left a second controller reporting playback — inflating Reports — and
+  another OTA checker whose install receiver was never unregistered.
+- **A server rejection is handled once**, and a transient reclaim-settle hold no longer wipes the
+  offline cache and jumps to pairing. Two handlers were assigned to the same callback; the later
+  silently replaced the one that surfaces the server's reason.
+- **Widget edits reach multi-zone layouts**, and a zone whose video fails recovers instead of going
+  black permanently.
+
+### Fixed — players
+- **The web player notices layout and zone changes.** Editing zones or moving an item between them
+  was judged "unchanged" and never reached the screen — the same defect fixed on Android, still live
+  on web. Tizen already handled it.
+- **Replacing the only item of a one-item playlist works.** The change was deferred until "the next
+  advance", but single-item rendering deliberately never advances, so the old content played forever.
+- **Leaving a sync group or a video wall re-renders** instead of freezing on the current clip.
+- **A group-synced screen shows the idle card** when every daypart has closed, instead of looping the
+  last in-window item out of hours.
+- **The suspended-account card no longer breaks the player.** It replaced the status overlay,
+  destroying an element every later status update wrote to — so the player reported itself crashed
+  every few minutes and could be stranded on a stale card with no retry timer.
+- **A zone video that fails now recovers** on web as well as Android.
+
+### Fixed — dashboard and content
+- **Editing a content item no longer rewrites types the dropdown cannot represent.** Opening a
+  YouTube item and pressing Save turned it into an MP4 — a dead slide on every screen, and
+  unrecoverable from the dialog.
+- **Hand-written text widgets render at the size they were written.** Every `px` font size was
+  converted to `vw` to rescue legacy designer output, including markup people typed themselves:
+  `font-size:16px` became 2.8px on a 1080p screen.
+- **Text taller than the screen is no longer silently clipped** — a text widget can now shrink to
+  fit, scroll, or clip, defaulting to shrink (a no-op when the content already fits).
+- **Eight dashboard views stop reporting success for refused requests.** Their local fetch helpers
+  resolved on any status, so a 403 showed a success toast and the UI kept displaying a value the
+  server had rejected.
+- **Deleting a playlist tells the screens showing it**, rather than leaving the content up.
+- **The onboarding checklist no longer counts a field no player reads**, which told operators
+  "content assigned" while the screen showed "waiting for content".
+- **An empty `device_info` no longer wipes 17 device columns.** The browser player's refresh-register
+  sends `{}` every five minutes, and a blind full-row overwrite nulled version, resolution, OTA state
+  and capability flags — degrading exactly the client family that cannot be inspected any other way.
+
+### Fixed — scheduling
+- **The calendar draws a recurring schedule on every day it actually fires.** A Mon-Fri rule drew as
+  Mondays only, or as nothing at all if it had been created on a weekend, and a schedule started more
+  than a year ago drew nothing — while the engine ran all of them correctly the whole time.
+- **A recurring schedule respects its start and end dates.** The engine compared weekday and time
+  only, so a campaign set to finish weeks ago kept running. ⚠️ This changes live behaviour: any
+  recurring schedule past its end date will stop.
+- **A content-only schedule now puts that content on the screen.** `content_id` was stored, validated
+  and read by nothing, while the calendar drew a block labelled with the filename as confirmation. It
+  now gets a playlist holding that item.
+
+### Added
+- **Per-display pre-release channel.** Publish `ScreenTinker-beta.apk` with a declared version
+  alongside the stable APK and send it only to displays you choose; untick to move a display back.
+  See the README.
+
 ## 1.9.27
 
 **A real pre-release channel: publish a second APK and choose which displays get it.**
