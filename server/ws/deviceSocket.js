@@ -1108,9 +1108,14 @@ module.exports = function setupDeviceSocket(io) {
     // Playback state update
     socket.on('device:playback-state', (data) => {
       if (!requireDeviceAuth()) return;
-      // currentDeviceId is the authenticated device for this socket; use it
-      // for the workspace lookup since data may not carry device_id consistently.
-      emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:playback-state', data);
+      // currentDeviceId is the authenticated device for this socket; use it for the workspace
+      // lookup since data may not carry device_id consistently — and STAMP it over whatever the
+      // payload claims before relaying. This was the only relay forwarding the client's object
+      // verbatim, so a device could report progress attributed to a different screen in the same
+      // workspace and the dashboard would believe it. Every other relay here stamps the
+      // authenticated id; this one now matches.
+      emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:playback-state',
+        { ...(data || {}), device_id: currentDeviceId });
     });
 
     // Live debug log line from the player (only sent when debug logging is toggled
