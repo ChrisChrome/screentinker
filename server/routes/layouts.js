@@ -145,6 +145,22 @@ router.put('/:id', (req, res) => {
 
   const updated = db.prepare('SELECT * FROM layouts WHERE id = ?').get(req.params.id);
   updated.zones = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ? ORDER BY sort_order').all(req.params.id);
+  // Push to the displays using this layout. Editing a layout used to notify nothing at all, so a
+  // zone change waited for the next heartbeat refresh at best — and on Android it did not apply
+  // even then, because the rebuild was keyed on the layout ID, which does not change when you edit
+  // a layout in place. Reported on #234 as "I added 4 zones and they dont appear on the screen".
+  // The player-side fix makes the rebuild happen; this makes it happen promptly.
+  try {
+    const io = req.app.get('io');
+    if (io) {
+      const { buildPlaylistPayload } = require('../ws/deviceSocket');
+      const commandQueue = require('../lib/command-queue');
+      for (const d of db.prepare('SELECT id FROM devices WHERE layout_id = ?').all(req.params.id)) {
+        commandQueue.queueOrEmitPlaylistUpdate(io.of('/device'), d.id, buildPlaylistPayload);
+      }
+    }
+  } catch (e) { /* best-effort; the heartbeat refresh still picks it up */ }
+
   res.json(updated);
 });
 

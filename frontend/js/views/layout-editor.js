@@ -116,7 +116,12 @@ async function renderEditor(container, layoutId) {
       ${t('layout.back')}
     </a>
     <div class="page-header">
-      <h1 id="layoutName">${esc(layout.name)}</h1>
+      <!-- Editable in place. Duplicating a template names the copy "<template> (Copy)" and there
+           was nowhere at all to change it — the only name field in this editor belongs to the
+           selected ZONE, which is easy to mistake for the layout's own. Reported on #234. -->
+      <input id="layoutName" class="input" value="${esc(layout.name)}"
+             aria-label="${t('layout.rename')}" title="${t('layout.rename')}"
+             style="font-size:24px;font-weight:600;background:transparent;border:1px solid transparent;padding:2px 6px;max-width:420px">
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary btn-sm" id="addZoneBtn">${t('layout.add_zone')}</button>
         <button class="btn btn-primary btn-sm" id="saveLayoutBtn">${t('common.save')}</button>
@@ -297,9 +302,12 @@ async function renderEditor(container, layoutId) {
       // exactly. The old per-zone delete-then-add loop could accumulate zones
       // (and regenerated every zone id each save). Keep each zone's id so
       // device->zone assignments survive.
+        const newName = (document.getElementById('layoutName')?.value || '').trim();
       const updated = await API(`/layouts/${layoutId}`, {
         method: 'PUT',
-        body: JSON.stringify({ zones }),
+        // Name goes with the zones so renaming is part of the Save the user already
+        // presses, not a second hidden action.
+        body: JSON.stringify(newName ? { zones, name: newName } : { zones }),
       });
       if (updated && updated.error) { showToast(updated.error, 'error'); return; }
       layout = updated;
