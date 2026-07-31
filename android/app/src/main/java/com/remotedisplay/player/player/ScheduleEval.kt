@@ -43,7 +43,12 @@ object ScheduleEval {
             val nowMin = zdt.hour * 60 + zdt.minute
             val date = zdt.toLocalDate()
             blocks.any { blockMatches(it, dow, nowMin, date) }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Throwable, not Exception. A missing java.time on an old API level surfaces as
+            // NoClassDefFoundError — an Error — which sailed straight through a catch(Exception)
+            // and turned this "fail open, a blank screen is worse than an over-running promo"
+            // contract into its exact opposite: nothing played at all. Desugaring (see
+            // build.gradle.kts) is the real fix; this makes the guard mean what it says.
             true // fail open
         }
     }
