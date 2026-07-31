@@ -94,6 +94,19 @@ function workspaceAccess(req, workspaceId) {
 // / layout / playlist refs (where workspace_id IS NULL is the platform-template
 // path and is always allowed) and for devices / device_groups (where
 // workspace_id is required - those tables never carry template rows).
+// layout_zones has no workspace_id of its own — a zone belongs to a layout, and the layout carries
+// the workspace. zone_id was the one polymorphic reference missing from the ownership checks, so a
+// schedule could be pointed at a zone in someone else's workspace.
+function checkZoneInWorkspace(zoneId, workspaceId) {
+  const row = db.prepare(
+    'SELECT l.workspace_id FROM layout_zones z JOIN layouts l ON l.id = z.layout_id WHERE z.id = ?'
+  ).get(zoneId);
+  if (!row) return { status: 404, error: 'zone not found' };
+  if (row.workspace_id === workspaceId) return null;
+  if (row.workspace_id == null) return null;          // platform-template layout
+  return { status: 403, error: 'zone is not in this workspace' };
+}
+
 function checkRefInWorkspace(table, id, workspaceId, opts = { allowNullWorkspace: false }) {
   const row = db.prepare(`SELECT workspace_id FROM ${table} WHERE id = ?`).get(id);
   if (!row) return { status: 404, error: `${table.replace(/_/g, ' ').slice(0, -1)} not found` };
@@ -243,6 +256,33 @@ router.post('/', (req, res) => {
     const err = checkRefInWorkspace(table, id, targetWorkspaceId, { allowNullWorkspace: allowNull });
     if (err) return res.status(err.status).json({ error: err.error });
   }
+  if (zone_id) {
+    const zErr = checkZoneInWorkspace(zone_id, targetWorkspaceId);
+    if (zErr) return res.status(zErr.status).json({ error: zErr.error });
+  }
+
+  // A content-only schedule is turned into a playlist holding that one item.
+  //
+  // The dialog offers "Content (single item, optional)" and the value was stored faithfully — but
+  // the engine only ever acts on layout_id and playlist_id, so content_id was read by nothing at
+  // all. The schedule fired, changed nothing, and the calendar drew a block labelled with the
+  // filename as confirmation that it would. Rather than add a third override path through the
+  // engine and every player, give the item the same shape everything already understands: its own
+  // playlist. That reuses the whole published/assign/push pipeline as-is.
+  let effectivePlaylistId = playlist_id || null;
+  if (!effectivePlaylistId && content_id) {
+    const c = db.prepare('SELECT filename FROM content WHERE id = ?').get(content_id);
+    const genId = uuidv4();
+    db.prepare('INSERT INTO playlists (id, name, workspace_id, user_id, status) VALUES (?, ?, ?, ?, ?)')
+      .run(genId, `Scheduled: ${(c && c.filename) || 'item'}`, targetWorkspaceId, req.user.id, 'published');
+    db.prepare('INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec) VALUES (?, ?, 0, 10)')
+      .run(genId, content_id);
+    // Publish through the shared path rather than hand-rolling the snapshot: players read
+    // denormalized fields (filename, mime_type, filepath, remote_url, schedules...) out of
+    // published_snapshot, and duplicating that shape here would rot the moment it changes.
+    require('./playlists').publishPlaylist(genId);
+    effectivePlaylistId = genId;
+  }
 
   const id = uuidv4();
   db.prepare(`
@@ -250,7 +290,7 @@ router.post('/', (req, res) => {
       start_time, end_time, timezone, recurrence, recurrence_end, priority, color)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, req.user.id, targetWorkspaceId, device_id || null, group_id || null, zone_id || null, content_id || null, widget_id || null,
-    layout_id || null, playlist_id || null, title || '', start_time, end_time, timezone || targetTz || 'UTC',
+    layout_id || null, effectivePlaylistId, title || '', start_time, end_time, timezone || targetTz || 'UTC',
     recurrence || null, recurrence_end || null, priority || 0, color || '#3B82F6');
 
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(id);
@@ -341,33 +381,58 @@ function expandSchedule(schedule, rangeStart, rangeEnd) {
   }
 
   const recEnd = schedule.recurrence_end ? new Date(schedule.recurrence_end) : rangeEnd;
-  let current = new Date(start);
-  let count = 0;
-  const maxIterations = 366;
 
-  while (current <= rangeEnd && current <= recEnd && count < maxIterations) {
-    const instanceEnd = new Date(current.getTime() + durationMs);
+  // Walk DAY BY DAY across the visible range and draw every day the rule actually fires.
+  //
+  // The old loop stepped by the recurrence unit from the schedule's original start, which got both
+  // of the common presets wrong:
+  //   - WEEKLY advanced a whole week at a time, so dayOfWeek never changed and a
+  //     FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR rule matched only its start day — one event a week, or
+  //     none at all if it had been created on a weekend.
+  //   - Starting from the original start with a 366-iteration cap meant a schedule begun more than
+  //     a year ago never reached the current week, so it drew nothing whatsoever.
+  // The engine meanwhile evaluates day-of-week directly, so it ran Mon-Fri regardless. The calendar
+  // is the operator's only view of what is scheduled, and it disagreed with reality in both
+  // directions. Iterating the range instead means the drawing follows the same rule the engine
+  // applies, and the cost is bounded by the window being displayed rather than by history.
+  const dayMs = 24 * 60 * 60 * 1000;
+  const startTimeOfDay = { h: start.getHours(), m: start.getMinutes(), s: start.getSeconds() };
 
-    if (current >= rangeStart || instanceEnd >= rangeStart) {
-      const dayOfWeek = current.getDay();
-      const matchesDay = !rule.byDay || rule.byDay.includes(dayOfWeek);
+  // First candidate day: the later of the schedule's start and the window's start.
+  let cursor = new Date(Math.max(start.getTime(), rangeStart.getTime()));
+  cursor.setHours(startTimeOfDay.h, startTimeOfDay.m, startTimeOfDay.s, 0);
+  if (cursor.getTime() + durationMs < rangeStart.getTime()) cursor = new Date(cursor.getTime() + dayMs);
 
-      if (matchesDay) {
-        events.push({
-          ...schedule,
-          instance_start: current.toISOString(),
-          instance_end: instanceEnd.toISOString()
-        });
-      }
-    }
+  const lastDay = new Date(Math.min(rangeEnd.getTime(), recEnd.getTime()));
+  const interval = Math.max(1, rule.interval || 1);
 
+  while (cursor <= lastDay) {
+    const instanceEnd = new Date(cursor.getTime() + durationMs);
+    let fires = false;
     switch (rule.freq) {
-      case 'DAILY': current.setDate(current.getDate() + (rule.interval || 1)); break;
-      case 'WEEKLY': current.setDate(current.getDate() + 7 * (rule.interval || 1)); break;
-      case 'MONTHLY': current.setMonth(current.getMonth() + (rule.interval || 1)); break;
-      default: current.setDate(current.getDate() + 1);
+      case 'DAILY':
+        // Honour the interval by counting whole days from the original start.
+        fires = Math.floor((cursor - start) / dayMs) % interval === 0;
+        break;
+      case 'WEEKLY':
+        // byDay is what makes Mon-Fri work. Without it, weekly means "the start's weekday".
+        fires = rule.byDay ? rule.byDay.includes(cursor.getDay()) : cursor.getDay() === start.getDay();
+        break;
+      case 'MONTHLY':
+        fires = cursor.getDate() === start.getDate();
+        break;
+      default:
+        fires = true;
     }
-    count++;
+    if (fires && (cursor >= rangeStart || instanceEnd >= rangeStart)) {
+      events.push({
+        ...schedule,
+        instance_start: cursor.toISOString(),
+        instance_end: instanceEnd.toISOString(),
+      });
+    }
+    cursor = new Date(cursor.getTime() + dayMs);
+    cursor.setHours(startTimeOfDay.h, startTimeOfDay.m, startTimeOfDay.s, 0);   // DST-safe re-anchor
   }
 
   return events;
@@ -393,3 +458,6 @@ function parseRRule(rrule) {
 }
 
 module.exports = router;
+// Exported for testing, the same way playlists.js exports publishPlaylist. The calendar's
+// correctness is arithmetic and deserves to be checked without standing up a server.
+module.exports.expandSchedule = expandSchedule;

@@ -3,7 +3,20 @@ import { showToast } from '../components/toast.js';
 import { t, tn } from '../i18n.js';
 import { esc } from '../utils.js';
 
-const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
+// A refused request must reject, not resolve.
+//
+// This helper used to end in `.then(r => r.json())`, so a 403/404/500 body resolved as an ordinary
+// value and the surrounding try/catch was unreachable — every handler took the failure for success.
+// Concretely: deleting a built-in layout template showed "Layout deleted" while the server had
+// returned 403 and the template was still there, and a rejected platform-role change showed "Role
+// updated" while the dropdown kept displaying a value the server refused (its revert lives only in
+// the dead catch). The shared client in api.js has always thrown on !res.ok; these local copies did
+// not. Same contract now, including the 401 session-expiry reload.
+const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(async (r) => {
+  if (r.status === 401) { localStorage.removeItem('token'); window.location.reload(); throw new Error('Session expired'); }
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || `Request failed (${r.status})`); }
+  return r.json();
+});
 
 export async function render(container) {
   const hash = window.location.hash;
@@ -116,7 +129,12 @@ async function renderEditor(container, layoutId) {
       ${t('layout.back')}
     </a>
     <div class="page-header">
-      <h1 id="layoutName">${esc(layout.name)}</h1>
+      <!-- Editable in place. Duplicating a template names the copy "<template> (Copy)" and there
+           was nowhere at all to change it — the only name field in this editor belongs to the
+           selected ZONE, which is easy to mistake for the layout's own. Reported on #234. -->
+      <input id="layoutName" class="input" value="${esc(layout.name)}"
+             aria-label="${t('layout.rename')}" title="${t('layout.rename')}"
+             style="font-size:24px;font-weight:600;background:transparent;border:1px solid transparent;padding:2px 6px;max-width:420px">
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary btn-sm" id="addZoneBtn">${t('layout.add_zone')}</button>
         <button class="btn btn-primary btn-sm" id="saveLayoutBtn">${t('common.save')}</button>
@@ -297,9 +315,12 @@ async function renderEditor(container, layoutId) {
       // exactly. The old per-zone delete-then-add loop could accumulate zones
       // (and regenerated every zone id each save). Keep each zone's id so
       // device->zone assignments survive.
+        const newName = (document.getElementById('layoutName')?.value || '').trim();
       const updated = await API(`/layouts/${layoutId}`, {
         method: 'PUT',
-        body: JSON.stringify({ zones }),
+        // Name goes with the zones so renaming is part of the Save the user already
+        // presses, not a second hidden action.
+        body: JSON.stringify(newName ? { zones, name: newName } : { zones }),
       });
       if (updated && updated.error) { showToast(updated.error, 'error'); return; }
       layout = updated;

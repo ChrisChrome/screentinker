@@ -70,7 +70,7 @@ function buildSnapshotItems(playlistId) {
            COALESCE(c.filename, w.name) as filename, c.mime_type, c.filepath, c.file_size,
            c.duration_sec as content_duration, c.remote_url, c.unstable_connection,
            c.captions_enabled, c.captions_lang, c.subtitle_url, c.subtitle_lang,
-           w.name as widget_name, w.widget_type, w.config as widget_config
+           w.name as widget_name, w.widget_type, w.config as widget_config, w.updated_at as widget_rev
     FROM playlist_items pi
     LEFT JOIN content c ON pi.content_id = c.id
     LEFT JOIN widgets w ON pi.widget_id = w.id
@@ -216,7 +216,7 @@ router.get('/:id', requirePlaylistRead, (req, res) => {
            COALESCE(c.filename, w.name) as filename,
            c.mime_type, c.filepath, c.thumbnail_path,
            c.duration_sec as content_duration, c.file_size, c.remote_url,
-           w.name as widget_name, w.widget_type, w.config as widget_config
+           w.name as widget_name, w.widget_type, w.config as widget_config, w.updated_at as widget_rev
     FROM playlist_items pi
     LEFT JOIN content c ON pi.content_id = c.id
     LEFT JOIN widgets w ON pi.widget_id = w.id
@@ -277,7 +277,7 @@ router.post('/:id/publish', requirePlaylistWrite, (req, res) => {
            COALESCE(c.filename, w.name) as filename,
            c.mime_type, c.filepath, c.thumbnail_path,
            c.duration_sec as content_duration, c.file_size, c.remote_url,
-           w.name as widget_name, w.widget_type, w.config as widget_config
+           w.name as widget_name, w.widget_type, w.config as widget_config, w.updated_at as widget_rev
     FROM playlist_items pi
     LEFT JOIN content c ON pi.content_id = c.id
     LEFT JOIN widgets w ON pi.widget_id = w.id
@@ -327,7 +327,7 @@ router.post('/:id/discard', requirePlaylistWrite, (req, res) => {
            COALESCE(c.filename, w.name) as filename,
            c.mime_type, c.filepath, c.thumbnail_path,
            c.duration_sec as content_duration, c.file_size, c.remote_url,
-           w.name as widget_name, w.widget_type, w.config as widget_config
+           w.name as widget_name, w.widget_type, w.config as widget_config, w.updated_at as widget_rev
     FROM playlist_items pi
     LEFT JOIN content c ON pi.content_id = c.id
     LEFT JOIN widgets w ON pi.widget_id = w.id
@@ -339,7 +339,28 @@ router.post('/:id/discard', requirePlaylistWrite, (req, res) => {
 
 // Delete playlist
 router.delete('/:id', requirePlaylistWrite, (req, res) => {
+  // Which screens are about to lose their playlist — read BEFORE the delete, because
+  // devices.playlist_id is ON DELETE SET NULL and the association is gone immediately after.
+  const affected = db.prepare('SELECT id FROM devices WHERE playlist_id = ?').all(req.params.id);
+
   db.prepare('DELETE FROM playlists WHERE id = ?').run(req.params.id);
+
+  // Tell them. The database detaches correctly, but nothing was emitted — so a screen kept showing
+  // the deleted playlist until it happened to reconnect or was restarted. You delete a playlist to
+  // take content off the wall; the wall carried on regardless. Every sibling mutation here already
+  // pushes (publish, assign), and DELETE /devices/:id/playlist was given a push for exactly this
+  // reason: "so the screen stops, rather than leaving the old content up".
+  try {
+    const io = req.app.get('io');
+    if (io) {
+      const { buildPlaylistPayload } = require('../ws/deviceSocket');
+      const commandQueue = require('../lib/command-queue');
+      for (const d of affected) {
+        commandQueue.queueOrEmitPlaylistUpdate(io.of('/device'), d.id, buildPlaylistPayload);
+      }
+    }
+  } catch (e) { /* best-effort; the heartbeat refresh still picks it up */ }
+
   res.json({ success: true });
 });
 
@@ -352,7 +373,7 @@ router.get('/:id/items', requirePlaylistRead, (req, res) => {
            COALESCE(c.filename, w.name) as filename,
            c.mime_type, c.filepath, c.thumbnail_path,
            c.duration_sec as content_duration, c.file_size, c.remote_url,
-           w.name as widget_name, w.widget_type, w.config as widget_config
+           w.name as widget_name, w.widget_type, w.config as widget_config, w.updated_at as widget_rev
     FROM playlist_items pi
     LEFT JOIN content c ON pi.content_id = c.id
     LEFT JOIN widgets w ON pi.widget_id = w.id
@@ -471,7 +492,7 @@ router.post('/:id/items', requirePlaylistWrite, async (req, res) => {
              COALESCE(c.filename, w.name) as filename,
              c.mime_type, c.filepath, c.thumbnail_path,
              c.duration_sec as content_duration, c.file_size, c.remote_url,
-             w.name as widget_name, w.widget_type, w.config as widget_config
+             w.name as widget_name, w.widget_type, w.config as widget_config, w.updated_at as widget_rev
       FROM playlist_items pi
       LEFT JOIN content c ON pi.content_id = c.id
       LEFT JOIN widgets w ON pi.widget_id = w.id
@@ -555,7 +576,7 @@ router.put('/:id/items/:itemId', requirePlaylistWrite, (req, res) => {
            COALESCE(c.filename, w.name) as filename,
            c.mime_type, c.filepath, c.thumbnail_path,
            c.duration_sec as content_duration, c.file_size, c.remote_url,
-           w.name as widget_name, w.widget_type, w.config as widget_config
+           w.name as widget_name, w.widget_type, w.config as widget_config, w.updated_at as widget_rev
     FROM playlist_items pi
     LEFT JOIN content c ON pi.content_id = c.id
     LEFT JOIN widgets w ON pi.widget_id = w.id
@@ -603,7 +624,7 @@ router.post('/:id/items/:itemId/duplicate', requirePlaylistWrite, (req, res) => 
            COALESCE(c.filename, w.name) as filename,
            c.mime_type, c.filepath, c.thumbnail_path,
            c.duration_sec as content_duration, c.file_size, c.remote_url,
-           w.name as widget_name, w.widget_type, w.config as widget_config
+           w.name as widget_name, w.widget_type, w.config as widget_config, w.updated_at as widget_rev
     FROM playlist_items pi
     LEFT JOIN content c ON pi.content_id = c.id
     LEFT JOIN widgets w ON pi.widget_id = w.id
@@ -632,7 +653,7 @@ router.post('/:id/items/reorder', requirePlaylistWrite, (req, res) => {
            COALESCE(c.filename, w.name) as filename,
            c.mime_type, c.filepath, c.thumbnail_path,
            c.duration_sec as content_duration, c.file_size, c.remote_url,
-           w.name as widget_name, w.widget_type, w.config as widget_config
+           w.name as widget_name, w.widget_type, w.config as widget_config, w.updated_at as widget_rev
     FROM playlist_items pi
     LEFT JOIN content c ON pi.content_id = c.id
     LEFT JOIN widgets w ON pi.widget_id = w.id

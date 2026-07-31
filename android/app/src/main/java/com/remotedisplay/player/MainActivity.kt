@@ -503,11 +503,33 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 val why = wsService?.lastRejectionReason ?: ""
                 val blocked = why.contains("block", ignoreCase = true)
-                Log.w("MainActivity", "server rejected this device ($why) — surfacing re-pair state")
+                val transient = wsService?.lastRejectionTransient == true
+                Log.w("MainActivity", "server rejected this device ($why, transient=$transient)")
                 showStatus(
                     if (blocked) getString(R.string.device_blocked_status)
                     else getString(R.string.device_unpaired_status)
                 )
+
+                // A TRANSIENT rejection (the reclaim-settle hold: "retry after N seconds") is one
+                // the service recovers from by itself — it holds, retries once and comes back. Tear
+                // nothing down for it. The previous handler did the opposite: it wiped the offline
+                // playlist cache and jumped to provisioning on every rejection, so a self-healing
+                // hold cost the panel its cache and forced a full re-download after re-pairing.
+                //
+                // A terminal rejection means this device really is gone from the server, and the
+                // operator needs the pairing code, so provisioning is right. The cache is kept
+                // either way: it is what lets the screen keep showing content while someone walks
+                // over to re-pair it, and re-pairing restores the settings anyway.
+                if (!transient && !blocked) {
+                    handler.post {
+                        startActivity(Intent(this@MainActivity, ProvisioningActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+                            // Server-initiated re-pair (known-good URL): show the code, not URL entry.
+                            putExtra("EXTRA_REPAIR", true)
+                        })
+                        finish()
+                    }
+                }
             }
         }
 
@@ -569,14 +591,30 @@ class MainActivity : AppCompatActivity() {
                 val currentLayoutId = zoneManager?.currentLayoutId
 
                 // Build a signature of current assignments to detect content changes
+                // widget_rev belongs in here for the same reason it is in the fullscreen playlist
+                // signature: editing a widget changes its CONTENT, never its id, so without it a
+                // zone assignment looked identical and the re-render was skipped as "unchanged".
                 val assignmentSig = (0 until assignments.length()).map { i ->
                     val a = assignments.getJSONObject(i)
-                    "${a.optString("content_id")}:${a.optString("zone_id")}:${a.optString("widget_id")}"
+                    "${a.optString("content_id")}:${a.optString("zone_id")}:${a.optString("widget_id")}:${a.optLong("widget_rev", 0L)}"
                 }.sorted().joinToString("|")
                 val changed = assignmentSig != zoneManager?.lastAssignmentSig
 
+                // The ZONES themselves can change without the layout id changing — editing a layout
+                // in place (adding a 4th zone to a 3-zone layout) keeps the same id. Rebuilding only
+                // on an id change meant the new zone never appeared: the geometry stayed as it was
+                // and only the assignments re-rendered into the OLD zones, so the change looked like
+                // it had been ignored until the app was force-stopped. Reported on #234.
+                val zoneSig = (0 until layoutZones.length()).map { i ->
+                    val z = layoutZones.getJSONObject(i)
+                    "${z.optString("id")}:${z.optDouble("x_percent", -1.0)}:${z.optDouble("y_percent", -1.0)}:" +
+                        "${z.optDouble("width_percent", -1.0)}:${z.optDouble("height_percent", -1.0)}:" +
+                        "${z.optInt("z_index", 0)}:${z.optString("zone_type")}:${z.optString("fit_mode")}"
+                }.sorted().joinToString("|")
+                val zonesChanged = zoneSig != zoneManager?.lastZoneSig
+
                 com.remotedisplay.player.util.DebugLog.i("Player", "Layout: MULTI-ZONE (${layoutZones.length()} zones, layout=$layoutId), ${assignments.length()} assignments")
-                if (zoneManager?.hasZones() != true || layoutId != currentLayoutId) {
+                if (zoneManager?.hasZones() != true || layoutId != currentLayoutId || zonesChanged) {
                     Log.i("MainActivity", "Multi-zone layout with ${layoutZones.length()} zones (layout=$layoutId, was=$currentLayoutId)")
                     handler.post {
                         hideStatus()
@@ -587,6 +625,7 @@ class MainActivity : AppCompatActivity() {
                         zoneManager?.setupZones(layoutZones, layoutId)
                         zoneManager?.renderAssignments(assignments, config.serverUrl, contentCache, config.deviceId)
                         zoneManager?.lastAssignmentSig = assignmentSig
+                        zoneManager?.lastZoneSig = zoneSig
                     }
                 } else if (changed) {
                     Log.i("MainActivity", "Multi-zone assignments changed, re-rendering")
@@ -839,19 +878,6 @@ class MainActivity : AppCompatActivity() {
             ackedContent.clear()
         }
 
-        wsService?.onUnpaired = {
-            Log.w("MainActivity", "Device removed from server, going to provisioning for re-pair")
-            config.clearPlaylistCache()
-            handler.post {
-                startActivity(Intent(this, ProvisioningActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
-                    // Tell provisioning this is a server-initiated re-pair (known-good URL) so it
-                    // shows a "waiting for re-pair" status + the code instead of the URL entry.
-                    putExtra("EXTRA_REPAIR", true)
-                })
-                finish()
-            }
-        }
     }
 
     // Root-2 content-ack de-dup. Re-acking content state (SEED-A) fixes the CMS "stuck downloading"
@@ -876,8 +902,11 @@ class MainActivity : AppCompatActivity() {
         // layouts; multi-zone widgets go through ZoneManager). Previously unhandled,
         // so widgets were blank/broken in default-fullscreen and the fullscreen template.
         if (item.isWidget) {
+            // rev makes the URL change when — and only when — the widget's content changed, so an
+            // edit reloads while an untouched widget still hits the no-flash reuse path.
             val url = "${config.serverUrl}/api/widgets/${item.widgetId}/render" +
-                (if (config.deviceId.isNotEmpty()) "?device=" + android.net.Uri.encode(config.deviceId) else "")
+                (if (config.deviceId.isNotEmpty()) "?device=" + android.net.Uri.encode(config.deviceId) else "?d=") +
+                "&rev=${item.widgetRev}"
             Log.i("MainActivity", "Playing widget fullscreen: $url")
             mediaPlayer.showWidget(url)
             wsService?.sendPlaybackState(item.contentId.ifEmpty { item.widgetId ?: "" }, 0f)
@@ -1284,8 +1313,37 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    /**
+     * Nothing in the Android lifecycle pauses a WebView, so a YouTube embed kept playing with the
+     * app in the background and the panel kept making noise with the app "closed". Reported on
+     * #234. onStop (not onPause) is the right hook: onPause also fires for a transient dialog or a
+     * permission prompt, and pausing playback for those would be a visible stutter on a wall.
+     */
+    override fun onStop() {
+        super.onStop()
+        if (::mediaPlayer.isInitialized) mediaPlayer.onAppBackgrounded()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (::mediaPlayer.isInitialized) mediaPlayer.onAppForegrounded()
+    }
+
     override fun onDestroy() {
         remoteStreaming = false
+        // Everything below this line exists for the same reason the wall/group shutdown does, and
+        // was missing: these Handlers are on the MAIN LOOPER, which outlives the Activity.
+        //
+        // PlaylistController kept advancing after the Activity was destroyed. Each tick wrote the
+        // resume index and emitted play_start/play_end through the still-live WebSocketService, so
+        // after a relaunch (the "launch" command, Relauncher after OTA/boot, a re-pair, or a config
+        // change outside the ones we handle) TWO controllers were reporting playback for one screen
+        // — inflating Total Plays and Hours in Reports, and racing over the resume position that
+        // #234 relies on. Widget items also re-entered showWidget on a WebView nobody owned.
+        if (::playlistController.isInitialized) playlistController.stop()
+        if (::updateChecker.isInitialized) updateChecker.shutdown()
+        // The 30s failure-check loop and anything else this Activity posted.
+        handler.removeCallbacksAndMessages(null)
         // Kill the wall/group leader tick BEFORE releasing media. The Handler is on the main looper
         // (outlives this Activity), so a surviving tick would keep broadcasting sync frames against
         // the released player forever — the zombie-leader / split-brain / garbage-position leak.

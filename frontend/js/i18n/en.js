@@ -1499,6 +1499,7 @@ export default {
   'layout.properties': 'Properties',
   'layout.delete_zone': 'Delete Zone',
   'layout.zone_n': 'Zone {n}',
+  'layout.rename': 'Layout name — click to rename',
   'layout.prop.name': 'Name',
   'layout.prop.x': 'X (%)',
   'layout.prop.y': 'Y (%)',

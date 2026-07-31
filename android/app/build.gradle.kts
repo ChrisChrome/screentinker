@@ -43,6 +43,14 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // ScheduleEval uses java.time (Instant/LocalDate/ZoneId), which is API 26 — but minSdk is
+        // 24. Without desugaring, per-item dayparting/expiry threw NoClassDefFoundError on Android
+        // 7.0/7.1, which are still common on cheap signage sticks and older TV boxes. Because that
+        // is an Error and not an Exception, the evaluator's deliberate fail-open guard did not
+        // catch it: the playlist update aborted before content downloaded, and the cold-start path
+        // then cleared the playlist cache — so the screen sat on "waiting for content" and a reboot
+        // did not help.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -63,6 +71,7 @@ android {
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     // AndroidX
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")

@@ -714,6 +714,15 @@ function showEditModal(contentItem, onSave) {
             <option value="image/png" ${contentItem.mime_type === 'image/png' ? 'selected' : ''}>${t('content.mime.image_png')}</option>
             <option value="image/gif" ${contentItem.mime_type === 'image/gif' ? 'selected' : ''}>${t('content.mime.image_gif')}</option>
             <option value="image/webp" ${contentItem.mime_type === 'image/webp' ? 'selected' : ''}>${t('content.mime.image_webp')}</option>
+              ${['video/mp4','video/webm','image/jpeg','image/png','image/gif','image/webp'].includes(contentItem.mime_type) ? '' : `
+              <!-- The item's ACTUAL type, for the cases the six choices above cannot express:
+                   video/youtube, and uploads the sniffer accepts but this list omits (.mov, .svg,
+                   .heic, .avif, .bmp). Without it no option matched, the browser selected the first
+                   one - video/mp4 - and pressing Save with nothing else changed rewrote the item's
+                   type. mime_type is the renderer selector in every player, so a YouTube item became
+                   an "MP4" whose source is an embed page: a dead slide on every screen, and
+                   unrecoverable here because there was no option to set it back. -->
+              <option value="${esc(contentItem.mime_type || '')}" selected>${esc(contentItem.mime_type || '')}</option>`}
           </select>
         </div>
         <div class="form-group">

@@ -61,11 +61,22 @@ test('THE POINT: it is only finished when something is actually ON a screen', as
   assert.equal(done.nextIndex, -1);
 });
 
-test('any of the three ways of assigning counts', async () => {
-  for (const d of [{ id: 'x', playlist_id: 'p' }, { id: 'x', default_content_id: 'c' }, { id: 'x', layout_id: 'l' }]) {
+test('assigning a playlist or a layout counts', async () => {
+  for (const d of [{ id: 'x', playlist_id: 'p' }, { id: 'x', layout_id: 'l' }]) {
     const s = GS.computeSteps({ devices: [d], content: [{ id: 'c' }], playlists: [{ id: 'p' }] });
     assert.equal(s.complete, true, `${Object.keys(d).join(',')} should count as assigned`);
   }
+});
+
+test('default_content_id does NOT count, because no player reads it', async () => {
+  // This test previously asserted the opposite, and it was wrong. Grep the whole tree and
+  // default_content appears only in this checklist, the device form, the settings snapshot, the
+  // schema and the devices route — never in a socket payload, in assemblePayload, or in any of the
+  // four players. Setting it changes nothing on the screen, so counting it told the operator
+  // "content assigned" while their display went on showing "waiting for content". A checklist that
+  // lies about the one thing it exists to confirm is worse than no checklist.
+  const s = GS.computeSteps({ devices: [{ id: 'x', default_content_id: 'c' }], content: [{ id: 'c' }], playlists: [{ id: 'p' }] });
+  assert.equal(s.complete, false, 'a screen with only default_content is not actually showing anything');
 });
 
 test('steps stay in dependency order — never sent somewhere unusable', async () => {

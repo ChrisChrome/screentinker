@@ -140,17 +140,27 @@ router.delete('/:id', requireGroupWrite, (req, res) => {
     let converted = 0;
 
     if (groupSchedules.length > 0 && members.length > 0) {
+        // workspace_id MUST be carried over. It is nullable with no default, so omitting it landed
+        // every converted schedule with workspace_id = NULL — and a null workspace does not merely
+        // look untidy, it makes the row unreachable in three directions at once:
+        //   - the schedule list and the all-screens calendar filter on workspace_id: invisible
+        //   - PUT and DELETE refuse a row with no workspace (403): undeletable
+        //   - services/scheduler.js has NO workspace filter: it keeps firing every 60 seconds
+        // i.e. "I deleted the group but the screens still switch at 9am and there is nothing in the
+        // calendar to remove". The only way out was direct database access.
       const insert = db.prepare(`
-        INSERT INTO schedules (id, user_id, device_id, group_id, zone_id, content_id,
+          INSERT INTO schedules (id, user_id, workspace_id, device_id, group_id, zone_id, content_id,
           widget_id, layout_id, playlist_id, title, start_time, end_time, timezone,
           recurrence, recurrence_end, priority, enabled, color, created_at, updated_at)
-        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const schedule of groupSchedules) {
         for (const member of members) {
           insert.run(
-            uuidv4(), schedule.user_id, member.device_id,
+            // Prefer the schedule's own workspace, falling back to the group's, so a legacy
+            // group schedule predating workspace_id still converts into a reachable row.
+            uuidv4(), schedule.user_id, schedule.workspace_id || req.group.workspace_id, member.device_id,
             schedule.zone_id, schedule.content_id, schedule.widget_id,
             schedule.layout_id, schedule.playlist_id, schedule.title,
             schedule.start_time, schedule.end_time, schedule.timezone,

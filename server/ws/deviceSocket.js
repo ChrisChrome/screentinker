@@ -186,6 +186,23 @@ function resolveGroupSync(device, deviceId) {
   return { group_id: group.id, is_leader: leaderId === deviceId };
 }
 
+// A widget's CONTENT is always live — /api/widgets/:id/render reads the current config — but the
+// playlist payload is a snapshot taken at publish time, so a widget edited afterwards still carried
+// its published revision. The player keeps a widget's WebView while its URL is unchanged (re-
+// navigating a widget every duration is a visible flash and destroys widget state), so an unchanged
+// URL meant an edit only reached the screen after an app restart.
+//
+// Refreshing the rev here, at send time, makes the URL differ exactly when the content differs —
+// and only then, so the anti-flash reuse still holds for widgets nobody has touched.
+const widgetRevOf = db.prepare('SELECT updated_at FROM widgets WHERE id = ?').pluck();
+function refreshWidgetRevs(assignments) {
+  if (!Array.isArray(assignments)) return;
+  for (const a of assignments) {
+    if (!a || !a.widget_id) continue;
+    try { a.widget_rev = widgetRevOf.get(a.widget_id) ?? a.widget_rev ?? 0; } catch (_) { /* keep published */ }
+  }
+}
+
 function buildPlaylistPayload(deviceId) {
   const device = db.prepare('SELECT playlist_id, layout_id, orientation, wall_id, timezone, reported_timezone FROM devices WHERE id = ?').get(deviceId);
 
@@ -194,6 +211,7 @@ function buildPlaylistPayload(deviceId) {
     const playlist = db.prepare('SELECT published_snapshot FROM playlists WHERE id = ?').get(device.playlist_id);
     if (playlist?.published_snapshot) {
       try { assignments = JSON.parse(playlist.published_snapshot); } catch (e) { assignments = []; }
+      refreshWidgetRevs(assignments);
     }
   }
 
@@ -764,7 +782,18 @@ module.exports = function setupDeviceSocket(io) {
           // null-token device" path is removed — that was the re-provisioning vector.
           const tokenToSend = device.device_token;
 
-          if (device_info) applyDeviceInfo(device_id, device_info);
+          // An EMPTY device_info means "I have nothing new to tell you", not "wipe what you know".
+          // The web/BrightSign player's refresh-register sends `device_info: {}` on a 300s timer,
+          // and `{}` is truthy — so every five minutes applyDeviceInfo, which is a blind full-row
+          // overwrite with no per-field presence check, bound `undefined` for all 17 columns.
+          // better-sqlite3 stores those as NULL rather than throwing, so the write succeeded:
+          // android_version, app_version, screen_width/height, render_*, ota_*, tier, the four
+          // capability flags and the four volume/brightness columns were all nulled. Fleet view,
+          // resolution diagnostics and version-based logic read blank for exactly the client family
+          // that cannot be inspected any other way. The code around this already anticipates the
+          // shape — recordReconnect/persistIdentity are gated behind `if (!isPlaylistRefresh)` —
+          // this call was the one that was not.
+          if (device_info && Object.keys(device_info).length > 0) applyDeviceInfo(device_id, device_info);
 
           heartbeat.registerConnection(device_id, socket.id);
           // #134: a same-socket re-register is a playlist REFRESH (~45-60s), NOT a reconnect and NOT
@@ -1079,9 +1108,14 @@ module.exports = function setupDeviceSocket(io) {
     // Playback state update
     socket.on('device:playback-state', (data) => {
       if (!requireDeviceAuth()) return;
-      // currentDeviceId is the authenticated device for this socket; use it
-      // for the workspace lookup since data may not carry device_id consistently.
-      emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:playback-state', data);
+      // currentDeviceId is the authenticated device for this socket; use it for the workspace
+      // lookup since data may not carry device_id consistently — and STAMP it over whatever the
+      // payload claims before relaying. This was the only relay forwarding the client's object
+      // verbatim, so a device could report progress attributed to a different screen in the same
+      // workspace and the dashboard would believe it. Every other relay here stamps the
+      // authenticated id; this one now matches.
+      emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:playback-state',
+        { ...(data || {}), device_id: currentDeviceId });
     });
 
     // Live debug log line from the player (only sent when debug logging is toggled

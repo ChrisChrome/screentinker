@@ -152,6 +152,8 @@ class MediaPlayerManager(
     // Plain image mount (visibility flip + set bitmap). Shared by the transition-done swap and the
     // no-transition hard cut.
     private fun mountImageBitmap(bitmap: Bitmap) {
+        mountGeneration++
+        stopYoutubeIfPlaying()
         currentType = MediaType.IMAGE
         currentWidgetUrl = null   // surface reused - a later widget show must reload
         playerView.visibility = android.view.View.GONE
@@ -162,8 +164,27 @@ class MediaPlayerManager(
         catch (e: Throwable) { Log.e("MediaPlayerManager", "setImageBitmap failed: ${e.message}"); onImageError?.invoke() }
     }
 
+    /**
+     * Stop a YouTube embed that is being switched away from.
+     *
+     * Hiding the WebView does NOT stop it — visibility is not playback state, so the video kept
+     * running behind the next item and its audio carried on over the top. Reported after YouTube
+     * items started advancing at all (before that they never ended, so nothing ever switched away
+     * from one and this could not surface): "even when the picture is there the sound from the
+     * video continues playing".
+     *
+     * Blanking is what stop() already does, and it is safe here because playYoutube always reloads
+     * the embed from scratch anyway. Guarded on the OUTGOING type so it must be called before
+     * currentType is reassigned, and so it never blanks a widget that is being reused.
+     */
+    private fun stopYoutubeIfPlaying() {
+        if (currentType != MediaType.YOUTUBE) return
+        youtubeWebView?.loadUrl("about:blank")
+    }
+
     fun playYoutube(embedUrl: String, durationSec: Int = 0, muted: Boolean = false) {
         Log.i("MediaPlayerManager", "Playing YouTube: $embedUrl (muted=$muted)")
+        mountGeneration++
         currentType = MediaType.YOUTUBE
         currentWidgetUrl = null   // surface reused - a later widget show must reload
         youtubeMuted = muted || wallMute
@@ -190,11 +211,40 @@ class MediaPlayerManager(
     // would restart the video and flicker. Main thread only (WebView access).
     private fun setYoutubeMuted(muted: Boolean) {
         youtubeMuted = muted
-        val func = if (muted) "mute" else "unMute"
+        postYoutubeCommand(if (muted) "mute" else "unMute")
+    }
+
+    /** Send one IFrame-API command to the embed. Main thread only (WebView access). */
+    private fun postYoutubeCommand(func: String) {
         val js = "(function(){try{var f=document.querySelector('iframe');" +
             "if(f&&f.contentWindow){f.contentWindow.postMessage(" +
             "JSON.stringify({event:'command',func:'$func',args:[]}),'*');}}catch(e){}})()"
         youtubeWebView?.let { wv -> wv.post { try { wv.evaluateJavascript(js, null) } catch (_: Throwable) {} } }
+    }
+
+    /**
+     * The app is going to the background. Stop making noise.
+     *
+     * A WebView keeps running when its Activity stops — nothing in the lifecycle pauses it — so a
+     * YouTube embed carried on playing with the app closed and the audio kept coming out of the
+     * panel: "I closed the app and I can still hear the sound... I force stop the app and then open
+     * again." A signage player that is not on screen must be silent.
+     *
+     * Pause rather than blank, so returning to the foreground resumes in place instead of
+     * restarting the clip. pauseTimers() is process-wide, which is fine here (one WebView) and is
+     * what actually stops the embed's own scripted playback.
+     */
+    fun onAppBackgrounded() {
+        if (currentType == MediaType.YOUTUBE) postYoutubeCommand("pauseVideo")
+        youtubeWebView?.let { wv -> wv.post { try { wv.onPause(); wv.pauseTimers() } catch (_: Throwable) {} } }
+        exoPlayer?.pause()
+    }
+
+    /** Back in the foreground: undo onAppBackgrounded. */
+    fun onAppForegrounded() {
+        youtubeWebView?.let { wv -> wv.post { try { wv.resumeTimers(); wv.onResume() } catch (_: Throwable) {} } }
+        if (currentType == MediaType.YOUTUBE) postYoutubeCommand("playVideo")
+        if (currentType == MediaType.VIDEO) exoPlayer?.play()
     }
 
     // Fullscreen widget render (single-zone / "fullscreen" layouts). Reuses the
@@ -212,6 +262,7 @@ class MediaPlayerManager(
             return
         }
         Log.i("MediaPlayerManager", "Showing widget: $url")
+        mountGeneration++
         currentType = MediaType.WIDGET
         currentWidgetUrl = url
 
@@ -229,6 +280,8 @@ class MediaPlayerManager(
 
     fun playVideoFromUrl(url: String, muted: Boolean = false) {
         Log.i("MediaPlayerManager", "Streaming video from URL: $url (muted=$muted)")
+        mountGeneration++
+        stopYoutubeIfPlaying()
         currentType = MediaType.VIDEO
         currentWidgetUrl = null   // surface reused - a later widget show must reload
 
@@ -244,13 +297,36 @@ class MediaPlayerManager(
         }
     }
 
+    /**
+     * Bumped by every request to put something on screen. An async decode captures it and drops its
+     * result if the value has moved on — the same drop-if-replaced token PipOverlay.loadImageInto
+     * already carries.
+     *
+     * Without it a slow remote image (ImageLoader allows 10s connect + 30s read, against a slot
+     * that is usually 10s) finished long after the playlist had advanced and mounted itself over
+     * whatever was playing. If that was a video, the mount also called exoPlayer.stop(), which
+     * lands in STATE_IDLE — and the advance listener only fires onVideoComplete on STATE_ENDED or a
+     * playback error, so no advance was ever scheduled and the playlist stopped for good. The 60s
+     * refresh could not rescue it either: the playlist signature was unchanged, so the update
+     * returned early.
+     */
+    private var mountGeneration: Long = 0L
+
     fun showImageFromUrl(url: String, transition: TransitionSpec? = null) {
         Log.i("MediaPlayerManager", "Loading remote image: $url")
         // Capture the outgoing frame NOW, on the main thread, before the decode thread swaps it out.
         val from = if (transition != null) captureCurrentFrame() else null
+        val myGeneration = ++mountGeneration
         Thread {
             val bitmap = ImageLoader.decodeUrl(url, ImageLoader.screenWidth(context), ImageLoader.screenHeight(context))
             mainHandler.post {
+                // Something else has been asked for since this decode started — including the
+                // error branch, whose onImageError posts next() and would otherwise cut short
+                // whatever is now playing.
+                if (myGeneration != mountGeneration) {
+                    Log.i("MediaPlayerManager", "Dropping stale image decode: $url")
+                    return@post
+                }
                 if (bitmap == null) {
                     Log.w("MediaPlayerManager", "Skipping unloadable remote image: $url")
                     onImageError?.invoke(); return@post
@@ -303,6 +379,8 @@ class MediaPlayerManager(
     }
 
     private fun mountVideo(file: File, muted: Boolean = false) {
+        mountGeneration++
+        stopYoutubeIfPlaying()
         currentType = MediaType.VIDEO
         currentWidgetUrl = null   // surface reused - a later widget show must reload
 

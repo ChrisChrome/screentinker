@@ -19,6 +19,9 @@ data class PlaylistItem(
     val remoteUrl: String? = null,
     val muted: Boolean = false,
     val widgetId: String? = null,
+    // Changes whenever the widget is edited. Carried into the render URL so an edited widget gets
+    // a URL the player has not seen, which is what defeats the deliberate same-URL WebView reuse.
+    val widgetRev: Long = 0L,
     val widgetType: String? = null,
     val schedules: List<ScheduleEval.Block> = emptyList(),
     // feat/transition-engine: the resolved GL transition this item plays INTO (null = hard cut).
@@ -169,6 +172,7 @@ class PlaylistController(
                     remoteUrl = if (obj.isNull("remote_url")) null else obj.optString("remote_url", "").ifEmpty { null },
                     muted = obj.optInt("muted", 0) == 1,
                     widgetId = if (obj.isNull("widget_id")) null else obj.optString("widget_id", "").ifEmpty { null },
+                    widgetRev = obj.optLong("widget_rev", 0L),
                     widgetType = if (obj.isNull("widget_type")) null else obj.optString("widget_type", "").ifEmpty { null },
                     schedules = parseSchedules(obj.optJSONArray("schedules")),
                     transition = Transitions.parse(obj.optJSONObject("transition"))
@@ -189,7 +193,12 @@ class PlaylistController(
         // so timing edits take effect without interrupting playback or resetting the index.
         // transition included so a transition-only edit re-renders instead of being de-duped (a
         // cached-playlist device otherwise silently ignores it — the web/Tizen fingerprint bug).
-        fun sig(it: PlaylistItem) = it.contentId + "|" + (it.widgetId ?: "") + "|" + (if (it.muted) "m" else "") + "|" +
+        // widgetRev for the same reason as muted and transition above: a widget's identity does not
+        // change when it is EDITED, so a content edit produced a byte-identical signature, the
+        // update was de-duped, and the player kept its old items — including the old rev, so the
+        // render URL never changed and the WebView reuse held. The screen only caught up on an app
+        // restart. Found on the emulator; the code read looked correct without it.
+        fun sig(it: PlaylistItem) = it.contentId + "|" + (it.widgetId ?: "") + "|" + it.widgetRev + "|" + (if (it.muted) "m" else "") + "|" +
             it.schedules.joinToString(";") { b ->
                 b.days.sorted().joinToString(",") + "@" + b.start + "-" + b.end + ":" + (b.startDate ?: "") + "~" + (b.endDate ?: "")
             } + "|" + (it.transition?.sig() ?: "")

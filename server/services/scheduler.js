@@ -144,6 +144,18 @@ function isScheduleActiveNow(schedule, now, tz) {
   const rule = parseSimpleRRule(schedule.recurrence);
   if (!rule) return nowStamp >= startStamp && nowStamp <= endStamp;
 
+  // The DATE window. A recurring schedule was previously compared on weekday and HH:MM alone, with
+  // the date component dropped entirely — so it was live before its start date and, more visibly,
+  // carried on forever after its end date. A campaign set to finish on the 1st was still switching
+  // screens weeks later, while the calendar (which does read recurrence_end) showed it as stopped.
+  // The end date is offered on the form; it has to mean something.
+  const nowDate = nowStamp.slice(0, 10);
+  if (nowDate < startStamp.slice(0, 10)) return false;                  // has not begun yet
+  if (schedule.recurrence_end) {
+    // Inclusive: an end date of the 5th means the 5th still runs, to its normal end time.
+    if (nowDate > String(schedule.recurrence_end).slice(0, 10)) return false;
+  }
+
   // Day-of-week in the device's local zone.
   if (rule.byDay && !rule.byDay.includes(L.dow)) return false;
 
@@ -174,3 +186,6 @@ function pushPlaylistToDevice(deviceId, deviceNs) {
 }
 
 module.exports = { startScheduler, pushPlaylistToDevice, rebootDue };
+// Exported for testing: whether a schedule is live right now is the single decision this service
+// exists to make, and it should be checkable without a ticking timer.
+module.exports.isScheduleActiveNow = isScheduleActiveNow;

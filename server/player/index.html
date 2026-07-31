@@ -404,6 +404,7 @@
     // (e.g. it just expired) in solo playback, we keep it up and rotate to deferredSuccessorId on
     // the next natural advance instead of interrupting/restarting.
     let deferredRotation = false;
+    let deferredRotationDeadline = null;   // a deferral must not wait forever — see the #157 block
     let deferredSuccessorId = null;
     function itemIdentity(x) { return x ? `${x.content_id || ''}|${x.widget_id || ''}|${x.remote_url || ''}|${x.filepath || ''}` : ''; }
 
@@ -1605,7 +1606,21 @@
       if (!isPlaying) return;
       const item = playlist[currentIndex];
       if (!item || advanceTimer) return;   // solo/leader that already has its timer armed -> nothing to do
-      const needsSoloTimer = !!item.widget_id || (typeof item.mime_type === 'string' && item.mime_type.startsWith('image/'));
+      // Video and YouTube were excluded here on the grounds that they "self-advance via their own
+      // end handlers" — but the handler that is live right now was built for the mode we have just
+      // LEFT. A group-rendered video was created with `loop = !!groupSync` and a wall-follower
+      // video with `isFollower` true, and both are captured in the closure at render time. So on
+      // leaving a sync group or a wall, that element loops forever and nothing re-renders: the
+      // screen sits on one clip permanently, and later refreshes take the "unchanged" branch
+      // because the <video> is attached, playing and un-errored, i.e. healthy.
+      //
+      // Re-render whatever is on screen instead of guessing which types can look after themselves.
+      const mediaEl = document.querySelector('#playerContainer video');
+      const staleLoop = !!(mediaEl && mediaEl.loop);
+      const needsSoloTimer = !!item.widget_id
+        || (typeof item.mime_type === 'string' && item.mime_type.startsWith('image/'))
+        || staleLoop
+        || item.mime_type === 'video/youtube';
       if (needsSoloTimer) playCurrentItem();   // re-render buffered + re-arm the solo advance timer
     }
 
@@ -1705,7 +1720,19 @@
     function groupScheduleTick() {
       if (!groupSync || playlist.length === 0) return;
       const t = groupScheduleTarget();
-      if (!t) return;
+      if (!t) {
+        // period === 0 means every item is currently outside its daypart. Solo playback routes the
+        // same condition into showNothingScheduled(); group playback just returned, so nothing was
+        // watching — group members are scheduleDriven, so renderContent arms no advanceTimer, and
+        // a group-rendered video is created with loop = !!groupSync. Out of hours the whole group
+        // therefore kept displaying (or looping) whatever had been in-window last, while an
+        // identical ungrouped screen correctly showed the idle card.
+        if (isPlaying) {
+          teardownCurrentMedia();
+          showNothingScheduled();
+        }
+        return;
+      }
       // Double buffer: warm the next clip ~6s before the boundary (once per boundary).
       if (t.nextIndex !== t.index && t.secToBoundary >= 0 && t.secToBoundary <= 6 && groupPreloadIdx !== t.nextIndex) {
         groupPreloadNext(t.nextIndex);
@@ -1848,7 +1875,10 @@
       // stale cached playlist and never applies the new transitions. This bug hid every transition edit.
       // STRUCTURAL fingerprint only (identity + order + schedules + transition). duration_sec is
       // deliberately EXCLUDED so a duration-only edit is applied IN PLACE (not a full change/restart).
-      const fingerprint = (items) => items.map(a => `${a.content_id || ''}|${a.widget_id || ''}|${a.remote_url || ''}|${a.filepath || ''}|${a.filename || ''}|${JSON.stringify(a.schedules || [])}|${JSON.stringify(a.transition || null)}`).join(',');
+      // widget_rev is in here for the same reason as schedules and transition: a widget's IDENTITY
+      // does not change when it is EDITED, so a content edit produced an identical fingerprint, the
+      // update was treated as "unchanged", and the screen kept the old render until a reload.
+      const fingerprint = (items) => items.map(a => `${a.content_id || ''}|${a.widget_id || ''}|${a.widget_rev || ''}|${a.zone_id || ''}|${a.remote_url || ''}|${a.filepath || ''}|${a.filename || ''}|${JSON.stringify(a.schedules || [])}|${JSON.stringify(a.transition || null)}`).join(',');
       const newFp = fingerprint(newItems);
       const oldFp = fingerprint(playlist);
 
@@ -1895,11 +1925,23 @@
       if (groupChanged) applyGroupSync(data.group_sync || null);
       else if (groupSync) groupScheduleTick();
 
+      // The layout is not part of the item list, so a change to it can never show up in the item
+      // fingerprint — and in multi-zone mode nothing else re-renders: each zone runs its own timers
+      // and renderContent is not called again. So editing zones, moving an item between zones,
+      // switching layout or clearing it did nothing at all on a screen already in a layout, for as
+      // long as the item list happened to stay the same. Tizen's ZoneRenderer has always compared a
+      // zone signature; this is the web equivalent.
+      const layoutSig = (l) => !l ? '' : [
+        l.id,
+        ...(l.zones || []).map(z => [z.id, z.x_percent, z.y_percent, z.width_percent, z.height_percent,
+                                     z.z_index, z.zone_type, z.fit_mode].join(':')).sort(),
+      ].join('|');
+      const layoutChanged = layoutSig(layout) !== layoutSig(data.layout || null);
       layout = data.layout || null;
       saveLayoutCache(layout);
       playerTimezone = data.timezone || null; // #74/#75: effective tz for schedule eval
 
-      if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
+      if (newFp === oldFp && playlist.length > 0 && !wallChanged && !layoutChanged) {
         console.log('Playlist unchanged');
         // In-place duration refresh: a duration-only edit keeps the structural fingerprint identical,
         // so patch duration_sec onto the live items here. The group schedule tick re-anchors on the
@@ -1974,6 +2016,18 @@
         if (stillThereIdx !== -1) {
           currentIndex = stillThereIdx;
           isPlaying = true;
+          // ...unless it is a WIDGET whose content was edited. Identity is content/widget id, and
+          // editing a widget does not change its id, so an edited widget "survives" and the
+          // re-render is skipped — which is exactly why an edit never reached the screen. The new
+          // revision sat in the playlist unused, because a solo widget deliberately never
+          // re-renders on a timer (that would reset a directory board's scroll). Re-render through
+          // the buffered swap, which is flash-free by design, so this costs nothing visually.
+          const oldItem = oldPlaylist[oldAnchorIdx];
+          const newItem = playlist[stillThereIdx];
+          if (newItem && newItem.widget_id && oldItem && (oldItem.widget_rev || 0) !== (newItem.widget_rev || 0)) {
+            console.log('Widget edited - re-rendering in place');
+            renderContent(newItem);
+          }
           return;
         }
       }
@@ -1998,10 +2052,30 @@
       // video onended still fires nextItem). Schedule-driven modes (wall follower / group-sync)
       // advance via their own tick, so they reconcile immediately as before.
       const scheduleDriven = isWallFollower() || !!groupSync;
-      if (isPlaying && !scheduleDriven) {
+      // #157 defers so a live item is not yanked mid-play — but it assumes an advance is coming,
+      // and for a ONE-ITEM playlist that is never true. Single-item rendering deliberately never
+      // advances: a video gets `loop = (playlist.length === 1)`, a YouTube embed the same, and a
+      // solo widget is "held" on a self-re-arming refresh that never calls nextItem (reloading it
+      // would reset a directory board's scroll). So replacing the single item of a one-item
+      // playlist deferred forever — the old promo, board or clip kept playing while the dashboard
+      // showed the new playlist published and the device healthy. Only a reboot or a refresh
+      // command cleared it.
+      const outgoingNeverAdvances = oldPlaylist.length <= 1;
+      if (isPlaying && !scheduleDriven && !outgoingNeverAdvances) {
         deferredRotation = true;
         deferredSuccessorId = itemIdentity(playlist[nextIdx]);
         console.log('#157: current item removed but still live — deferring rotation-out');
+        // Safety net for anything else that turns out not to advance: a deferral is a bet that
+        // one is coming, and if it never arrives the change must still land rather than strand
+        // the screen on content the operator has already replaced.
+        if (deferredRotationDeadline) clearTimeout(deferredRotationDeadline);
+        deferredRotationDeadline = setTimeout(() => {
+          if (!deferredRotation) return;
+          console.warn('#157: deferred rotation never got an advance — applying it now');
+          deferredRotation = false;
+          const di = deferredSuccessorId ? playlist.findIndex(x => itemIdentity(x) === deferredSuccessorId) : -1;
+          startPlaybackAt(di === -1 ? 0 : di);
+        }, 60000);
         return;
       }
 
@@ -2089,6 +2163,7 @@
       // into the (already-swapped) list at the preserved successor instead of interrupting.
       if (deferredRotation) {
         deferredRotation = false;
+        if (deferredRotationDeadline) { clearTimeout(deferredRotationDeadline); deferredRotationDeadline = null; }
         const sid = deferredSuccessorId; deferredSuccessorId = null;
         let idx = sid ? playlist.findIndex(x => itemIdentity(x) === sid) : -1;
         if (idx < 0) idx = 0;
@@ -2381,7 +2456,7 @@
       discardPendingSwap();
 
       const iframe = document.createElement('iframe');
-      iframe.src = `${config.serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}`;
+      iframe.src = `${config.serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}&rev=${item.widget_rev||0}`;
       // Positioned + sized by the `#playerContainer > iframe` CSS rule. Hidden while it
       // loads so its black background never shows over the outgoing content.
       iframe.style.background = '#000';
@@ -2932,7 +3007,7 @@
           if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
         } else if (item.widget_id) {
           const iframe = document.createElement('iframe');
-          iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}`;
+          iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}&rev=${item.widget_rev||0}`;
           iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           iframe.allow = 'autoplay; fullscreen';
           // Sandbox into a unique origin so widget scripts can't read window.parent
@@ -3046,7 +3121,7 @@
       // Android player, which keys off the assignment's widget_type.
       if (a.widget_id) {
         const iframe = document.createElement('iframe');
-        iframe.src = `${config.serverUrl}/api/widgets/${a.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}`;
+        iframe.src = `${config.serverUrl}/api/widgets/${a.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}&rev=${a.widget_rev||0}`;
         // Sandbox into a unique origin so widget scripts can't read window.parent
         // state (localStorage / JWT). allow-scripts keeps inline widget code running.
         iframe.setAttribute('sandbox', 'allow-scripts');
@@ -3064,7 +3139,16 @@
         video.loop = !multi; // single-item zone loops; multi advances on end
         video.playsInline = true;
         video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
-        if (multi) video.onended = advance;
+        if (multi) {
+          video.onended = advance;
+          // A zone video advanced ONLY on `ended`, with no error handler and — alone among the zone
+          // branches — no timer either. A 404, an unreachable remote_url, an undecodable clip, or an
+          // `ended` that simply never fires left that region black for days while the other zones
+          // kept rotating: the screen looks half broken and nothing self-heals. The fullscreen web
+          // path and Tizen's ZoneRenderer both already carry these two guards.
+          video.onerror = advance;
+          zoneTimers[zone.id] = setTimeout(advance, dur + 5000);
+        }
         div.appendChild(video);
       } else {
         const img = document.createElement('img');
@@ -3255,8 +3339,24 @@
 
     // ==================== UI Helpers ====================
     function showStatus(msg) {
-      document.getElementById('statusOverlay').style.display = 'flex';
-      document.getElementById('statusText').textContent = msg;
+      const overlay = document.getElementById('statusOverlay');
+      if (!overlay) return;
+      overlay.style.display = 'flex';
+      // #statusText can be GONE: the suspended-account branch replaces the whole overlay with its
+      // own markup, which does not contain it. Reading .textContent off null then threw a TypeError
+      // out of every later showStatus call — the player reported itself "crashed" on each refresh
+      // beat, and worse, showNothingScheduled() throws BEFORE arming its 30s re-check, so a screen
+      // whose dayparts had all closed was stranded on the stale suspended card with no retry.
+      // Rebuild the element rather than bail, so the message the caller wanted is actually shown.
+      let text = document.getElementById('statusText');
+      if (!text) {
+        overlay.innerHTML = '';
+        text = document.createElement('p');
+        text.id = 'statusText';
+        text.style.cssText = 'color:#94a3b8;font-size:20px;font-family:sans-serif;text-align:center';
+        overlay.appendChild(text);
+      }
+      text.textContent = msg;
     }
 
     function hideStatus() {

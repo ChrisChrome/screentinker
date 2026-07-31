@@ -148,7 +148,10 @@ PlaylistPlayer.prototype.load = function (assignments) {
     // transition-engine: include the per-item transition, or a transition change keeps the same
     // signature -> "unchanged" -> the player never applies the new transitions.
     // duration_sec is EXCLUDED so a duration edit applies in place (below), not as a restart.
-    return [a.content_id, a.widget_id, a.remote_url, a.mime_type, a.schedules || [], a.transition || null];
+      // widget_rev for the same reason as schedules and transition above: a widget's IDENTITY
+      // is unchanged when it is EDITED, so a content edit produced an identical signature, the
+      // update was treated as unchanged, and the screen kept the old render until a restart.
+      return [a.content_id, a.widget_id, a.widget_rev || 0, a.remote_url, a.mime_type, a.schedules || [], a.transition || null];
   }));
   if (sig === this.sig && this.items.length) {
     // In-place duration refresh: patch duration_sec on the live items so a duration edit takes effect
@@ -176,10 +179,11 @@ PlaylistPlayer.prototype.load = function (assignments) {
   if (!items.length) { this.index = 0; this.startPlayback(); return; }
 
   // Current item survives -> keep playing it, just retarget the index (no restart).
-  if (curId) {
+  if (curId && !this._forceRender) {
     var stay = this.indexOfIdentity(items, curId);
     if (stay >= 0 && this.hasContentOnScreen()) { this.index = stay; return; }
   }
+  this._forceRender = false;
 
   // Anchor gone: walk forward from the OLD position to the first item that still exists.
   var nextIdx = 0;
@@ -195,9 +199,28 @@ PlaylistPlayer.prototype.load = function (assignments) {
   // #157: removed-but-live in solo playback -> don't interrupt; rotate out on the next advance
   // (the current item's video onended / image timer still fires advance()). Group-sync (schedule-
   // driven) and wall followers reconcile via their own tick, so play through immediately as before.
-  if (this.hasContentOnScreen() && !this.wallFollower && !this.scheduleDriven) {
+  // ...but only when an advance is actually coming. Single-item playback here deliberately has
+  // none: `single` makes renderImage, renderVideo and renderWidget all skip their timer (a solo
+  // item is meant to sit there), so replacing the one item of a one-item playlist deferred forever
+  // and the old content stayed on the screen. On Tizen this strands IMAGES too, not just video and
+  // widgets as on the web player, because the timer is skipped for every type.
+  var outgoingNeverAdvances = !this.items || this.items.length <= 1;
+  if (this.hasContentOnScreen() && !this.wallFollower && !this.scheduleDriven && !outgoingNeverAdvances) {
     this._deferredRotation = true;
     this._deferredSuccessorId = this.itemIdentity(items[nextIdx]);
+    // Safety net: a deferral is a bet that an advance will arrive. If it does not, apply the
+    // change anyway rather than leave the screen on content the operator has replaced.
+    var self = this;
+    if (this._deferredDeadline) clearTimeout(this._deferredDeadline);
+    this._deferredDeadline = setTimeout(function () {
+      if (!self._deferredRotation) return;
+      self._deferredRotation = false;
+      var di = -1;
+      for (var k = 0; k < self.items.length; k++) {
+        if (self.itemIdentity(self.items[k]) === self._deferredSuccessorId) { di = k; break; }
+      }
+      self.startPlaybackAt(di === -1 ? 0 : di);
+    }, 60000);
     return;
   }
 
@@ -247,6 +270,7 @@ PlaylistPlayer.prototype.advance = function () {
   // stashed list and continue at the preserved successor instead of interrupting/restarting.
   if (this._deferredRotation) {
     this._deferredRotation = false;
+    if (this._deferredDeadline) { clearTimeout(this._deferredDeadline); this._deferredDeadline = null; }
     var sid = this._deferredSuccessorId; this._deferredSuccessorId = null;
     var to = sid ? this.indexOfIdentity(this.items, sid) : -1;
     this.startPlaybackAt(to >= 0 ? to : 0);
@@ -284,7 +308,16 @@ PlaylistPlayer.prototype.setTimezone = function (tz) { this.timezone = tz || nul
 // leaving wall mode (or a role flip) calls invalidate() so the next load re-renders
 // with the right semantics instead of being de-duped by the unchanged signature.
 PlaylistPlayer.prototype.setWallFollower = function (b) { this.wallFollower = !!b; };
-PlaylistPlayer.prototype.invalidate = function () { this.sig = ''; };
+PlaylistPlayer.prototype.invalidate = function () {
+  this.sig = '';
+  // Clearing the signature alone was not enough: load() returns at the continuity check ("current
+  // item survives -> keep playing it, just retarget the index") BEFORE reaching any render, so the
+  // invalidate had no effect and the item kept the semantics of the mode we had just left. Leaving
+  // a sync group or a wall therefore froze the screen on one clip — rendered with `single`, so
+  // looping with no timer — and every later refresh took the unchanged path because the element
+  // was attached and playing, i.e. healthy. This flag makes the next load actually re-render.
+  this._forceRender = true;
+};
 PlaylistPlayer.prototype.getIndex = function () { return this.index; };
 PlaylistPlayer.prototype.getItemCount = function () { return this.items.length; };
 PlaylistPlayer.prototype.isWallFollower = function () { return !!this.wallFollower; };
@@ -821,7 +854,7 @@ PlaylistPlayer.prototype.renderYouTube = function (item, single) {
 
 PlaylistPlayer.prototype.renderWidget = function (item, single) {
   var self = this;
-  var src = this.getBase() + '/api/widgets/' + item.widget_id + '/render' + (this.getDeviceId() ? '?device=' + encodeURIComponent(this.getDeviceId()) : '');
+  var src = this.getBase() + '/api/widgets/' + item.widget_id + '/render' + (this.getDeviceId() ? '?device=' + encodeURIComponent(this.getDeviceId()) : '?d=') + '&rev=' + (item.widget_rev || 0);
   // Anti-flash (#directory-board, parity with the web player): build the new iframe hidden ON TOP of the
   // current content and reveal it on load, THEN drop everything else — so a widget/directory-board
   // reload never black-flashes the stage (playCurrent skipped the pre-clear for widgets).
@@ -1037,7 +1070,7 @@ ZoneRenderer.prototype.showItem = function (zone, list, index) {
       zone.el.appendChild(zrFrame(ysrc, 'autoplay; encrypted-media', yvert));
       if (multi) this.scheduleAdvance(zone, dur, advance);
     } else if (a.widget_type || (a.widget_id && !a.content_id)) {
-      zone.el.appendChild(zrFrame(this.getBase() + '/api/widgets/' + a.widget_id + '/render' + (this.getDeviceId() ? '?device=' + encodeURIComponent(this.getDeviceId()) : '')));
+      zone.el.appendChild(zrFrame(this.getBase() + '/api/widgets/' + a.widget_id + '/render' + (this.getDeviceId() ? '?device=' + encodeURIComponent(this.getDeviceId()) : '?d=') + '&rev=' + (a.widget_rev || 0)));
       if (multi) this.scheduleAdvance(zone, dur, advance);
     } else if (mime.indexOf('video/') === 0) {
       var v = document.createElement('video');
@@ -1290,7 +1323,15 @@ GroupSyncController.prototype.target = function () {
 };
 GroupSyncController.prototype.tick = function () {
   if (!this.groupId || !this.player.items.length) return;
-  var t = this.target(); if (!t) return;
+  // No target means every item is currently outside its daypart. Returning here left the whole
+  // group displaying (or looping) whatever was in-window last, out of hours — while an identical
+  // ungrouped screen correctly showed the idle card. Group members are schedule-driven, so no
+  // renderer arms a timer and nothing else was watching for this.
+  var t = this.target();
+  if (!t) {
+    if (this.player.hasContentOnScreen()) this.player.nothingScheduled();
+    return;
+  }
   // Double buffer: warm the next clip ~6s before the boundary (once per boundary).
   if (t.nextIndex !== t.index && t.secToBoundary >= 0 && t.secToBoundary <= 6) {
     this.player.preloadVideo(t.nextIndex);   // warm next clip (video-only; no-ops otherwise)
