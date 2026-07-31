@@ -127,17 +127,55 @@ router.put('/:id', (req, res) => {
     // delete/add loop. Reuse each zone's id when supplied so device->zone
     // assignments survive an edit (a fresh uuid per save would orphan them).
     if (Array.isArray(zones)) {
-      db.prepare('DELETE FROM layout_zones WHERE layout_id = ?').run(req.params.id);
-      const stmt = db.prepare(`
+      // DIFF, never delete-and-replace.
+      //
+      // The previous version deleted every zone and re-inserted the same ids, on the stated
+      // assumption that reusing an id preserved whatever pointed at it. It does not: SQLite runs
+      // the referential actions on the DELETE, and re-inserting the same primary key afterwards
+      // does not resurrect what they destroyed. Two things point at these rows:
+      //
+      //   playlist_items.zone_id  ON DELETE SET NULL  -> every multi-zone playlist in the
+      //                                                  workspace silently fell back to fullscreen
+      //   schedules.zone_id       ON DELETE CASCADE   -> every zone-bound schedule was DELETED,
+      //                                                  permanently, no warning and no undo
+      //
+      // So nudging one zone by a pixel and pressing Save destroyed unrelated tenant data and
+      // returned 200 OK. Updating in place touches no foreign key at all; only genuinely removed
+      // zones are deleted, which is the one case where those cascades are the intended behaviour.
+      const existingIds = db.prepare('SELECT id FROM layout_zones WHERE layout_id = ?')
+        .all(req.params.id).map(r => r.id);
+      const existingSet = new Set(existingIds);
+      const keptIds = new Set();
+
+      const insertZone = db.prepare(`
         INSERT INTO layout_zones (id, layout_id, name, x_percent, y_percent, width_percent, height_percent, z_index, zone_type, fit_mode, background_color, sort_order)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      const updateZone = db.prepare(`
+        UPDATE layout_zones SET name = ?, x_percent = ?, y_percent = ?, width_percent = ?,
+          height_percent = ?, z_index = ?, zone_type = ?, fit_mode = ?, background_color = ?, sort_order = ?
+        WHERE id = ? AND layout_id = ?
+      `);
+
       zones.forEach((z, i) => {
-        stmt.run(z.id || uuidv4(), req.params.id, z.name || `Zone ${i + 1}`,
+        const zid = z.id || uuidv4();
+        const vals = [
+          z.name || `Zone ${i + 1}`,
           z.x_percent || 0, z.y_percent || 0, z.width_percent || 100, z.height_percent || 100,
           z.z_index || 0, z.zone_type || 'content', z.fit_mode || 'contain',
-          z.background_color || '#000000', i);
+          z.background_color || '#000000', i,
+        ];
+        if (existingSet.has(zid)) updateZone.run(...vals, zid, req.params.id);
+        else insertZone.run(zid, req.params.id, ...vals);
+        keptIds.add(zid);
       });
+
+      // Only the zones the editor actually removed.
+      for (const zid of existingIds) {
+        if (!keptIds.has(zid)) {
+          db.prepare('DELETE FROM layout_zones WHERE id = ? AND layout_id = ?').run(zid, req.params.id);
+        }
+      }
       db.prepare('UPDATE layouts SET updated_at = strftime(\'%s\',\'now\') WHERE id = ?').run(req.params.id);
     }
   });
