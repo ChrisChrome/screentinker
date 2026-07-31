@@ -6,6 +6,24 @@ const { db } = require('../db/database');
 // full-trust (a `web` overlay renders an arbitrary page in the player), so — like the
 // group command route — it requires the 'full' token scope. No-op for JWT sessions.
 const { requireScope } = require('../middleware/apiToken');
+const { accessContext } = require('../lib/tenancy');
+
+// requireScope('full') gates API TOKENS and is a deliberate pass-through for JWT sessions
+// (middleware/apiToken.js: `if (!req.viaToken) return next()`). It was the ONLY guard on these
+// routes, so a dashboard session carried no write check at all here — every sibling
+// fleet-affecting route pairs the scope check with a role check (see device-groups.js, where
+// POST /:id/command is `requireScope('full'), requireGroupWrite`). This restores that pairing:
+// a read-only member is refused, exactly as they are on every other device mutation.
+function requireFleetWrite(req, res, next) {
+  if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context' });
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(req.workspaceId);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) return res.status(403).json({ error: 'Access denied' });
+  if (!ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
+    return res.status(403).json({ error: 'Read-only access' });
+  }
+  next();
+}
 
 // Reuse the existing 6-hex color contract (#RRGGBB). Overlay transparency is expressed
 // via the separate `opacity` field, so no alpha channel is accepted here.
@@ -82,7 +100,7 @@ function summarize(results) {
 }
 
 // POST /api/pip — show an overlay on a device or group.
-router.post('/', requireScope('full'), (req, res) => {
+router.post('/', requireScope('full'), requireFleetWrite, (req, res) => {
   const b = req.body || {};
 
   if (!b.device_id) return res.status(400).json({ error: 'device_id required (device or group id)' });
@@ -157,7 +175,7 @@ function handleClear(req, res) {
   res.json({ success: true, target: targets.kind, ...summary });
 }
 
-router.post('/clear', requireScope('full'), handleClear);
-router.delete('/', requireScope('full'), handleClear);
+router.post('/clear', requireScope('full'), requireFleetWrite, handleClear);
+router.delete('/', requireScope('full'), requireFleetWrite, handleClear);
 
 module.exports = router;
