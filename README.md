@@ -202,6 +202,29 @@ including "already up to date", so the button never just appears to do nothing. 
 invent permissions: if installs need a confirmation tap on that hardware, forcing still raises the
 dialog. It is the right button once you have fixed whatever was breaking the update.
 
+#### Running a beta channel
+
+By default an instance serves one APK to every display, at `/download/apk`. You can publish a second
+build alongside it and send it only to displays you choose:
+
+1. Put the beta APK next to the stable one, as **`ScreenTinker-beta.apk`** (same locations as
+   `ScreenTinker.apk` — `/data/` in a container, or the install root).
+2. Declare its version in a sidecar text file, **`ScreenTinker-beta.apk.version`**, containing just
+   the version — e.g. `1.9.27-rc1`. This is required. The server cannot read the version out of an
+   APK cheaply, and advertising a version that does not match the bytes it serves is how update
+   loops start, so **a beta with no declared version is ignored entirely** and opted-in displays
+   keep getting the stable build.
+3. Tick **Accept pre-release builds** on any display that should receive it.
+
+Untick the box to move a display back to the release build — the server offers it the stable build
+even though it is technically "older" than the beta. Displays you never put on the channel are
+untouched by any of this.
+
+> **Cut beta builds with the same `versionCode` as the stable release they branch from.** Android
+> refuses to install a lower `versionCode`, so a beta numbered above stable can be installed but
+> never returned without uninstalling the app (which loses the display's pairing). Equal numbers
+> install in both directions, which is what makes switching back work.
+
 #### Deleting and re-pairing a display
 
 A display's settings are keyed to the hardware, not to its row in the database. Delete a display and

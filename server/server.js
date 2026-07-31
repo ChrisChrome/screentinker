@@ -703,8 +703,9 @@ const { getBand } = require('./services/loop-lag');  // #146 Item C: critical-ba
 app.get('/api/update/check', (req, res) => {
   const currentVersion = req.query.version;
   const deviceId = req.query.device_id || null;   // #144: optional; beta4+ clients send it for per-device keying
-  const latestVersion = VERSION;
+  let latestVersion = VERSION;   // replaced by the beta build's declared version for opted-in displays
   let betaChannel = false;   // per-display pre-release opt-in, set from the device row below
+  let wasOnBeta = false;     // whether we have actually served this display the beta channel
 
   // #155/#161: self-update kill switch, enforced SERVER-SIDE so it covers EVERY client
   // version (not just ones with the client-side stand-down). If OTA is off globally
@@ -716,12 +717,13 @@ app.get('/api/update/check', (req, res) => {
     let otaDeviceOff = false;
     if (deviceId) {
       try {
-        const row = require('./db/database').db.prepare('SELECT ota_enabled, ota_beta FROM devices WHERE id = ?').get(deviceId);
+        const row = require('./db/database').db.prepare('SELECT ota_enabled, ota_beta, ota_channel_served FROM devices WHERE id = ?').get(deviceId);
         otaDeviceOff = !!row && row.ota_enabled === 0;
         // #234 follow-up: per-display pre-release opt-in, read from the same row rather than a
         // second query. Without it, handing someone a test build is a trap — a prerelease sorts
         // BELOW its own release, so the next check "upgrades" the display straight back off it.
         betaChannel = !!row && row.ota_beta === 1;
+        wasOnBeta = !!row && row.ota_channel_served === 'beta';
       } catch (_) { /* device unknown / pre-migration — treat as enabled */ }
     }
     if (otaGloballyOff || otaDeviceOff) {
@@ -736,7 +738,23 @@ app.get('/api/update/check', (req, res) => {
 
   // #144: circuit-breaker + phantom-version guard. Keys per device_id when present, else
   // per reported version (NOT IP — SNAT). Rate-trips a looping client in seconds.
-  const verdict = otaBreaker.decide(currentVersion, latestVersion, deviceId, Date.now(), betaChannel);
+  // Channel selection. An opted-in display is compared against — and offered — the BETA build's
+  // declared version, not the server's. Falls back to stable whenever no usable beta is published,
+  // so ticking the box on a server with no beta build is a no-op, not a broken display.
+  const onBeta = betaChannel && apkCache.betaAvailable();
+  if (onBeta) latestVersion = apkCache.getBeta().version;
+
+  // The hold-my-prerelease guard only applies when we are NOT actively serving a beta: on the beta
+  // channel the beta build is the target, so normal comparison does the right thing.
+  const verdict = otaBreaker.decide(currentVersion, latestVersion, deviceId, Date.now(), betaChannel && !onBeta, wasOnBeta);
+
+  // Record that this display is being served beta, so switching it back later is distinguishable
+  // from a display that has always run its own build. Written only on a change, not per check.
+  if (onBeta && !wasOnBeta && deviceId) {
+    try {
+      require('./db/database').db.prepare("UPDATE devices SET ota_channel_served = 'beta' WHERE id = ?").run(deviceId);
+    } catch (_) { /* best-effort bookkeeping; never break a check over it */ }
+  }
 
   // #146 Item C: EARLY-RETURN before any filesystem work when we won't serve
   // (rate-backoff, up-to-date, phantom, client-newer, …). A looping client that gets
@@ -754,14 +772,17 @@ app.get('/api/update/check', (req, res) => {
 
   // Offering — read the CACHED apk metadata (no per-request statSync; refreshed on an
   // interval by apkCache). Never offer if the APK isn't actually present.
-  const apk = apkCache.get();
+  const apk = onBeta ? apkCache.getBeta() : apkCache.get();
   const updateAvailable = apk.exists;
   if (verdict.log) console.log(verdict.log);
   logOtaCheck(deviceId, currentVersion, latestVersion, updateAvailable, updateAvailable ? verdict.reason : 'apk-missing');
   res.json({
     latest_version: latestVersion, current_version: currentVersion || 'unknown',
     update_available: updateAvailable, reason: updateAvailable ? verdict.reason : 'apk-missing',
-    download_url: '/download/apk',
+    // The client fetches whatever URL we hand back, so channel routing needs no APK change —
+    // a display already in the field can be moved between channels from the dashboard.
+    download_url: onBeta ? '/download/apk?channel=beta' : '/download/apk',
+    channel: onBeta ? 'beta' : 'stable',
     apk_size: updateAvailable ? apk.size : 0,
     apk_modified: updateAvailable ? apk.mtime : 0,
     // #166 escape hatch (OTA_ALLOW_MANAGED_DEVICES). Tells a player it may self-update even when
@@ -1054,7 +1075,10 @@ const otaDownloadGuard = require('./lib/ota-download-guard');
 const otaDownloadState = otaDownloadGuard.prodState();   // #146 P3.8: shared singleton so /api/status can read stats
 
 app.get('/download/apk', (req, res) => {
-  const apk = apkCache.get();
+  // Serve the slot the check advertised. If these disagree the client is handed bytes whose
+  // size does not match apk_size, which is how an OTA loop starts — so both sides resolve
+  // the channel the same way, and both fall back to stable identically.
+  const apk = apkCache.forChannel(req.query.channel === 'beta' ? 'beta' : 'stable');
   if (!apk.exists) {
     return res.status(404).send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APK Not Available — ScreenTinker</title><style>body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#0f172a;color:#e2e8f0}div{text-align:center;max-width:480px;padding:32px 24px}h1{color:#f87171;font-size:22px;margin:0 0 8px}p{line-height:1.6;color:#94a3b8;font-size:14px;margin:0 0 20px}code{background:#1e293b;padding:2px 6px;border-radius:4px;font-size:13px}a{color:#3b82f6;text-decoration:none}a:hover{text-decoration:underline}.btn{display:inline-block;background:#2563eb;color:#fff;padding:10px 20px;border-radius:6px;font-size:14px;font-weight:500;text-decoration:none;margin-bottom:24px}.btn:hover{background:#1d4ed8;text-decoration:none}.muted{font-size:12px;color:#64748b}</style></head><body><div><h1>APK Not Available</h1><p>The Android APK has not been compiled yet.</p><a class="btn" href="https://github.com/screentinker/screentinker/releases/latest" target="_blank" rel="noopener">&#128230; Download from GitHub Releases</a><p class="muted">Self-hosting? Mount a built APK at <code>/data/ScreenTinker.apk</code> to serve it from this instance. Or use the <a href="/player">web player</a> instead.</p></div></body></html>`);
   }

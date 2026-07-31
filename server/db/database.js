@@ -305,6 +305,11 @@ const migrations = [
   // within minutes. It cost a reporter on #234 an evening of testing code that had already been
   // replaced under them. Set this and the display keeps a same-core prerelease.
   "ALTER TABLE devices ADD COLUMN ota_beta INTEGER NOT NULL DEFAULT 0",
+  // The channel we last SERVED this display. Needed to tell "an operator just switched this
+  // display off beta" apart from "this display has always run a build of its own" — only the
+  // first may be pulled back to stable. Without it, publishing a beta would drag every existing
+  // pre-release tester backwards, which is the harm the opt-in exists to prevent.
+  "ALTER TABLE devices ADD COLUMN ota_channel_served TEXT",
   // #161: privilege tier reported by the player (0 unprivileged / 1 device-admin / 2 owner-or-
   // delegated-install) + whether a foreign device owner (MDM) manages it. Drives dashboard gating
   // of Tier-2 controls (reboot/kiosk/time) — shown only for owned panels.
