@@ -1851,7 +1851,7 @@
       // widget_rev is in here for the same reason as schedules and transition: a widget's IDENTITY
       // does not change when it is EDITED, so a content edit produced an identical fingerprint, the
       // update was treated as "unchanged", and the screen kept the old render until a reload.
-      const fingerprint = (items) => items.map(a => `${a.content_id || ''}|${a.widget_id || ''}|${a.widget_rev || ''}|${a.remote_url || ''}|${a.filepath || ''}|${a.filename || ''}|${JSON.stringify(a.schedules || [])}|${JSON.stringify(a.transition || null)}`).join(',');
+      const fingerprint = (items) => items.map(a => `${a.content_id || ''}|${a.widget_id || ''}|${a.widget_rev || ''}|${a.zone_id || ''}|${a.remote_url || ''}|${a.filepath || ''}|${a.filename || ''}|${JSON.stringify(a.schedules || [])}|${JSON.stringify(a.transition || null)}`).join(',');
       const newFp = fingerprint(newItems);
       const oldFp = fingerprint(playlist);
 
@@ -1898,11 +1898,23 @@
       if (groupChanged) applyGroupSync(data.group_sync || null);
       else if (groupSync) groupScheduleTick();
 
+      // The layout is not part of the item list, so a change to it can never show up in the item
+      // fingerprint — and in multi-zone mode nothing else re-renders: each zone runs its own timers
+      // and renderContent is not called again. So editing zones, moving an item between zones,
+      // switching layout or clearing it did nothing at all on a screen already in a layout, for as
+      // long as the item list happened to stay the same. Tizen's ZoneRenderer has always compared a
+      // zone signature; this is the web equivalent.
+      const layoutSig = (l) => !l ? '' : [
+        l.id,
+        ...(l.zones || []).map(z => [z.id, z.x_percent, z.y_percent, z.width_percent, z.height_percent,
+                                     z.z_index, z.zone_type, z.fit_mode].join(':')).sort(),
+      ].join('|');
+      const layoutChanged = layoutSig(layout) !== layoutSig(data.layout || null);
       layout = data.layout || null;
       saveLayoutCache(layout);
       playerTimezone = data.timezone || null; // #74/#75: effective tz for schedule eval
 
-      if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
+      if (newFp === oldFp && playlist.length > 0 && !wallChanged && !layoutChanged) {
         console.log('Playlist unchanged');
         // In-place duration refresh: a duration-only edit keeps the structural fingerprint identical,
         // so patch duration_sec onto the live items here. The group schedule tick re-anchors on the
