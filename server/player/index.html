@@ -1606,7 +1606,21 @@
       if (!isPlaying) return;
       const item = playlist[currentIndex];
       if (!item || advanceTimer) return;   // solo/leader that already has its timer armed -> nothing to do
-      const needsSoloTimer = !!item.widget_id || (typeof item.mime_type === 'string' && item.mime_type.startsWith('image/'));
+      // Video and YouTube were excluded here on the grounds that they "self-advance via their own
+      // end handlers" — but the handler that is live right now was built for the mode we have just
+      // LEFT. A group-rendered video was created with `loop = !!groupSync` and a wall-follower
+      // video with `isFollower` true, and both are captured in the closure at render time. So on
+      // leaving a sync group or a wall, that element loops forever and nothing re-renders: the
+      // screen sits on one clip permanently, and later refreshes take the "unchanged" branch
+      // because the <video> is attached, playing and un-errored, i.e. healthy.
+      //
+      // Re-render whatever is on screen instead of guessing which types can look after themselves.
+      const mediaEl = document.querySelector('#playerContainer video');
+      const staleLoop = !!(mediaEl && mediaEl.loop);
+      const needsSoloTimer = !!item.widget_id
+        || (typeof item.mime_type === 'string' && item.mime_type.startsWith('image/'))
+        || staleLoop
+        || item.mime_type === 'video/youtube';
       if (needsSoloTimer) playCurrentItem();   // re-render buffered + re-arm the solo advance timer
     }
 

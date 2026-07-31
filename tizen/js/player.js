@@ -179,10 +179,11 @@ PlaylistPlayer.prototype.load = function (assignments) {
   if (!items.length) { this.index = 0; this.startPlayback(); return; }
 
   // Current item survives -> keep playing it, just retarget the index (no restart).
-  if (curId) {
+  if (curId && !this._forceRender) {
     var stay = this.indexOfIdentity(items, curId);
     if (stay >= 0 && this.hasContentOnScreen()) { this.index = stay; return; }
   }
+  this._forceRender = false;
 
   // Anchor gone: walk forward from the OLD position to the first item that still exists.
   var nextIdx = 0;
@@ -307,7 +308,16 @@ PlaylistPlayer.prototype.setTimezone = function (tz) { this.timezone = tz || nul
 // leaving wall mode (or a role flip) calls invalidate() so the next load re-renders
 // with the right semantics instead of being de-duped by the unchanged signature.
 PlaylistPlayer.prototype.setWallFollower = function (b) { this.wallFollower = !!b; };
-PlaylistPlayer.prototype.invalidate = function () { this.sig = ''; };
+PlaylistPlayer.prototype.invalidate = function () {
+  this.sig = '';
+  // Clearing the signature alone was not enough: load() returns at the continuity check ("current
+  // item survives -> keep playing it, just retarget the index") BEFORE reaching any render, so the
+  // invalidate had no effect and the item kept the semantics of the mode we had just left. Leaving
+  // a sync group or a wall therefore froze the screen on one clip — rendered with `single`, so
+  // looping with no timer — and every later refresh took the unchanged path because the element
+  // was attached and playing, i.e. healthy. This flag makes the next load actually re-render.
+  this._forceRender = true;
+};
 PlaylistPlayer.prototype.getIndex = function () { return this.index; };
 PlaylistPlayer.prototype.getItemCount = function () { return this.items.length; };
 PlaylistPlayer.prototype.isWallFollower = function () { return !!this.wallFollower; };
