@@ -573,6 +573,24 @@ Locked out? Run this on the server to get a temporary admin token (1 hour):
 node scripts/reset-admin.js
 ```
 
+### Forcing an update on one display
+
+A display whose periodic update checker isn't firing won't pull a new APK on its own, and putting it
+on the beta channel alone won't reach it either. This sends the same forced check the dashboard's
+force-update button sends — it ignores the backoff cap and the MDM stand-down:
+
+```bash
+node scripts/force-update.js --list          # displays online right now
+node scripts/force-update.js <id-or-prefix>  # force a check on one display
+node scripts/force-update.js <id> --dry-run  # prove auth/handshake, send nothing
+```
+
+Run it on the server (it needs the database and `JWT_SECRET`, and mints a short-lived
+`platform_admin` token). On a display that isn't device-owner provisioned the install raises a
+confirm dialog **over whatever is on screen** and leaves it there until someone accepts, so aim it at
+one display when a person can see it. Updating preserves runtime permissions; only uninstalling
+clears them.
+
 ### Building the Android APK
 
 The Android player app is in the `android/` directory. To build it:
