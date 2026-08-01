@@ -1243,7 +1243,17 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.settings_permissions))
             .setMessage(lines)
-            .setPositiveButton(getString(R.string.settings_perm_open)) { _, _ ->
+            // Primary action opens OUR permissions screen — the one with a row per permission and
+            // a Manage button that stays visible once granted, so an installer can review or revoke
+            // what was given. Android's App Info page is still offered as the secondary, because a
+            // few things (notification access, some OEM toggles) are only reachable there.
+            .setPositiveButton(getString(R.string.settings_perm_manage)) { _, _ ->
+                startActivity(Intent(this, SetupActivity::class.java).apply {
+                    // Review mode: leaving must return to playback, NOT restart pairing.
+                    putExtra(SetupActivity.EXTRA_MANAGE_ONLY, true)
+                })
+            }
+            .setNeutralButton(getString(R.string.settings_perm_open)) { _, _ ->
                 val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                     data = android.net.Uri.parse("package:$packageName")
                 }

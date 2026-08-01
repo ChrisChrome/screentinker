@@ -40,13 +40,29 @@ class SetupActivity : AppCompatActivity() {
     private lateinit var enableWriteSettingsBtn: Button
     private lateinit var continueBtn: Button
 
+    /**
+     * Opened from the in-service Settings menu to REVIEW permissions, not as first-run setup.
+     *
+     * The difference matters: proceedToNext() always goes to ProvisioningActivity, so without this
+     * a paired, playing screen would be sent to the pairing page by the button it was told to press.
+     * In manage mode the screen simply returns to the player.
+     */
+    private val manageOnly: Boolean get() = intent?.getBooleanExtra(EXTRA_MANAGE_ONLY, false) == true
+
+    companion object {
+        const val EXTRA_MANAGE_ONLY = "EXTRA_MANAGE_ONLY"
+    }
+
     @SuppressLint("BatteryLife")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Skip setup if already completed
+        // Skip setup if already completed — but NOT when we were opened deliberately to review
+        // permissions from the in-service Settings menu. That is the whole point of manage mode:
+        // every device that can reach it has setup_complete set, so without this exemption the
+        // screen closes before it draws and the menu entry appears to do nothing.
         val prefs = getSharedPreferences("remote_display", MODE_PRIVATE)
-        if (prefs.getBoolean("setup_complete", false)) {
+        if (!manageOnly && prefs.getBoolean("setup_complete", false)) {
             proceedToNext()
             return
         }
@@ -56,7 +72,7 @@ class SetupActivity : AppCompatActivity() {
         // moot — so skip the entire manual first-run wizard. Accessibility stays optional (it can't
         // be auto-enabled). Guarded on ownership, so a NORMAL install still gets the full wizard.
         val ownerPolicy = com.remotedisplay.player.admin.STPolicy(this)
-        if (ownerPolicy.isDeviceOwner()) {
+        if (!manageOnly && ownerPolicy.isDeviceOwner()) {
             ownerPolicy.applyOnboardingPolicy()
             prefs.edit().putBoolean("setup_complete", true).apply()
             // Remote control needs the accessibility service, and it's the one thing no policy can
@@ -218,8 +234,15 @@ class SetupActivity : AppCompatActivity() {
             }
         }
 
+        if (manageOnly) {
+            // "Continue anyway" and the skip hint are first-run language; here the only action is
+            // to go back to what was already playing.
+            continueBtn.text = getString(R.string.settings_perm_done)
+            findViewById<TextView>(R.id.skipText).visibility = View.GONE
+        }
+
         continueBtn.setOnClickListener {
-            prefs.edit().putBoolean("setup_complete", true).apply()
+            if (!manageOnly) prefs.edit().putBoolean("setup_complete", true).apply()
             proceedToNext()
         }
 
@@ -334,7 +357,14 @@ class SetupActivity : AppCompatActivity() {
 
         // Update continue button text
         val allGood = accessibilityEnabled && canInstall
-        continueBtn.text = if (allGood) "Continue to Setup" else "Continue Anyway"
+        // updateStatuses() runs after onCreate's setup and re-labels this button every time, so the
+        // manage-mode label has to be honoured HERE too — setting it once earlier was silently
+        // overwritten. In review mode there is nothing to continue TO; the only action is going back.
+        continueBtn.text = when {
+            manageOnly -> getString(R.string.settings_perm_done)
+            allGood -> "Continue to Setup"
+            else -> "Continue Anyway"
+        }
     }
 
     /** Either location permission is enough for the SSID; coarse suffices below Android 10. */
@@ -398,6 +428,8 @@ class SetupActivity : AppCompatActivity() {
     }
 
     private fun proceedToNext() {
+        // Reviewing permissions on a live screen must never restart pairing — just go back.
+        if (manageOnly) { finish(); return }
         startActivity(Intent(this, ProvisioningActivity::class.java))
         finish()
     }
