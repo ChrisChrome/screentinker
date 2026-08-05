@@ -483,6 +483,31 @@ const migrations = [
     note        TEXT
   )`,
   "CREATE INDEX IF NOT EXISTS idx_recovery_grants_expires ON recovery_grants(expires_at)",
+  // Portrait templates for existing installs. schema.sql only runs on a fresh database, so without
+  // this an upgraded instance has landscape templates only — and portrait panels are exactly the
+  // fleets that need a starting point. INSERT OR IGNORE, so re-running is free and an operator who
+  // edited one of these keeps their version.
+  `INSERT OR IGNORE INTO layouts (id, user_id, name, width, height, is_template, template_category) VALUES
+     ('tpl-p-full',    NULL, 'Portrait Fullscreen',         1080, 1920, 1, 'basic'),
+     ('tpl-p-halves',  NULL, 'Portrait Split',              1080, 1920, 1, 'split'),
+     ('tpl-p-ticker',  NULL, 'Portrait with Ticker',        1080, 1920, 1, 'news'),
+     ('tpl-p-banner',  NULL, 'Portrait Banner + Body',      1080, 1920, 1, 'news'),
+     ('tpl-p-thirds',  NULL, 'Portrait Three Stacked',      1080, 1920, 1, 'grid'),
+     ('tpl-p-pip',     NULL, 'Portrait Picture in Picture', 1080, 1920, 1, 'overlay')`,
+  `INSERT OR IGNORE INTO layout_zones (id, layout_id, name, x_percent, y_percent, width_percent, height_percent, z_index, sort_order) VALUES
+     ('z-pf-1', 'tpl-p-full',   'Main',          0, 0, 100, 100, 0, 0),
+     ('z-ph-1', 'tpl-p-halves', 'Top',           0, 0, 100, 50, 0, 0),
+     ('z-ph-2', 'tpl-p-halves', 'Bottom',        0, 50, 100, 50, 0, 1),
+     ('z-pt-1', 'tpl-p-ticker', 'Main Content',  0, 0, 100, 88, 0, 0),
+     ('z-pt-2', 'tpl-p-ticker', 'Bottom Ticker', 0, 88, 100, 12, 1, 1),
+     ('z-pb-1', 'tpl-p-banner', 'Top Banner',    0, 0, 100, 15, 0, 0),
+     ('z-pb-2', 'tpl-p-banner', 'Body',          0, 15, 100, 85, 0, 1),
+     ('z-p3-1', 'tpl-p-thirds', 'Top',           0, 0, 100, 33.33, 0, 0),
+     ('z-p3-2', 'tpl-p-thirds', 'Middle',        0, 33.33, 100, 33.34, 0, 1),
+     ('z-p3-3', 'tpl-p-thirds', 'Bottom',        0, 66.67, 100, 33.33, 0, 2),
+     ('z-pp-1', 'tpl-p-pip',    'Background',    0, 0, 100, 100, 0, 0),
+     ('z-pp-2', 'tpl-p-pip',    'PiP Window',    58, 4, 38, 20, 1, 1)`,
+
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.

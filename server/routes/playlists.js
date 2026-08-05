@@ -225,7 +225,13 @@ router.get('/:id', requirePlaylistRead, (req, res) => {
   `).all(req.params.id);
   const displayCount = db.prepare('SELECT COUNT(*) as count FROM devices WHERE playlist_id = ?').get(req.params.id).count;
   for (const it of items) it.schedules = schedulesForItem(it.id); // #156: editor read-path needs the blocks (mirror :351)
-  res.json({ ...req.playlist, items, item_count: items.length, display_count: displayCount });
+  // #104's layout derivation, reused so the editor can SHOW where each item lands. A playlist
+  // has no intrinsic layout — it is inferred from its own zone-bound items — so without this
+  // the page lists a zone NAME with no sense of where that zone sits on the screen. Null (no
+  // zoned items) means fullscreen, which the UI draws as a single frame.
+  let layout = null;
+  try { layout = derivePreviewLayout(items); } catch (e) { layout = null; }
+  res.json({ ...req.playlist, items, item_count: items.length, display_count: displayCount, layout });
 });
 
 // #104: device-free draft preview payload. Same shape the device player consumes

@@ -117,6 +117,20 @@ function renderLayoutCard(layout, isTemplate) {
   `;
 }
 
+/*
+ * Canvas aspect as a padding-top percentage: the layout's own height/width.
+ *
+ * Falls back to 16:9 when a layout carries no usable dimensions, and clamps so a pathological
+ * value cannot produce a canvas taller than the screen or thinner than a line — these rows are
+ * user-editable, and an unusable editor is worse than a slightly wrong aspect.
+ */
+function canvasRatioPct(layout) {
+  const w = Number(layout && layout.width) || 1920;
+  const h = Number(layout && layout.height) || 1080;
+  if (!(w > 0 && h > 0)) return 56.25;
+  return Math.min(300, Math.max(20, (h / w) * 100));
+}
+
 async function renderEditor(container, layoutId) {
   let layout;
   try {
@@ -143,7 +157,10 @@ async function renderEditor(container, layoutId) {
     <div style="display:flex;gap:20px">
       <div style="flex:1">
         <div id="canvasWrap" style="position:relative;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
-          <div id="canvas" style="position:relative;width:100%;padding-top:56.25%">
+          <!-- Canvas mirrors THIS layout's shape, not a fixed 16:9. It was hardcoded to 56.25%
+               (the padding-ratio trick for 16:9), so authoring a portrait layout meant dragging
+               zones on a landscape canvas: correct on the panel, wrong everywhere you designed it. -->
+          <div id="canvas" style="position:relative;width:100%;padding-top:${canvasRatioPct(layout)}%">
           </div>
         </div>
       </div>

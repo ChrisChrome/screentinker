@@ -251,6 +251,67 @@ function showPlaylistPreview(playlist) {
   });
 }
 
+/*
+ * A small picture of where this playlist's content actually lands.
+ *
+ * A playlist has no intrinsic layout — the server derives one from the items' own zone bindings
+ * (#104) — so the page could previously show an item tagged "Bottom Ticker" with no indication
+ * that the ticker is a thin strip along the bottom. People assigned content to zones by name and
+ * found out where it went by looking at a screen.
+ *
+ * Drawn from the zone percentages, so it is correct for any layout including portrait ones without
+ * a stored thumbnail. Zones with no items are dimmed: an empty zone on a real panel shows its
+ * background colour, and that is worth seeing BEFORE publishing rather than after.
+ */
+function layoutMockup(playlist) {
+  const layout = playlist && playlist.layout;
+  const items = (playlist && playlist.items) || [];
+
+  // No layout means fullscreen — every item shares one frame. Drawing a single empty box would
+  // imply a choice was made; say it in words instead.
+  if (!layout || !Array.isArray(layout.zones) || layout.zones.length === 0) {
+    return `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">${t('playlist.layout_fullscreen')}</div>`;
+  }
+
+  const counts = {};
+  for (const it of items) if (it.zone_id) counts[it.zone_id] = (counts[it.zone_id] || 0) + 1;
+
+  const w = Number(layout.width) || 1920;
+  const h = Number(layout.height) || 1080;
+  const portrait = h > w;
+  // Fixed short edge, long edge derived — a portrait mockup must not be as wide as a landscape one
+  // or it dominates the page.
+  const boxW = portrait ? 90 : 200;
+  const boxH = Math.round(boxW * (h / w));
+
+  const zones = layout.zones.map((z) => {
+    const n = counts[z.id] || 0;
+    const filled = n > 0;
+    return `<div title="${esc(z.name)}${filled ? ` — ${n}` : ''}" style="
+      position:absolute;
+      left:${z.x_percent}%; top:${z.y_percent}%;
+      width:${z.width_percent}%; height:${z.height_percent}%;
+      box-sizing:border-box;
+      border:1px solid ${filled ? 'var(--accent)' : 'var(--border)'};
+      background:${filled ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'transparent'};
+      display:flex;align-items:center;justify-content:center;
+      font-size:9px;line-height:1;color:var(--text-muted);overflow:hidden;
+    ">${filled ? n : ''}</div>`;
+  }).join('');
+
+  return `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <div style="position:relative;width:${boxW}px;height:${boxH}px;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;flex:none">
+        ${zones}
+      </div>
+      <div style="font-size:12px;color:var(--text-muted)">
+        <div>${esc(layout.name || '')} &middot; ${w}&times;${h}${portrait ? ' (portrait)' : ''}</div>
+        <div>${tn('playlist.zones_count', layout.zones.length)}</div>
+        ${layout._preview_ambiguous ? `<div style="color:var(--warning)">${t('playlist.layout_ambiguous')}</div>` : ''}
+      </div>
+    </div>`;
+}
+
 function renderDetailContent(container, playlist) {
   const isDraft = playlist.status === 'draft';
   const hasPublished = !!playlist.published_snapshot;
@@ -288,6 +349,8 @@ function renderDetailContent(container, playlist) {
       </div>
     </div>
 
+    ${layoutMockup(playlist)}
+    
     <div id="playlistItems" style="display:flex;flex-direction:column;gap:8px">
     </div>
   `;
