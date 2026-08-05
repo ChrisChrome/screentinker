@@ -1652,12 +1652,19 @@
             ram_free_mb: null,
             ram_total_mb: null,
             cpu_usage: null,
-            wifi_ssid: 'Web Player',
+            // 'Web Player' is a placeholder standing in a WiFi column. On a BrightSign it is
+            // actively wrong — the one we have is PoE over Ethernet — and an operator reading it
+            // as an SSID has been told something false. Null means "not on WiFi", which is true,
+            // and the dashboard shows a real hardware block for this family instead.
+            wifi_ssid: ON_BRIGHTSIGN ? null : 'Web Player',
             wifi_rssi: null,
             uptime_seconds: Math.floor(performance.now() / 1000),
             // #74/#75: report OS timezone + UTC clock (effective-tz resolution + skew indicator)
             timezone: (function () { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch (e) { return null; } })(),
             device_utc: Date.now(),
+            // Real values where the platform has them (temperature, storage quota). Spread LAST so
+            // it overrides the nulls above, and empty off-platform so nothing else changes.
+            ...(BS ? BS.telemetrySnapshot() : {}),
           }
         });
       }, HEARTBEAT_INTERVAL);

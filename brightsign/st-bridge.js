@@ -186,6 +186,12 @@
     return cec;
   }
 
+  // Telemetry cache. Starts EMPTY rather than pre-filled with nulls: the player spreads this over
+  // its own telemetry object, and a null here would overwrite a value another player family had
+  // legitimately supplied. Absent means "nothing to say", which is not the same as "zero".
+  var telemetry = {};
+  var TELEMETRY_REFRESH_MS = 60000;
+
   var deviceInfo = null;
   if (DeviceInfoClass) {
     try { deviceInfo = new DeviceInfoClass(); } catch (e) { deviceInfo = null; }
@@ -362,6 +368,64 @@
     onHostMessage: function (fn) { if (typeof fn === 'function') listeners.push(fn); },
 
     /*
+     * Telemetry, read synchronously from a cache.
+     *
+     * The heartbeat builds its payload synchronously every 15s, but the only real number this
+     * platform exposes — temperature — arrives from a PROMISE (deviceInfo.getTemperature()).
+     * Awaiting it inside the heartbeat would either block the beat or, worse, serialise a pending
+     * Promise into the telemetry object, which is exactly how device_id once became
+     * "[object Promise]". So the values are refreshed on a timer and the beat reads whatever
+     * landed last.
+     *
+     * Returns an EMPTY object off-platform, so the caller can spread it unconditionally and a
+     * browser's telemetry is unchanged.
+     */
+    telemetrySnapshot: function () { return telemetry; },
+
+    /*
+     * Refresh the cache. Safe to call repeatedly; each source fails independently so one missing
+     * API cannot take the others down with it.
+     */
+    refreshTelemetry: function () {
+      // Temperature: documented on @brightsign/deviceinfo, resolves { celsius }.
+      if (deviceInfo && typeof deviceInfo.getTemperature === 'function') {
+        try {
+          var t = deviceInfo.getTemperature();
+          if (t && typeof t.then === 'function') {
+            t.then(function (v) {
+              var c = v && (v.celsius !== undefined ? v.celsius : v.Celsius);
+              if (typeof c === 'number' && isFinite(c)) telemetry.temperature_c = Math.round(c * 10) / 10;
+            }, function () { /* sensor unavailable on this model */ });
+          }
+        } catch (e) { /* older OS without the call */ }
+      }
+
+      /*
+       * Storage. This is the WIDGET'S storage quota (storage_path/storage_quota in autorun.brs),
+       * NOT the device's filesystem — there is no documented JS API for the latter, and reporting
+       * eMMC/SD capacity would need the host. It is still the number that matters operationally,
+       * because it is the budget the player actually has for cached content, and it is what fills
+       * up. The dashboard labels it distinctly for this family so it is never read as "the disk".
+       */
+      try {
+        var s = global.navigator && global.navigator.storage;
+        if (s && typeof s.estimate === 'function') {
+          var e = s.estimate();
+          if (e && typeof e.then === 'function') {
+            e.then(function (est) {
+              if (!est) return;
+              var quota = Number(est.quota), usage = Number(est.usage);
+              if (isFinite(quota) && quota > 0) {
+                telemetry.storage_total_mb = Math.round(quota / 1048576);
+                if (isFinite(usage)) telemetry.storage_free_mb = Math.round((quota - usage) / 1048576);
+              }
+            }, function () { /* estimate refused */ });
+          }
+        }
+      } catch (e) { /* no storage manager */ }
+    },
+
+    /*
      * Heartbeat. autorun.brs rebuilds the widget after three missed beats, which is what
      * recovers a page that loaded fine and then wedged (dead socket, JS exception, decoder
      * stall) — a case load-error never reports.
@@ -380,6 +444,14 @@
   // stops waiting after this and carries on with whatever identity it has.
   prefetch();
   if (global.setTimeout) global.setTimeout(markReady, 5000);
+
+  // Only worth polling where a sensor exists. A browser has neither the temperature API nor a
+  // meaningful storage quota to report, and an interval that can only ever produce nothing is
+  // just a timer burning a wakeup every minute on a device that runs for months.
+  if (API.isBrightSign()) {
+    API.refreshTelemetry();
+    if (global.setInterval) global.setInterval(API.refreshTelemetry, TELEMETRY_REFRESH_MS);
+  }
 
   if (API.hasHost()) API.startHeartbeat();
 })(typeof window !== 'undefined' ? window : this);
