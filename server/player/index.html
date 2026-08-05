@@ -2133,6 +2133,27 @@
       // Apply orientation. #109: the PiP layer gets the SAME transform as the player so a
       // corner overlay tracks the visible content (not the physical panel) in every orientation.
       if (data.orientation) {
+        // On BrightSign, rotate the OUTPUT first. Video decodes onto a hardware plane the DOM
+        // cannot transform, so the CSS rotation below turns the images and widgets and leaves the
+        // video unrotated — a portrait panel playing sideways video. Tizen hit the same wall and
+        // routes portrait video through AVPlay for exactly this reason.
+        //
+        // If the host rotates the screen, EVERY layer turns with it and the CSS transform must be
+        // cleared or the graphics rotate twice. If it cannot, we fall through to CSS, which rotates
+        // most of the content rather than none of it.
+        if (BS && typeof BS.setOrientation === 'function' && BS.hasHost()) {
+          BS.setOrientation(data.orientation).then((rotatedByHost) => {
+            if (!rotatedByHost) return;   // CSS path below already ran
+            [document.getElementById('playerContainer'), document.getElementById('pipContainer')]
+              .forEach((el) => {
+                if (!el) return;
+                el.style.transform = '';
+                el.style.width = '';
+                el.style.height = '';
+              });
+            console.log('[bs] output rotated by host; CSS transform cleared');
+          });
+        }
         const rotations = { 'landscape': '0deg', 'portrait': '90deg', 'landscape-flipped': '180deg', 'portrait-flipped': '270deg' };
         const portrait = data.orientation.includes('portrait');
         [document.getElementById('playerContainer'), document.getElementById('pipContainer')].forEach((el) => {

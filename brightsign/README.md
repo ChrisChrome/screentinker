@@ -277,6 +277,22 @@ Config: `self_update` (default **on** — a fleet that cannot be updated remotel
 `allow_prerelease` (default off, mirroring the Android beta channel; an opted-in player also
 *holds* a prerelease of its own core rather than being pulled back to the release).
 
+## Rotation
+
+Rotate the OUTPUT, never the DOM. The web player rotates with a CSS transform — correct in a
+browser, wrong here: with `hwz` enabled the video decodes onto a hardware plane the DOM cannot
+transform, so a CSS rotation turns the images and widgets and leaves the video sideways on a
+portrait panel.
+
+`roVideoMode` takes a transform (`normal` / `90` / `180` / `270`) and rotating the screen rotates
+**every layer**, video included, because it happens below the compositor. The player asks the host
+first; when the host succeeds it clears its own CSS transform, or the graphics would rotate twice.
+If the host cannot, the CSS path stands — rotating most of the content beats rotating none.
+
+Tizen reached the same conclusion independently and routes portrait video through AVPlay, with the
+comment that a CSS-rotated `<video>` "blacks out". Any platform that composites video below the DOM
+needs its rotation done at the output, and this is the second one we have found.
+
 ## What is NOT done yet
 
 Stated plainly so nobody reads this as finished:

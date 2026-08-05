@@ -401,6 +401,36 @@
       });
     },
 
+    /*
+     * Rotate the physical output. Resolves true when the host rotated the screen itself, which is
+     * the only way video rotates on this platform: a CSS transform cannot touch the hardware plane
+     * the video decodes onto, so it would turn the images and widgets and leave the video alone.
+     *
+     * Resolves FALSE rather than rejecting when the host cannot do it — the caller then applies its
+     * CSS transform, which rotates most of the content instead of none of it.
+     */
+    setOrientation: function (orientation, timeoutMs) {
+      var self = this;
+      return new Promise(function (resolve) {
+        if (!port) { resolve(false); return; }
+        var settled = false;
+        var timer = global.setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          resolve(false);
+        }, timeoutMs || 8000);
+
+        listeners.push(function (msg) {
+          if (settled || !msg || msg.type !== 'orientation-result') return;
+          settled = true;
+          try { global.clearTimeout(timer); } catch (e) { /* ignore */ }
+          resolve(!!msg.ok);
+        });
+
+        post({ type: 'set-orientation', orientation: orientation });
+      });
+    },
+
     onHostMessage: function (fn) { if (typeof fn === 'function') listeners.push(fn); },
 
     /*

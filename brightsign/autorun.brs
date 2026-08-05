@@ -210,6 +210,45 @@ Sub TakeSnapshot(widget As Object, req As Object)
     widget.PostJSMessage({ type: "snapshot-result", ok: true, image: r.remotesnapshotthumbnail })
 End Sub
 
+' Rotate the OUTPUT, not the DOM.
+'
+' The web player rotates with a CSS transform, which is correct in a browser and wrong here: with
+' hwz enabled the video decodes onto a hardware plane the DOM cannot transform, so a CSS rotation
+' turns the images and widgets and leaves the video unrotated. Tizen hit this same wall and routes
+' portrait video through AVPlay for exactly this reason.
+'
+' roVideoMode takes a transform — normal/90/180/270 — and rotating the screen rotates EVERYTHING,
+' video included, because it happens below the compositor rather than above it.
+'
+' Reports success back to the page: if this fails, the page falls back to its CSS transform, which
+' rotates most of the content rather than none of it. Silently doing neither would leave a portrait
+' panel showing landscape content with no clue why.
+Sub SetOrientation(widget As Object, o As String)
+    transform$ = "normal"
+    if o = "portrait" then transform$ = "90"
+    if o = "portrait-flipped" then transform$ = "270"
+    if o = "landscape-flipped" then transform$ = "180"
+
+    vm = CreateObject("roVideoMode")
+    if vm = invalid then
+        widget.PostJSMessage({ type: "orientation-result", ok: false, error: "no roVideoMode" })
+        return
+    end if
+
+    mode$ = vm.GetMode()
+    if mode$ = invalid or mode$ = "" then mode$ = "1920x1080x60p"
+
+    ok = vm.SetMode(mode$, transform$)
+    if ok = invalid then ok = false
+
+    if ok then
+        print "[st] orientation "; o; " -> transform "; transform$
+    else
+        print "[st] orientation "; o; ": SetMode refused transform "; transform$
+    end if
+    widget.PostJSMessage({ type: "orientation-result", ok: ok, transform: transform$ })
+End Sub
+
 Function FullScreenRect() As Object
     vm = CreateObject("roVideoMode")
     return CreateObject("roRectangle", 0, 0, vm.GetResX(), vm.GetResY())
@@ -529,6 +568,9 @@ Sub Main()
                         SaveRegistry("server_url", m.server_url)
                         cfg.server_url = m.server_url
                     end if
+
+                else if m.type = "set-orientation" then
+                    if m.orientation <> invalid then SetOrientation(widget, m.orientation)
 
                 else if m.type = "snapshot" then
                     TakeSnapshot(widget, m)

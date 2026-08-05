@@ -394,3 +394,33 @@ test('with no host it rejects immediately rather than hanging the caller', async
   await ready;
   await assert.rejects(api.requestSnapshot(), /no host bridge/);
 });
+
+test('THE ROTATION BUG: setOrientation asks the host to rotate the OUTPUT', async () => {
+  // A CSS transform cannot touch the hardware plane the video decodes onto, so rotating in the DOM
+  // turns the images and widgets and leaves the video sideways. Tizen hit the same wall and routes
+  // portrait video through AVPlay. Here the fix is roVideoMode's transform, which rotates every
+  // layer because it happens below the compositor.
+  const { api, ready, posted, sandbox } = load({ mods: true });
+  await ready;
+  const p = api.setOrientation('portrait');
+  const req = posted.find((m) => m.type === 'set-orientation');
+  assert.ok(req, 'the host must be asked');
+  assert.equal(req.orientation, 'portrait');
+  sandbox.__deliver({ type: 'orientation-result', ok: true, transform: '90' });
+  assert.equal(await p, true, 'true means the caller must CLEAR its CSS transform, or it rotates twice');
+});
+
+test('a host that cannot rotate resolves false, so the caller keeps its CSS fallback', async () => {
+  // Rotating most of the content beats rotating none of it, and beats a promise that never settles.
+  const { api, ready, sandbox } = load({ mods: true });
+  await ready;
+  const p = api.setOrientation('portrait-flipped');
+  sandbox.__deliver({ type: 'orientation-result', ok: false, error: 'no roVideoMode' });
+  assert.equal(await p, false);
+});
+
+test('off-platform it resolves false immediately rather than hanging the render', async () => {
+  const { api, ready } = load();
+  await ready;
+  assert.equal(await api.setOrientation('portrait'), false);
+});
