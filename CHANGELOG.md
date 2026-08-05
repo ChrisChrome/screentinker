@@ -1,5 +1,62 @@
 # Changelog
 
+## 1.9.29-rc4
+
+### Fixed — the web player's offline cache was switched off at the URL everyone uses
+A service worker's default scope is its own directory, so `/player/sw.js` could only ever control
+`/player/` **and below** — which does not include `/player` itself. The player is served at all
+three of `/player`, `/player/` and `/player/index.html`, and `/player` is the one that gets used: it
+is what the dashboard shows and what gets typed into a panel. On that URL registration *succeeded*,
+logged "Service Worker registered", and then controlled nothing at all: no shell cache, no content
+cache, no offline playback, and no error to notice.
+
+Registration now asks for scope `/`, and the server sends `Service-Worker-Allowed` to permit it.
+Both halves are load-bearing — without the header the registration does not narrow, it fails
+outright. Found by driving a real browser at the player; no unit test could have seen it, because
+the bug lived entirely in the relationship between a URL and a header.
+
+### Fixed — screens went black on a bad link instead of playing cached content
+Reported from a one-bar 5G site. The offline playback path was never the problem: the cache could
+never be **filled**. Every download attempt started at byte 0 and the partial was deleted on any
+interruption, so an asset larger than one uninterrupted transfer was discarded and re-fetched
+forever — minutes of progress thrown away, back off, repeat. With nothing cached, the player showed
+its waiting state, which from across a room reads as a black screen.
+
+Downloads now resume: an interrupted transfer keeps its partial and asks for the rest with `Range`.
+Two ways that could corrupt a cache, both closed — `If-Range` makes a changed asset come back as a
+full body (restart) rather than a spliceable tail, and a partial longer than the asset is discarded
+on a 416. Bytes are kept only where they can be built upon: with no validator there is no safe
+resume, so the partial is dropped and the attempt backs off as the failure it is.
+
+### Added — every player now caches media for offline playback
+- **Tizen** cached nothing but the playlist, so a panel came back from a reboot knowing exactly what
+  to show and fetched every frame of it from a server that was not there. It now caches the media
+  itself to `wgt-private`, resumable, with the transfer asynchronous so a stalled chunk cannot
+  freeze the player. `offline.cache` is declared at runtime rather than assumed: a build with no
+  writable private storage still says nothing.
+- **The web player** (and BrightSign, which runs it) stored only what a single `fetch()` happened to
+  complete — nothing at all on a marginal link. It now accumulates in resumable chunks, driven by
+  the player's playlist rather than by playback, so the prefetch does not compete with the video on
+  screen for the same scarce bandwidth.
+
+### Fixed — replacing an asset could never reach a screen that had already cached it
+`PUT /api/content/:id/replace` changes an asset's bytes under a stable id, and every player caches
+by that id — so the new bytes could not reach a panel that already held the old ones. Not "until the
+next refresh": never. Content now carries a revision, stamped onto each item at send time, and every
+player keys its cache on it. The same send-time refresh fixes a second bug: a replace writes a new
+randomly-named file and unlinks the old one, so the filepath baked into a published playlist
+snapshot pointed at a **deleted** file, and web panels 404'd on that item until somebody thought to
+republish. The route now also pushes to affected devices, which it never did.
+
+Superseded copies are reclaimed rather than left for the quota: the player declares the complete set
+of media it needs and the worker drops everything else.
+
+### Added — capability declaration across all four players
+Each player declares what it can actually do at registration, and the dashboard stops offering
+controls that cannot work on that hardware. An absent declaration falls back to a per-platform
+baseline, so the displays already in the field keep their controls rather than losing them the
+moment this ships.
+
 ## 1.9.29-rc3
 
 ### Fixed — autorun.zip could not be opened by a player
