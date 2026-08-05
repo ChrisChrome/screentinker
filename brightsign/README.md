@@ -160,9 +160,29 @@ and the platform APIs:
 | `set_volume` | — | applied to current and future media |
 | `refresh` | `location.reload()` | widget rebuilt by the host (reload is unreliable here) |
 
-`displayPower()` is best effort and returns false when CEC is unavailable, so the overlay is
-applied either way and something visible always happens — some displays ignore broadcast CEC and
-need direct addressing. Volume is re-applied on every `play` event in the capture phase, because
+### ⚠️ Nothing in the DOM can cover video
+
+With `hwz_default: "on"` the widget decodes video onto a **hardware plane**, and the graphics plane
+— everything in the DOM — sits behind it. Blanking the screen took three attempts on real hardware,
+and each failure taught the same lesson from a different angle:
+
+1. **Black overlay** → the video played straight *through* it. A `z-index: 9999` div cannot cover a
+   hardware plane.
+2. **Pause + hide the element** → playback stopped, but the **last decoded frame stayed on screen**.
+   Hiding a DOM element does nothing to the plane; the plane is not part of the DOM.
+3. **Pause + `removeAttribute('src')` + `load()`** → releases the plane. Black at last.
+
+Coming back out re-mounts through `nextItem()`, because a torn-down element cannot be resurrected.
+The playlist keeps advancing while the screen is off, so each newly started item is torn down too,
+caught on the `play` event in the capture phase — otherwise the next video lights the panel back up.
+
+Any feature that assumes an overlay can hide video needs rethinking here: screen blanking, masking,
+fades over video.
+
+`displayPower()` (CEC) is best effort and deliberately **not** load-bearing — it returns false when
+CEC is unavailable and the media teardown does the real work. Our XT245 reports
+`failed to get cec clock` in the kernel log and does not respond to CEC at all, which is exactly why
+blanking must not depend on it. Plenty of displays ignore broadcast CEC or need direct addressing. Volume is re-applied on every `play` event in the capture phase, because
 media elements are created per item across several code paths and setting it once would otherwise
 last only until the playlist advanced.
 

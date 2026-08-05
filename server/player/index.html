@@ -1463,9 +1463,9 @@
       socket.on('device:command', (data) => {
         console.log('Command:', data.type);
         if (data.type === 'refresh') restartPlayer('operator refresh');
-        if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); setDisplayPower(true); }
+        if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); screenIsOff = false; suppressMedia(false); setDisplayPower(true); }
         if (data.type === 'screen_off') toggleScreenOff();
-        if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); setDisplayPower(true); }
+        if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); screenIsOff = false; suppressMedia(false); setDisplayPower(true); }
         // A browser tab cannot reboot its host, so the web player has always ignored this and the
         // dashboard button did nothing on it. A BrightSign can, through the host script.
         if (data.type === 'reboot') {
@@ -3506,16 +3506,55 @@
     // in the CAPTURE phase applies it to every element that ever starts, from one place. Media
     // events do not bubble, which is why capture is required rather than a plain listener.
     document.addEventListener('play', (e) => {
-      if (mediaVolume == null) return;
       const el = e.target;
       if (!el || (el.tagName !== 'VIDEO' && el.tagName !== 'AUDIO')) return;
+      // The playlist advances while the screen is off; hold each new item down as it starts,
+      // or the next video appears on the hardware plane and the screen lights back up.
+      if (screenIsOff) {
+        try { el.pause(); el.removeAttribute('src'); el.load(); el.style.visibility = 'hidden'; } catch (err) {}
+        return;
+      }
+      if (mediaVolume == null) return;
       try { if (typeof isWallFollower === 'function' && isWallFollower()) return; } catch (err) { /* not a wall */ }
       try { el.volume = mediaVolume; el.muted = mediaVolume === 0; } catch (err) { /* gone */ }
     }, true);
 
+    // Screen-off state, tracked because the playlist keeps advancing while the screen is "off"
+    // and every newly mounted item has to be held down too.
+    let screenIsOff = false;
+
+    // Stop media rather than cover it. On BrightSign the widget runs with hardware z-order
+    // (hwz), so video decodes onto a HARDWARE PLANE and a DOM overlay — which lives in the
+    // graphics plane — cannot hide it. The overlay goes up and the video plays straight through
+    // it. Pausing and hiding the element is what actually blanks the screen there, and it is
+    // harmless everywhere else.
+    function suppressMedia(off) {
+      if (!off) {
+        // Coming back: re-mount current content rather than trying to resurrect a torn-down
+        // element. nextItem() rebuilds from scratch, which is the same path a normal advance uses.
+        document.querySelectorAll('video, audio').forEach((el) => { try { el.style.visibility = ''; } catch (e) {} });
+        try { if (typeof nextItem === 'function') nextItem(); } catch (e) { /* fall back to whatever is on screen */ }
+        return;
+      }
+      document.querySelectorAll('video, audio').forEach((el) => {
+        try {
+          el.pause();
+          // Pausing is not enough on a hardware plane: the last decoded frame STAYS on screen,
+          // which is why the panel showed a frozen image rather than going black. Tearing the
+          // source down releases the plane. Hiding the element does nothing to it either — the
+          // plane is not part of the DOM.
+          el.removeAttribute('src');
+          el.load();
+          el.style.visibility = 'hidden';
+        } catch (e) { /* element torn down mid-call */ }
+      });
+    }
+
     function toggleScreenOff() {
       let overlay = document.getElementById('screenOffOverlay');
-      if (overlay) { overlay.remove(); setDisplayPower(true); return; }
+      if (overlay) { overlay.remove(); screenIsOff = false; suppressMedia(false); setDisplayPower(true); return; }
+      screenIsOff = true;
+      suppressMedia(true);
       setDisplayPower(false);
       overlay = document.createElement('div');
       overlay.id = 'screenOffOverlay';
