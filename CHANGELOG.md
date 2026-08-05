@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.9.29-rc3
+
+### Fixed — autorun.zip could not be opened by a player
+Reported from a real automated deployment: the rc2 archive reached the player and was rejected as
+invalid. Two causes, both ours.
+
+- **The archive must be STORED, not compressed.** The player bootstrap extracts `autozip.brs` by
+  itself before any script runs, and `roBrightPackage` supports a specific set of methods, of which
+  "no compression" is the universally safe one. Both builders now store — and the server-side
+  package builder had been using maximum deflate, so **every self-update package it produced would
+  have failed the same way**, silently and in the field.
+- **`roBrightPackage`, not `roUnzip`**, is the supported reader. Converted in `autozip.brs` and in
+  the self-update path.
+
+Both builders now assert the property instead of trusting the flag: the build script refuses a
+compressed member, and a test walks the archive's local file headers. A compressed package uploads,
+downloads and deploys perfectly and only then fails to open, which reads as a broken deployment
+rather than a broken zip.
+
+`autozip.brs` also adopts the shipped volume-discovery pattern — probe `USB1:`/`SD:`/`SSD:`/`FLASH:`
+for the archive rather than guessing, since a player may boot from internal flash.
+
+### Fixed — muting never reached a YouTube item
+A YouTube item is a cross-origin iframe, so `el.muted` reaches nothing. The two browser-family
+players failed in opposite directions: the web player consulted autoplay policy and nothing else, so
+an item muted in the admin console **played with sound** and a wall follower blared alongside its
+leader; Tizen hardcoded `mute=1`, so YouTube there was **permanently silent** and no toggle could
+change it. Android was already correct. The rule now lives once in `server/lib/media-mute.js`, and
+the unmute prompt no longer appears on an item an operator deliberately muted.
+
+### Fixed — screenshots reported success while sending blank frames
+Capture marked itself successful because the draw did not throw. On a hardware plane
+`drawImage(video)` returns a fully transparent image and throws nothing, so the dashboard showed a
+dead screen while the panel played perfectly. Capture is now proven by an alpha probe, so a genuine
+fade-to-black still reads as captured.
+
+### Added
+- **BrightSign native synchronisation**, wired end to end and chosen per group, reusing the existing
+  leader election. A group whose leader is offline falls back to the clock protocol rather than
+  waiting for an announcement that never comes.
+- **Real telemetry and hardware identity** — temperature, player storage, model, OS version, serial
+  and output index — instead of a block of nulls and a `wifi_ssid` of "Web Player" on a PoE
+  appliance.
+- **Offline content caching** with correct range-request handling, and a **package self-update**
+  whose version is stamped into `autorun.brs` at build time — unstamped, a player applies an update,
+  still reports the old version, and is offered it forever.
+- **Command parity**: real `reboot`, real display blanking, and `set_volume` on BrightSign.
+
+### Removed
+- The `user_agent` fallback in BrightSign detection. `devices` has no such column, so the branch was
+  unreachable and passed only in a test that fabricated the field.
+
 ## 1.9.29-rc2
 
 Fixes for three things rc1 only revealed once it was deployed and pointed at real hardware.
