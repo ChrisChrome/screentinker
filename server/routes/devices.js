@@ -8,6 +8,7 @@ const { accessContext } = require('../lib/tenancy');
 const { stripDeviceSecrets, stripDeviceSecretsForList } = require('../lib/device-sanitize');
 const { layoutZones, orphanCountsByDevice } = require('../lib/zone-validate');
 const deviceSettings = require('../lib/device-settings'); // #150 delete+re-pair settings preservation
+const playerCapabilities = require('../lib/player-capabilities');
 
 // List devices in the caller's current workspace.
 // Phase 2.2a: filter by workspace_id instead of user_id. The caller's current
@@ -171,7 +172,13 @@ router.get('/:id', (req, res) => {
     'SELECT reported_at FROM device_telemetry WHERE device_id = ? AND reported_at > ? ORDER BY reported_at ASC'
   ).all(req.params.id, dayAgo).map(r => r.reported_at);
 
-  res.json({ ...stripDeviceSecrets(device), telemetry, screenshot, assignments, active_layout_zones, playlist_status, playlist_has_published, uptimeData, statusLog, deviceEvents });
+  // The RESOLVED capability set, not the raw column. The dashboard hides controls a panel cannot
+  // honour, and it must not have to know about the baseline fallback — a legacy device declaring
+  // nothing has to arrive at the dashboard looking exactly like one that declared its baseline,
+  // or ~440 existing displays lose their controls the moment this ships.
+  const capabilities = playerCapabilities.capabilitiesFor(device);
+
+  res.json({ ...stripDeviceSecrets(device), capabilities, telemetry, screenshot, assignments, active_layout_zones, playlist_status, playlist_has_published, uptimeData, statusLog, deviceEvents });
 });
 
 // Helper: check device write access via the workspace the device belongs to.

@@ -246,6 +246,7 @@ export default {
   'dashboard.toast.playlist_assigned_other': 'Playlist assigned to {n} devices',
   'dashboard.toast.command_sent': '{cmd} sent to {sent}/{total} devices',
   'dashboard.toast.command_sent_with_offline': '{cmd} sent to {sent}/{total} devices ({offline} offline)',
+  'dashboard.toast.command_unsupported_n': '{n} skipped — their players do not support it.',
 
   // Content library
   'content.title': 'Content Library',
@@ -669,6 +670,11 @@ export default {
   'device.toast.command_queued': '{cmd} — device offline, will deliver on reconnect',
   'device.toast.command_undeliverable': '{cmd} — device offline and queue unavailable',
   'device.toast.command_no_ack': '{cmd} — no server response',
+  'device.toast.command_unsupported': '{cmd} — this player does not support it ({cap}). Reload the page to refresh the controls.',
+  'device.caps.title': 'Player capabilities',
+  'device.caps.declared': 'Reported by the player itself. Controls this display cannot honour are hidden.',
+  'device.caps.assumed': 'This player has not reported its capabilities, so the defaults for its platform are assumed. They update the next time it connects.',
+  'device.caps.none': 'The player reports it can do nothing.',
 
   // Settings
   'settings.title': 'Settings',

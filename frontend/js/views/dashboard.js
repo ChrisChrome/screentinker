@@ -927,10 +927,17 @@ function attachGroupHandlers(groupsWithDevices, allDevices) {
 
       try {
         const result = await api.sendGroupCommand(groupId, type);
-        const msg = result.offline > 0
+        // A group is routinely mixed-platform, so these buttons stay visible — "reboot" is
+        // meaningful for the Android panels in the group even when the web players in it can
+        // never honour it. What must not happen is the toast counting those as sent: the
+        // operator would walk away believing the whole group rebooted.
+        let msg = result.offline > 0
           ? t('dashboard.toast.command_sent_with_offline', { cmd: cmdLabel, sent: result.sent, total: result.total, offline: result.offline })
           : t('dashboard.toast.command_sent', { cmd: cmdLabel, sent: result.sent, total: result.total });
-        showToast(msg, result.offline > 0 ? 'warning' : 'success');
+        if (result.unsupported > 0) {
+          msg += ' ' + t('dashboard.toast.command_unsupported_n', { n: result.unsupported });
+        }
+        showToast(msg, (result.offline > 0 || result.unsupported > 0) ? 'warning' : 'success');
       } catch (err) {
         showToast(err.message, 'error');
       }

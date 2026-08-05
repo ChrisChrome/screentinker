@@ -4,6 +4,7 @@ const { db } = require('../db/database');
 const { accessContext, accessibleWorkspaceIds } = require('../lib/tenancy');
 const { workspaceRoom } = require('../lib/socket-rooms');
 const { protectSocket } = require('../lib/safe-socket');
+const playerCapabilities = require('../lib/player-capabilities');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -121,6 +122,22 @@ module.exports = function setupDashboardSocket(io) {
         if (typeof ack === 'function') ack({ delivered: false, reason: 'forbidden' });
         return;
       }
+
+      // Hiding the button is not enforcement. This socket is reachable directly, group sends fan
+      // out to mixed-platform fleets, and an older dashboard tab left open still renders the old
+      // controls. A command the panel cannot honour is refused HERE, with the capability named, so
+      // it fails loudly instead of being delivered and silently ignored — which is the failure
+      // this whole mechanism exists to end.
+      const devRow = db.prepare('SELECT * FROM devices WHERE id = ?').get(device_id);
+      const verdict = playerCapabilities.commandAllowed(devRow, type);
+      if (!verdict.ok) {
+        console.warn(`Command ${type} refused for device ${device_id}: needs ${verdict.capability}`);
+        if (typeof ack === 'function') {
+          ack({ delivered: false, reason: 'unsupported', capability: verdict.capability });
+        }
+        return;
+      }
+
       const room = deviceNs.adapter.rooms.get(device_id);
       if (room && room.size > 0) {
         deviceNs.to(device_id).emit('device:command', { type, payload });

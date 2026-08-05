@@ -31,7 +31,7 @@ const CAPABILITIES = [
   // audio
   'audio.mute', 'audio.volume',
   // display
-  'display.rotation', 'display.power', 'display.resolution',
+  'display.rotation', 'display.power', 'display.resolution', 'display.brightness',
   // remote view / control
   'remote.screenshot', 'remote.stream', 'remote.input',
   // lifecycle
@@ -39,6 +39,12 @@ const CAPABILITIES = [
   // device management (Android device-owner territory)
   'system.kiosk', 'system.brightness', 'system.screen_timeout',
   'system.install_apk', 'system.shell', 'system.time',
+  // The rest of the Tier-2 surface: lock the screen now, show the power menu, hide the status
+  // bar, block uninstall. Separate from 'system.kiosk' because kiosk means lock-task specifically
+  // and a panel can hold one without the other — and separate from the individual names above
+  // because these four are only ever available together, gated by the same device-owner check.
+  // Runtime state, not a platform fact: a panel that loses device owner loses all of them.
+  'system.device_owner',
   // synchronisation
   'sync.clock', 'sync.native',
   // resilience
@@ -60,7 +66,7 @@ const BASELINE = {
     'playback.video', 'playback.image', 'playback.widget', 'playback.youtube',
     'playback.zones', 'playback.transitions', 'playback.pip',
     'audio.mute', 'audio.volume',
-    'display.rotation', 'display.power',
+    'display.rotation', 'display.power', 'display.brightness',
     'remote.screenshot', 'remote.stream', 'remote.input',
     'system.reboot', 'system.restart_player', 'system.self_update',
     'sync.clock', 'offline.cache',
@@ -166,4 +172,82 @@ function parseDeclared(raw) {
   return list.filter((c) => CAP_SET.has(c));
 }
 
-module.exports = { CAPABILITIES, CAP_SET, BASELINE, capabilitiesFor, supports, platformFamily, parseDeclared };
+/*
+ * Which capability a fleet command needs.
+ *
+ * The dashboard and the socket layer both dispatch commands by string name, so the check has to
+ * happen against that name or it does not happen at all. Kept here rather than in the socket
+ * handler because two call sites dispatch commands — dashboardSocket for a single device and the
+ * group route for many — and a map that lives in one of them protects only that one.
+ *
+ * A command mapped to null needs no capability: it is a diagnostic every player understands, and
+ * refusing it would remove the tool you use to work out why a panel is misbehaving.
+ */
+const COMMAND_CAPABILITY = {
+  // lifecycle
+  reboot: 'system.reboot',
+  // Power-off shares the reboot capability: it is the same "device power lifecycle" privilege, and
+  // no platform we ship implements one without the other. Split it if that ever stops being true.
+  shutdown: 'system.reboot',
+  launch: 'system.restart_player',
+  refresh: 'system.restart_player',
+  update: 'system.self_update',
+
+  // display
+  screen_on: 'display.power',
+  screen_off: 'display.power',
+
+  // audio
+  set_volume: 'audio.volume',
+
+  // system control (#160 Track-A)
+  set_brightness: 'display.brightness',       // per-window overlay dim (Tier 0)
+  set_system_brightness: 'system.brightness',
+  set_screen_timeout: 'system.screen_timeout',
+
+  // device-owner surface (#161 Tier-2)
+  kiosk_lock: 'system.kiosk',
+  kiosk_unlock: 'system.kiosk',
+  lock_now: 'system.device_owner',
+  power_menu: 'system.device_owner',
+  status_bar: 'system.device_owner',
+  block_uninstall: 'system.device_owner',
+  unblock_uninstall: 'system.device_owner',
+  set_time: 'system.time',
+  set_timezone: 'system.time',
+  shell: 'system.shell',
+  install_apk: 'system.install_apk',
+
+  // remote view
+  enable_system_capture: 'remote.screenshot',
+
+  // Diagnostics: deliberately unrestricted. set_debug turns on the log stream you need precisely
+  // when a panel is behaving in a way its capability declaration did not predict.
+  set_debug: null,
+};
+
+/**
+ * The capability a command requires, or null when it needs none.
+ * Unknown commands also return null — this map gates, it does not authorise: the allow-list of
+ * valid command names lives with the routes, and duplicating it here would mean a new command
+ * silently stops working until someone remembers to add it in two places.
+ */
+function capabilityForCommand(type) {
+  return Object.prototype.hasOwnProperty.call(COMMAND_CAPABILITY, type) ? COMMAND_CAPABILITY[type] : null;
+}
+
+/**
+ * Can this device be sent this command?
+ * @returns {{ok: true} | {ok: false, capability: string}}
+ */
+function commandAllowed(device, type) {
+  const cap = capabilityForCommand(type);
+  if (!cap) return { ok: true };
+  if (supports(device, cap)) return { ok: true };
+  return { ok: false, capability: cap };
+}
+
+module.exports = {
+  CAPABILITIES, CAP_SET, BASELINE, capabilitiesFor, supports, platformFamily, parseDeclared,
+  COMMAND_CAPABILITY, capabilityForCommand, commandAllowed,
+};

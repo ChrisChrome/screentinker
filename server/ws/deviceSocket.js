@@ -17,6 +17,7 @@ const flapLimiter = require('../lib/flap-limiter');
 const sessionSettle = require('../lib/session-settle');   // #148 patch2: eviction-storm debounce
 const { resolveIdentity } = require('../lib/device-identity');
 const { resolveSyncBackend } = require('../lib/sync-backend');
+const capsLib = require('../lib/player-capabilities');
 const logCoalescer = require('../lib/log-coalescer');
 const loopLag = require('../services/loop-lag');
 const deviceSettings = require('../lib/device-settings'); // #150 delete+re-pair settings restore
@@ -139,6 +140,32 @@ function applyHardwareIdentity(deviceId, data) {
       output_index        = COALESCE(?, output_index)
     WHERE id = ?`)
     .run(model, serial, osVersion, output, deviceId);
+}
+
+/*
+ * Persist what the player says it can do.
+ *
+ * Written on every register rather than change-detected like persistIdentity, because the set is
+ * RUNTIME state, not identity: an Android panel gains remote.screenshot the moment accessibility
+ * is switched on and loses the device-owner commands if it is demoted, with no reconnect and no
+ * version change to notice. A stale set here means the dashboard hides a control the panel now
+ * has, or offers one it just lost — the exact failure this whole mechanism exists to prevent.
+ *
+ * ⚠️ An absent field must leave the column ALONE. A player that does not declare (every device in
+ * the field today, and any older build after an upgrade) has to keep falling back to its platform
+ * baseline; writing NULL would be the same outcome but writing '[]' would strip its entire UI.
+ * Those two are one typo apart, which is why the guard is explicit rather than a COALESCE.
+ */
+function applyCapabilities(deviceId, data) {
+  const raw = data && (data.capabilities ?? (data.device_info && data.device_info.capabilities));
+  if (raw === undefined || raw === null) return;      // never declared — baseline stands
+  if (!Array.isArray(raw)) return;                    // malformed — keep whatever we had
+
+  // Store only names this server understands, so an unknown capability from a newer player cannot
+  // grow the column unboundedly. parseDeclared does the same filtering on read; doing it on write
+  // as well keeps the stored value honest about what the server will actually act on.
+  const known = raw.filter((c) => capsLib.CAP_SET.has(c));
+  db.prepare('UPDATE devices SET capabilities = ? WHERE id = ?').run(JSON.stringify(known), deviceId);
 }
 
 function generateDeviceToken() {
@@ -866,6 +893,9 @@ module.exports = function setupDeviceSocket(io) {
           // register payload, not device_info, so the emptiness guard above does not apply to
           // them. The function no-ops when the panel reports none of them.
           applyHardwareIdentity(device_id, data);
+          // Same reasoning, same unconditional call: capabilities ride the top level and the
+          // function no-ops when the panel declares nothing.
+          applyCapabilities(device_id, data);
 
           heartbeat.registerConnection(device_id, socket.id);
           // #134: a same-socket re-register is a playlist REFRESH (~45-60s), NOT a reconnect and NOT
