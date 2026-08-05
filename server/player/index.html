@@ -3307,6 +3307,45 @@
       catch (e) { return false; }
     }
 
+    // Did drawImage actually put pixels on the canvas, or did it silently draw nothing?
+    //
+    // isMediaReadable() above answers "are we ALLOWED to read this" (same-origin / CORS). It does
+    // not answer "did any pixels arrive", and those are different questions. On BrightSign with
+    // hwz enabled, video decodes onto a HARDWARE PLANE outside the browser compositor — per
+    // BrightSign's own docs the HTML/JS layer "doesn't see the pixels" — so drawImage(video)
+    // yields a fully TRANSPARENT image and throws nothing. Chromium 87 fails the same way.
+    //
+    // The old code set captured/drawn = true purely because drawMediaFit() had not thrown, so a
+    // BrightSign emitted a BLANK screenshot and logged success: the dashboard showed a dead screen
+    // while the panel was playing perfectly. That is the "reports success and changes nothing"
+    // shape, and it is why this probes instead of assuming.
+    //
+    // ALPHA is the discriminator, not colour. A scratch canvas starts fully transparent, and a real
+    // decoded frame writes alpha=255 even when the frame is pure black — so a legitimate
+    // fade-to-black still reads as captured, while "nothing arrived" reads as not captured.
+    function videoFrameIsCapturable(video) {
+      if (!video) return false;
+      let pctx;
+      try {
+        const probe = document.createElement('canvas');
+        probe.width = 16; probe.height = 16;   // a 16x16 probe at 1fps is free; no full-size draw
+        pctx = probe.getContext('2d');
+        if (!pctx) return false;
+        pctx.drawImage(video, 0, 0, 16, 16);
+      } catch (e) {
+        return false;                          // the draw itself failed - nothing landed
+      }
+      try {
+        const data = pctx.getImageData(0, 0, 16, 16).data;
+        for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return true;
+        return false;
+      } catch (e) {
+        // SecurityError means the canvas was TAINTED, and tainting only happens once cross-origin
+        // pixels have actually been drawn. So this is evidence of success, not failure.
+        return true;
+      }
+    }
+
     function zonePlaceholderLabel(el) {
       if (!el) return 'Live';
       if (el.tagName === 'IFRAME') {
@@ -3360,7 +3399,15 @@
         if (el && el.tagName === 'IMG' && el.complete && el.naturalWidth > 0 && isMediaReadable(el)) {
           try { drawMediaFit(ctx, el, el.naturalWidth, el.naturalHeight, dx, dy, dw, dh, getComputedStyle(el).objectFit); drawn = true; } catch (e) {}
         } else if (el && el.tagName === 'VIDEO' && el.readyState >= 2 && el.videoWidth > 0 && isMediaReadable(el)) {
-          try { drawMediaFit(ctx, el, el.videoWidth, el.videoHeight, dx, dy, dw, dh, getComputedStyle(el).objectFit); drawn = true; } catch (e) {}
+          // Probe FIRST. On a hardware video plane the draw succeeds and paints nothing, which
+          // would leave a black rectangle here instead of the labelled placeholder this function
+          // was written to guarantee ("never a transparent hole").
+          if (videoFrameIsCapturable(el)) {
+            try { drawMediaFit(ctx, el, el.videoWidth, el.videoHeight, dx, dy, dw, dh, getComputedStyle(el).objectFit); drawn = true; } catch (e) {}
+          } else {
+            drawZonePlaceholder(ctx, dx, dy, dw, dh, 'Video (not capturable)');
+            drawn = true;   // handled - don't also draw the generic placeholder below
+          }
         }
         if (!drawn) drawZonePlaceholder(ctx, dx, dy, dw, dh, zonePlaceholderLabel(el));
       });
@@ -3381,6 +3428,10 @@
       const ctx = canvas.getContext('2d');
       const W = canvas.width, H = canvas.height;
       let captured = false;
+      // Set when a video IS on screen and playing but its pixels are unreachable (hardware plane).
+      // Deliberately distinct from "no content": the operator needs to know the panel is healthy
+      // and it is the CAPTURE that is limited.
+      let videoUncapturable = false;
 
       try {
         const multiZone = !!(layout && Array.isArray(layout.zones) && layout.zones.length > 1 && !wallConfig);
@@ -3392,7 +3443,13 @@
           const video = container.querySelector('video');
           const img = container.querySelector('img');
           if (video && video.readyState >= 2 && video.videoWidth > 0 && isMediaReadable(video)) {
-            try { drawMediaFit(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, getComputedStyle(video).objectFit); captured = true; } catch (e) { console.warn('Video capture failed (CORS?):', e.message); }
+            if (videoFrameIsCapturable(video)) {
+              try { drawMediaFit(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, getComputedStyle(video).objectFit); captured = true; } catch (e) { console.warn('Video capture failed (CORS?):', e.message); }
+            } else {
+              // Playing fine, simply not readable from the DOM. Fall through to the status card
+              // and SAY so, rather than emitting a black frame that reads as a dead screen.
+              videoUncapturable = true;
+            }
           }
           if (!captured && img && img.complete && img.naturalWidth > 0 && isMediaReadable(img)) {
             try { drawMediaFit(ctx, img, img.naturalWidth, img.naturalHeight, 0, 0, W, H, getComputedStyle(img).objectFit); captured = true; } catch (e) { console.warn('Image capture failed:', e.message); }
@@ -3412,6 +3469,11 @@
           const item = playlist[currentIndex];
           ctx.fillText(item ? `Playing: ${item.filename}` : 'No content', W / 2, H / 2);
           ctx.fillText(`${config.deviceName || 'Web Player'} | ${new Date().toLocaleTimeString()}`, W / 2, H / 2 + 40);
+          if (videoUncapturable) {
+            // A limitation of the CAPTURE must never read as a fault on the SCREEN.
+            ctx.fillStyle = '#fbbf24';
+            ctx.fillText('Video is playing on the hardware plane and cannot be captured', W / 2, H / 2 + 72);
+          }
         }
       } catch (e) {
         // Even on error, draw something
