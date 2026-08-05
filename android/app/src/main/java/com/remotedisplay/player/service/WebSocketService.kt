@@ -596,8 +596,18 @@ class WebSocketService : Service() {
                                 }
                             } catch (e: Throwable) { Log.e("WebSocketService", "screen_off: ${e.message}") }
                         }
-                        // No privileged wake on a non-rooted panel (keyevent 224 was denied); retired.
-                        "screen_on" -> Log.w("WebSocketService", "screen_on: no privileged wake path — no-op")
+                        // Was a no-op because `input keyevent 224` is denied to an app UID — but a
+                        // wake LOCK is a different mechanism needing only WAKE_LOCK, which we hold.
+                        // Handled here as well as in MainActivity so a panel whose Activity is not
+                        // foregrounded can still be woken; the service is the only thing guaranteed
+                        // to be alive, and "screen won't come back on" means a site visit.
+                        "screen_on" -> {
+                            val woke = com.remotedisplay.player.system.SystemControl(applicationContext).wakeScreen()
+                            Log.i("WebSocketService", "screen_on: wake=$woke")
+                            // Bring the player back in front of the keyguard too. Same fail-loud
+                            // reasoning as Relauncher: waking to a lock screen is only half a fix.
+                            handler.post { try { onCommand?.invoke("screen_on", payload) } catch (_: Throwable) {} }
+                        }
                         "set_debug" -> {
                             val on = payload?.optBoolean("enabled", false) ?: false
                             // Point the sink at this socket, then flip the flag. When on,
@@ -657,6 +667,12 @@ class WebSocketService : Service() {
             put("client_version", deviceInfo.getAppVersion())
             put("platform", "Android " + android.os.Build.VERSION.RELEASE)
             put("contract_version", "v4")
+            // What this panel can actually do, so the dashboard stops offering controls that
+            // cannot work on it. Recomputed on EVERY register rather than cached: accessibility
+            // gets switched on months after install, device owner arrives via provisioning, and
+            // WRITE_SETTINGS can be revoked — a value captured once would be wrong on the same
+            // hardware from one boot to the next.
+            put("capabilities", com.remotedisplay.player.telemetry.PlayerCapabilities.declare(this@WebSocketService))
         } catch (e: Throwable) { Log.w("WebSocketService", "identity: ${e.message}") }
     }
 

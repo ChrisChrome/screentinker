@@ -107,8 +107,12 @@ class DeviceInfo(private val context: Context) {
         Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 0)
     } catch (_: Throwable) { 0 }
 
-    /** #160: is OUR accessibility service currently enabled (drives remote-control availability). */
-    private fun isAccessibilityEnabled(): Boolean = try {
+    /**
+     * #160: is OUR accessibility service currently enabled (drives remote-control availability).
+     * Internal rather than private because the capability declaration asks the same question, and
+     * a second copy of this check would drift from the telemetry the dashboard shows beside it.
+     */
+    internal fun isAccessibilityEnabled(): Boolean = try {
         val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
             as android.view.accessibility.AccessibilityManager
         val mine = android.content.ComponentName(context,
