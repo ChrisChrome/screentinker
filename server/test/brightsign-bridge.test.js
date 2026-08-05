@@ -215,3 +215,33 @@ test('a rejected registry read still lets the player boot', async () => {
   await ready;
   assert.doesNotThrow(() => api.deviceId());
 });
+
+test('THE DUPLICATE-ROW BUG: the token is persisted alongside the id', async () => {
+  // Persisting device_id alone looked correct and still spawned a new device row on every boot:
+  // the server authenticates a claim to an existing display with the TOKEN, so an id presented
+  // without one reads as a brand-new display. Found on an XT245, not in a test — hence this one.
+  const { api, ready } = load({ mods: true });
+  await ready;
+  api.setIdentity('dev-9', 'https://alpha.screentinker.com', 'tok-abc123');
+  assert.equal(api.deviceId(), 'dev-9');
+  assert.equal(api.deviceToken(), 'tok-abc123', 'without this the display re-pairs every boot');
+});
+
+test('an id with no token is still stored — it is better than nothing', async () => {
+  // An unpaired display has no token yet; the server issues one at pairing. Storing the id alone
+  // must not throw or wipe anything.
+  const { api, ready } = load({ mods: true });
+  await ready;
+  api.setIdentity('dev-10', null, null);
+  assert.equal(api.deviceId(), 'dev-10');
+  assert.equal(api.deviceToken(), null);
+});
+
+test('clearIdentity forgets the token too, or the reset leaks a credential', async () => {
+  const { api, ready } = load({ mods: true });
+  await ready;
+  api.setIdentity('dev-11', null, 'tok-xyz');
+  api.clearIdentity();
+  assert.equal(api.deviceId(), null);
+  assert.equal(api.deviceToken(), null, 'a stale token must not outlive the identity it belongs to');
+});

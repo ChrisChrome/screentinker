@@ -102,7 +102,11 @@
    * which would register a "[object Promise]" display.
    */
   var SECTION = 'screentinker';
-  var CACHED_KEYS = ['device_id', 'server_url', 'sync_backend'];
+  // device_token belongs here as much as device_id: the server authenticates the claim to an
+  // existing display with the token, so an id presented without one reads as a NEW display and
+  // gets a fresh row. Persisting the id alone looked correct and still spawned a duplicate on
+  // every boot — found on hardware, not in a test.
+  var CACHED_KEYS = ['device_id', 'device_token', 'server_url', 'sync_backend'];
   var cache = {};
   var ready = false;
   var readyWaiters = [];
@@ -238,11 +242,16 @@
       try { return global.localStorage.getItem('st_device_id'); } catch (e) { return null; }
     },
 
+    /* The credential that proves this player IS that display. Useless without deviceId, and
+       deviceId is useless without it. */
+    deviceToken: function () { return regGet('device_token', null); },
+
     /* Called once pairing completes, so a reboot comes back as the same display. */
-    setIdentity: function (deviceId, serverUrl) {
+    setIdentity: function (deviceId, serverUrl, deviceToken) {
       var values = {};
       if (deviceId) values.device_id = deviceId;
       if (serverUrl) values.server_url = serverUrl;
+      if (deviceToken) values.device_token = deviceToken;
       regSet(values);
       post({ type: 'identity', device_id: deviceId || null, server_url: serverUrl || null });
     },
@@ -253,7 +262,7 @@
      * the same identity on its next boot — a reset that resets nothing.
      */
     clearIdentity: function () {
-      regSet({ device_id: '' });
+      regSet({ device_id: '', device_token: '' });
       return post({ type: 'identity', clear: true });
     },
 

@@ -371,7 +371,14 @@
       if (BS && !cfg.deviceId) {
         try {
           const known = BS.deviceId();
-          if (known) { cfg.deviceId = known; cfg.paired = true; }
+          if (known) {
+            cfg.deviceId = known;
+            // Without the token the server cannot verify the claim and issues a NEW display,
+            // so the id alone is not an identity.
+            const tok = BS.deviceToken();
+            if (tok) cfg.deviceToken = tok;
+            cfg.paired = true;
+          }
         } catch (e) { /* registry unavailable — carry on unpaired */ }
       }
       return cfg;
@@ -381,7 +388,7 @@
       // Mirror identity into the registry so it survives a reboot, a content update or a storage
       // wipe. Best-effort by design: failing to persist here must never break pairing itself.
       if (BS && cfg && cfg.deviceId) {
-        try { BS.setIdentity(cfg.deviceId, cfg.serverUrl || null); } catch (e) { /* ignore */ }
+        try { BS.setIdentity(cfg.deviceId, cfg.serverUrl || null, cfg.deviceToken || null); } catch (e) { /* ignore */ }
       }
     }
     const PLAYLIST_CACHE_KEY = 'rd_playlist_cache' + SCREEN_SUFFIX;
@@ -1165,8 +1172,10 @@
             const known = BS.deviceId();
             if (known && !config.deviceId) {
               config.deviceId = known;
+              const tok = BS.deviceToken();
+              if (tok) config.deviceToken = tok;
               config.paired = true;
-              console.log('[bs] adopted identity from registry:', known);
+              console.log('[bs] adopted identity from registry:', known, tok ? '(with token)' : '(NO TOKEN — will re-pair)');
             }
           } catch (e) { /* carry on unpaired rather than not at all */ }
           connect(serverUrl);
