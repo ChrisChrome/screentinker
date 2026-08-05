@@ -15,7 +15,7 @@
   // packaged config.xml via the Tizen application API; fall back to a constant that
   // build-wgt.sh stamps from config.xml's version="" so the dashboard always shows the
   // version that is actually installed (never the old hardcoded '1.0.0').
-  var APP_VERSION_FALLBACK = '1.9.11'; // st:app-version — stamped by build-wgt.sh
+  var APP_VERSION_FALLBACK = '1.9.29'; // st:app-version — stamped by build-wgt.sh
   var APP_VERSION = (function () {
     try {
       var v = tizen.application.getCurrentApplication().appInfo.version;
@@ -388,6 +388,12 @@
       // independent of (and in addition to) the panel API.
       if (type === 'screen_on' || type === 'launch') { clearScreenOff(); keepAwake(); }
 
+      // Volume is handled here, not in STDeviceControl: it is not a Samsung fleet-control action
+      // and it must work on EVERY build, not only a partner-signed panel. Previously it fell
+      // through to STDeviceControl's default case and was answered "unknown command" — the
+      // dashboard slider did nothing on Tizen at all.
+      if (type === 'set_volume') { applyVolume(payload); return; }
+
       if (!window.STDeviceControl) { reportCmd('error', type, 'device-control unavailable'); return; }
       STDeviceControl.run(type, payload).then(function (res) {
         var note = res.note;
@@ -477,6 +483,12 @@
     msg.client_version = APP_VERSION;             // config.xml version (stamped by build-wgt.sh)
     msg.platform = 'Tizen ' + (tizenVersion() || '');
     msg.contract_version = 'v4';
+    // What this player can ACTUALLY do, probed at runtime (js/capabilities.js). The dashboard hides
+    // every control we do not declare, so a Tizen panel stops showing buttons for things the
+    // platform cannot honour. Omitted entirely if the module failed to load: the server then falls
+    // back to its per-platform baseline, which is the right behaviour for an older .wgt and much
+    // better than declaring an empty set, which would read as "supports nothing".
+    try { if (window.STCapabilities) msg.capabilities = STCapabilities.detect(); } catch (e) {}
     if (deviceId && deviceToken) { msg.device_id = deviceId; msg.device_token = deviceToken; }
     else { msg.pairing_code = pairingCode(); }
     socket.emit('device:register', msg);
@@ -508,16 +520,84 @@
   // ---- remote control + dashboard preview (#120 / #121) ----
   // Screen on/off uses a black overlay (a sideloaded web app can't power the panel
   // off cleanly), mirroring the web player.
+  // Volume, 0-100 from the dashboard.
+  //
+  // Prefers tizen.tvaudiocontrol — that is the TV's OWN volume, so it applies to whatever is
+  // playing including AVPlay video, which lives on a hardware plane the media elements know
+  // nothing about. Setting el.volume alone would leave portrait video at full blast.
+  //
+  // Falls back to the media elements where the TV profile is absent (URL-Launcher / browser
+  // context), and remembers the level so items mounted LATER inherit it — media elements are
+  // created per item, so a one-shot set would last only until the playlist advanced.
+  var mediaVolume = null;   // 0..1, null = never set
+  function applyVolume(payload) {
+    var pct = payload && (payload.value !== undefined ? payload.value : payload.volume);
+    var n = Number(pct);
+    if (!isFinite(n)) { reportCmd('warn', 'set_volume', 'no usable value in payload'); return; }
+    n = Math.max(0, Math.min(100, n));
+    mediaVolume = n / 100;
+
+    var tv = null;
+    try { tv = window.STCapabilities ? STCapabilities.tvAudio() : null; } catch (e) {}
+    if (tv) {
+      try {
+        tv.setVolume(Math.round(n));
+        reportCmd('info', 'set_volume', 'TV volume set to ' + Math.round(n) + '% (tvaudiocontrol)');
+        return;
+      } catch (e) {
+        // Fall through to the media elements rather than reporting success for nothing.
+        reportCmd('warn', 'set_volume', 'tvaudiocontrol refused (' + (e && e.message ? e.message : e) + ') — using media volume');
+      }
+    }
+    applyMediaVolume();
+    reportCmd('info', 'set_volume', 'media volume set to ' + Math.round(n) + '%');
+  }
+  function applyMediaVolume() {
+    if (mediaVolume === null) return;
+    try {
+      var els = document.querySelectorAll('video, audio');
+      for (var i = 0; i < els.length; i++) {
+        try { els[i].volume = mediaVolume; } catch (e) {}
+      }
+    } catch (e) {}
+  }
+  // Media elements are created per item across several render paths, so re-apply on every 'play'.
+  // Captured, because media events do not bubble.
+  try {
+    document.addEventListener('play', function () { applyMediaVolume(); }, true);
+  } catch (e) {}
+
+  // Blanking has to reach the HARDWARE PLANE, not just the DOM.
+  //
+  // A z-index overlay covers the web layer only. Portrait/flipped video runs through AVPlay
+  // (#170), which composites on a separate hardware plane the DOM cannot draw over — so on a
+  // portrait panel the old overlay went up and the video kept playing straight through it. The
+  // screen never went dark, which is the whole point of the command. Tearing the AVPlay session
+  // down is what actually blanks it; the same trap bit the BrightSign port from the other side.
+  //
+  // Landscape <video> is paused too: cheap, and it stops audio continuing behind a black screen.
   function showScreenOff() {
-    if (document.getElementById('screenOffOverlay')) return;
-    var o = document.createElement('div');
-    o.id = 'screenOffOverlay';
-    o.style.cssText = 'position:fixed;inset:0;background:#000;z-index:9999';
-    document.body.appendChild(o);
+    if (!document.getElementById('screenOffOverlay')) {
+      var o = document.createElement('div');
+      o.id = 'screenOffOverlay';
+      o.style.cssText = 'position:fixed;inset:0;background:#000;z-index:9999';
+      document.body.appendChild(o);
+    }
+    try { if (player && player.avActive && player.avStop) player.avStop(); } catch (e) {}
+    try {
+      var vids = document.querySelectorAll('video');
+      for (var i = 0; i < vids.length; i++) { try { vids[i].pause(); } catch (e2) {} }
+    } catch (e) {}
   }
   function clearScreenOff() {
     var o = document.getElementById('screenOffOverlay');
-    if (o && o.parentNode) o.parentNode.removeChild(o);
+    // Not blanked: nothing to restore, and re-mounting would restart the current item for no reason.
+    if (!o) return;
+    if (o.parentNode) o.parentNode.removeChild(o);
+    // A torn-down AVPlay session cannot be resumed, so re-mount the current item from scratch.
+    // playCurrent(), not gotoIndex(): gotoIndex early-returns when the index has not changed, so it
+    // would leave a blanked portrait panel dark after screen_on.
+    try { if (player && player.playCurrent) player.playCurrent(); } catch (e) {}
   }
   // Diagnostic info overlay (parity with the web player). Toggled by the dashboard remote BACK key —
   // NOT the physical TV BACK (10009), which still exits to setup. A quick on-site troubleshooting panel.

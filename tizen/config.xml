@@ -23,6 +23,10 @@
     <tizen:privilege name="http://tizen.org/privilege/internet"/>
     <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
     <tizen:privilege name="http://tizen.org/privilege/display"/>
+    <!-- tizen.tvaudiocontrol: sets the TV's OWN volume, which is what reaches AVPlay video on the
+         hardware plane. Without this privilege the API throws SecurityError and the player falls
+         back to per-element media volume, which cannot touch that plane. -->
+    <tizen:privilege name="http://tizen.org/privilege/tv.audio"/>
     <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
 
     <!-- #125: Samsung B2B fleet control (reboot / panel power via b2bcontrol /
