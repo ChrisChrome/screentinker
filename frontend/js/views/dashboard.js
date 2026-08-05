@@ -234,6 +234,14 @@ function renderGroupSection(group, devices, playlists) {
             <input type="checkbox" class="group-sync-cb" data-group-id="${group.id}" ${group.sync_enabled ? 'checked' : ''}> ${t('dashboard.group_sync.label')}
           </label>
           ${group.sync_enabled ? `
+          <select class="input group-backend-select" data-group-id="${group.id}" style="width:130px;padding:4px 8px;font-size:12px;background:var(--bg-input)" title="${esc(t('dashboard.group_sync.backend_hint'))}">
+            <option value="auto" ${(group.sync_backend || 'auto') === 'auto' ? 'selected' : ''}>${t('dashboard.group_sync.backend_auto')}</option>
+            <option value="screentinker" ${group.sync_backend === 'screentinker' ? 'selected' : ''}>${t('dashboard.group_sync.backend_screentinker')}</option>
+            <option value="brightsign" ${group.sync_backend === 'brightsign' ? 'selected' : ''}>${t('dashboard.group_sync.backend_brightsign')}</option>
+          </select>
+          ${group.sync_effective ? `
+          <span style="font-size:11px;color:${group.sync_downgraded ? 'var(--warning, #d97706)' : 'var(--text-muted)'};white-space:nowrap"
+                title="${esc(group.sync_reason || '')}">${group.sync_downgraded ? '&#9888; ' : ''}${esc(group.sync_effective)}${group.sync_reason ? ' — ' + esc(group.sync_reason) : ''}</span>` : ''}
           <button class="btn group-resync-btn" data-group-id="${group.id}" style="padding:4px 10px;font-size:12px" title="${esc(t('dashboard.group_sync.resync_hint'))}">${t('dashboard.group_sync.resync')}</button>` : ''}
           ` : ''}
           <button class="btn" data-group-manage="${group.id}" style="padding:4px 10px;font-size:12px" title="${t('dashboard.manage_tooltip')}">${t('dashboard.manage')}</button>
@@ -860,6 +868,31 @@ function attachGroupHandlers(groupsWithDevices, allDevices) {
         e.target.checked = !enabled;
       }
     });
+  });
+
+  // Choose the sync protocol. The server may refuse the choice (native sync needs every member to
+  // be a BrightSign on one L2 network), so re-render from its answer rather than assuming the
+  // request took — showing a setting that isn't in force is exactly what makes a drifting wall
+  // impossible to diagnose.
+  document.querySelectorAll('.group-backend-select').forEach(sel => {
+    sel.addEventListener('change', async (e) => {
+      const groupId = e.target.dataset.groupId;
+      const previous = sel.dataset.previous || 'auto';
+      const chosen = e.target.value;
+      try {
+        const updated = await api.updateGroup(groupId, { sync_backend: chosen });
+        if (updated?.sync_downgraded && updated?.sync_reason) {
+          showToast(t('dashboard.group_sync.toast_downgraded') + ' ' + updated.sync_reason, 'warning');
+        } else {
+          showToast(t('dashboard.group_sync.toast_backend'), 'success');
+        }
+        loadDashboard();
+      } catch (err) {
+        showToast(err.message, 'error');
+        e.target.value = previous;
+      }
+    });
+    sel.dataset.previous = sel.value;
   });
 
   // #group-sync: manual "Resync now" — nudge all members to re-snap to the shared schedule.

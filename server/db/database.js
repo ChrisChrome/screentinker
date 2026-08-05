@@ -167,6 +167,12 @@ const migrations = [
   // or offline the server auto-elects the first online member on the matching playlist.
   "ALTER TABLE device_groups ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE device_groups ADD COLUMN leader_device_id TEXT REFERENCES devices(id) ON DELETE SET NULL",
+  // Which synchronisation protocol the group runs: 'auto' | 'screentinker' | 'brightsign'.
+  // BrightSign's native SyncManager is frame-accurate but exists only between BrightSign players
+  // on one L2 network, so it cannot be the default — 'auto' picks it only when the group can
+  // actually run it. See server/lib/sync-backend.js; the resolver is the single source of that
+  // decision and this column is only the operator's request.
+  "ALTER TABLE device_groups ADD COLUMN sync_backend TEXT NOT NULL DEFAULT 'auto'",
   // Wall-level playlist: video walls now play a playlist (not just one content).
   "ALTER TABLE video_walls ADD COLUMN playlist_id TEXT REFERENCES playlists(id) ON DELETE SET NULL",
   // Free-form canvas layout: walls store a player rect; member devices store

@@ -147,6 +147,30 @@ because the BrightSigns would look perfectly synchronised while the odd panel dr
 
 A player paired before this port is still recognised, by its BrightSign user agent.
 
+### How the choice reaches a screen
+
+`device_groups.sync_backend` (`auto` | `screentinker` | `brightsign`) is the operator's **request**.
+The server resolves it per push through `resolveSyncBackend()` and sends the answer — plus the
+reason and a `downgraded` flag — in the `group_sync` payload, so the players, the dashboard and the
+stored setting can never disagree about which protocol is running.
+
+Three things force a fallback to our protocol, and each is reported rather than applied silently:
+
+| condition | why native sync cannot run |
+|---|---|
+| any non-BrightSign member | BrightWall cannot include a foreign screen |
+| members on different subnets | it is multicast; it does not cross networks |
+| the elected leader is offline | it is leader/follower — nobody would broadcast |
+
+That last one has no equivalent in our protocol, which is leaderless and carries on regardless.
+Leadership uses the existing election (`resolveGroupLeader`): the pinned leader if it is an online
+member on the shared playlist, else the first online member, else the first member by id.
+
+**Item selection stays clock-derived under both backends.** Native sync only replaces the
+seek/nudge drift correction, because `setSyncParams` has the video element hold its own alignment —
+and correcting it ourselves would fight the platform. That also keeps images and widgets, which have
+no `setSyncParams`, advancing with the videos instead of drifting off on their own.
+
 ## Command parity
 
 The web player handles four of the ~20 fleet commands — `launch`, `refresh`, `screen_on`,
@@ -194,13 +218,14 @@ have no BrightSign equivalent — a signage player has no per-window brightness 
 
 Stated plainly so nobody reads this as finished:
 
-- **No server-side plumbing**: no `sync_backend` column, no dashboard control, nothing sends
-  `set-sync-backend` down, and nothing consumes the `bs_model` / `bs_serial` / `bs_screen` fields
-  the player now reports. The resolver is ready for all of it.
-- **Native sync is implemented but not yet driven by the playlist engine.** `st-sync.js` wraps
-  SyncManager and is tested (`server/test/brightsign-sync.test.js`), but nothing in the player
-  calls `announce()` on item advance or binds `attachVideo()` yet, and no leader is designated.
-  That wiring is the next step and wants hardware to validate.
+- **Nothing consumes the `bs_model` / `bs_serial` / `bs_screen` fields** the player reports. Device
+  telemetry (temperature, storage) also has no schema to land in yet.
+- **Native sync is wired but UNPROVEN on hardware.** The player drives it end to end — the leader
+  announces on each advance, every member (leader included) binds via `attachVideo()` on a new id,
+  and the resolved backend is chosen per group and pushed down. It cannot be verified with one
+  player: a single unit is trivially "in sync with itself". **Two BrightSigns on one subnet are
+  needed** to confirm frame alignment, that the leader does not run ahead, and that the 1Hz repeat
+  causes no visible reload.
 
   ```js
   const SyncManager = require('@brightsign/syncmanager');          // BrightSignOS 8.2.10+
