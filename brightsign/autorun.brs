@@ -202,15 +202,15 @@ Sub ApplyPendingPackage(root As String)
 
     print "[st-update] unpacking pending package"
 
-    unzip = CreateObject("roUnzip", zipPath$)
-    if unzip = invalid then
-        print "[st-update] ERROR: archive unreadable — parking it as .bad"
+    package = CreateObject("roBrightPackage", zipPath$)
+    if package = invalid then
+        print "[st-update] ERROR: archive unreadable (is it STORED?) — parking it as .bad"
         fs = CreateObject("roFileSystem")
         if fs <> invalid then fs.Rename(zipPath$, badPath$)
         return
     end if
 
-    if unzip.DecompressAllFiles(root + "/") <> 0 then
+    if not package.Unpack(root + "/") then
         print "[st-update] ERROR: extract failed — parking it as .bad so we do not retry forever"
         fs = CreateObject("roFileSystem")
         if fs <> invalid then fs.Rename(zipPath$, badPath$)

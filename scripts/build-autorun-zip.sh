@@ -74,9 +74,16 @@ mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 ABS_OUT="$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
 
-# -j would flatten any directories we add later; instead cd in and zip '.' so the archive root IS
-# the staging root, and future subdirectories keep their structure.
-( cd "$STAGE" && zip -q -r -X "$ABS_OUT" . )
+# -0 = STORED, no compression. This is not a size/speed preference, it is a compatibility
+# requirement: BrightSign's automated deployment reported our first archive as invalid and could
+# not open it. The player bootstrap extracts autozip.brs by itself, before any script runs, and
+# roBrightPackage documents a specific set of supported methods — "no compression" is the one that
+# is universally safe. A deflated archive copies onto the player perfectly and then fails to open,
+# which looks like a broken deployment rather than a broken zip.
+#
+# -X drops extra attributes; -j would flatten any directories added later, so instead cd in and zip
+# '.' so the archive root IS the staging root and future subdirectories keep their structure.
+( cd "$STAGE" && zip -q -r -X -0 "$ABS_OUT" . )
 
 echo "  built $OUT"
 unzip -l "$OUT" | sed 's/^/    /'
@@ -94,4 +101,11 @@ if ! unzip -l "$OUT" | grep -qE ' autozip\.brs$'; then
   echo "ERROR: autozip.brs is missing — nothing would unpack this archive." >&2
   exit 1
 fi
-echo "  root-level layout verified"
+# Prove every entry is STORED. A single deflated member is enough to make the archive unopenable
+# on the player, and it is invisible until a deployment fails in the field.
+if unzip -v "$OUT" | awk '$1 ~ /^[0-9]+$/ && $2 != "Stored" {print $2}' | grep -q .; then
+  echo "ERROR: archive contains compressed members; BrightSign needs it stored (zip -0)." >&2
+  unzip -v "$OUT" | sed 's/^/    /' >&2
+  exit 1
+fi
+echo "  root-level layout verified, all members stored"

@@ -67,7 +67,13 @@ function buildZip() {
   return new Promise((resolve, reject) => {
     const dir = brightsignDir();
     const chunks = [];
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    // STORED, no compression — not a size/speed choice. A player could not open our first
+    // deflated archive: BrightSign's automated deployment copied it across and then reported it
+    // invalid. The bootstrap extracts autozip.brs before any script runs, and roBrightPackage
+    // supports a specific set of methods, of which "no compression" is the universally safe one.
+    // A compressed package deploys perfectly and then fails to open, which reads as a broken
+    // deployment rather than a broken zip.
+    const archive = archiver('zip', { store: true });
 
     archive.on('data', (c) => chunks.push(c));
     archive.on('error', reject);

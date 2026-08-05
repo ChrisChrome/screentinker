@@ -13,18 +13,32 @@
 ' being processed at all. autorun.brs belongs INSIDE the zip, which is where the build script puts
 ' it (scripts/build-autorun-zip.sh).
 '
-' Requires BrightSignOS 7.0.60+ (roUnzip).
+' Unpacks with roBrightPackage, which is what BrightSign's own tooling uses — NOT roUnzip.
+' A BrightSign consultant flagged this after our first archive failed his automated deployment:
+' the zip reached the player and then could not be opened. Two causes, both fixed:
+'   - the archive must be STORED, no compression (scripts/build-autorun-zip.sh now asserts it)
+'   - roBrightPackage is the supported reader for a player package
+'
+' Requires BrightSignOS 7.0.60+.
 
-Function StorageRoot() As String
-    ' Same reasoning as autorun.brs: a player may be booting from internal flash rather than a
-    ' card — the only path on a unit whose card interface has failed. Extracting to "SD:/" on such
-    ' a player writes to a volume that does not exist.
-    if DoesFileExist("FLASH:/autorun.zip") then return "FLASH:"
-    return "SD:"
+' WHERE the archive is. A player may be fed from USB, a card, an SSD, or internal flash — and the
+' unit that drove this port boots from FLASH because its card interface is physically dead. Probing
+' for the file beats assuming a volume: extracting to "SD:/" on a player with no card writes to a
+' volume that does not exist, and the deployment silently does nothing.
+Function SourceRoot() As String
+    volumes = ["USB1:", "SD:", "SSD:", "FLASH:"]
+    for each v in volumes
+        if DoesFileExist(v + "/autorun.zip") then return v
+    end for
+    return ""
 End Function
 
 Sub Main()
-    root$ = StorageRoot()
+    root$ = SourceRoot()
+    if root$ = "" then
+        print "[st-autozip] no autorun.zip on any volume — nothing to do"
+        return
+    end if
     zipPath$ = root$ + "/autorun.zip"
     extractPath$ = root$ + "/"
     donePath$ = root$ + "/autorun.zip.done"
@@ -45,17 +59,16 @@ Sub Main()
 
     print "[st-autozip] unpacking "; zipPath$
 
-    unzip = CreateObject("roUnzip", zipPath$)
-    if unzip = invalid then
-        print "[st-autozip] ERROR: could not open the archive"
+    package = CreateObject("roBrightPackage", zipPath$)
+    if package = invalid then
+        print "[st-autozip] ERROR: could not open the archive — is it STORED (no compression)?"
+        ' Deliberately NOT marking it done: a corrupt, truncated or wrongly-compressed copy should
+        ' be retried once someone replaces the file, not silently skipped forever.
         return
     end if
 
-    result = unzip.DecompressAllFiles(extractPath$)
-    if result <> 0 then
-        print "[st-autozip] ERROR: extract failed, code "; result
-        ' Deliberately NOT marking it done: a corrupt or truncated copy should be retried after
-        ' someone replaces the file, not silently skipped forever.
+    if not package.Unpack(extractPath$) then
+        print "[st-autozip] ERROR: unpack failed"
         return
     end if
 

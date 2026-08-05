@@ -81,3 +81,30 @@ test('the version comes from VERSION, so the manifest matches the release it shi
   const pkg = await pkgLib.getPackage();
   assert.equal(pkg.version, expected);
 });
+
+// A BrightSign consultant's automated deployment copied our first autorun.zip onto a player and
+// then reported it invalid. Two causes: the archive was DEFLATED, and we opened it with roUnzip
+// rather than roBrightPackage. The player bootstrap extracts autozip.brs by itself before any
+// script runs, and roBrightPackage supports a specific set of methods — "no compression" is the
+// universally safe one.
+//
+// This is the failure mode that hurts: a compressed package uploads, downloads and deploys
+// perfectly, then fails to open on the player. It reads as a broken deployment, not a broken zip,
+// so it gets debugged everywhere except where the bug is.
+test('THE DEPLOYMENT BUG: every member of the package is STORED, never deflated', async () => {
+  const pkg = await pkgLib.getPackage();
+  const buf = Buffer.isBuffer(pkg) ? pkg : (pkg && (pkg.buffer || pkg.bytes || pkg.zip));
+  assert.ok(Buffer.isBuffer(buf), 'getPackage must yield the archive bytes');
+
+  // Walk the local file headers: signature PK\x03\x04, compression method at offset +8.
+  let found = 0;
+  for (let i = 0; i + 30 <= buf.length; i++) {
+    if (buf.readUInt32LE(i) !== 0x04034b50) continue;
+    const method = buf.readUInt16LE(i + 8);
+    const nameLen = buf.readUInt16LE(i + 26);
+    const name = buf.slice(i + 30, i + 30 + nameLen).toString();
+    assert.equal(method, 0, `${name} is compressed (method ${method}); the player cannot open it`);
+    found++;
+  }
+  assert.ok(found > 0, 'no entries found — the walk itself is wrong, not the archive');
+});
