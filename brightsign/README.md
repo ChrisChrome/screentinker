@@ -46,13 +46,29 @@ hardware-only fingerprint once merged two identical panels into a single device 
 **4. It reaches BrightScript-only capabilities** — video mode, a second output, and native
 BrightWall sync — on the page's behalf, over `@brightsign/messageport`.
 
-## What goes on the SD card
+## Where the files go — card OR internal flash
 
 ```
 autorun.brs          the host
 offline.html         local fallback, used after three failed loads
 screentinker.json    optional — server URL, sync backend, output mode
 ```
+
+**A player will boot `autorun.brs` from internal flash, not just from a card.** Confirmed on real
+hardware (XT245, BOS 9.0.189) whose microSD interface is physically dead:
+
+```
+Loading 'FLASH:/autorun.brs'
+BSPLAY: https://screentinker.com/player?platform=brightsign&serial=…&model=XT245
+```
+
+That matters far beyond one broken unit — it means a player with no card, or a failed card slot,
+is still fully deployable. Push the files over SFTP to `/storage/flash` (user `brightsign`, blank
+password, once SSH is enabled) and reboot.
+
+`StorageRoot()` in `autorun.brs` therefore refuses to assume: it probes for `FLASH:/autorun.brs`
+and falls back to `SD:`. Hard-coding `SD:` is exactly the bug that made the first flash boot fail —
+the script loaded and then could not find its own `index.html`.
 
 **`st-bridge.js` and `st-sync.js` do NOT go on the card.** The player pulls them from the server
 (`/player/st-bridge.js`, `/player/st-sync.js`) so they can never skew from the player that uses
@@ -76,10 +92,15 @@ file is how a batch gets imaged without touching each box:
   own playlist. Two independent displays from one player.
 - **clone** — the second widget loads `&screen=1`: the same content on both outputs.
 
-Multi-output models are **XC2055** (dual HDMI), **XC4055** (quad), and **XT245 / XT1145 / XT2145**
-(dual HDMI, dual 4K60p simultaneous). Every other model is single-output, so the second widget is
-only ever created when the config asks for it — an unsupported model keeps working as a normal
-single-screen player rather than failing to start.
+Confirmed multi-output: **XC2055** (dual HDMI) and **XC4055** (quad).
+
+⚠️ **Do not trust the series-level spec blurb.** It credits the whole XT5 family — XT245, XT1145,
+XT2145 — with "dual HDMI outputs", but an **XT245 in hand is single-output**; that phrase appears
+to cover HDMI *in* plus *out*. Verify the individual model before enabling `dual`.
+
+Every other model is single-output, so the second widget is only ever created when the config asks
+for it — an unsupported model keeps working as a normal single-screen player rather than failing to
+start.
 
 ## Synchronisation — ours or theirs
 

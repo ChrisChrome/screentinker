@@ -20,6 +20,21 @@
 '
 ' SD card layout:  autorun.brs  st-bridge.js  offline.html  [screentinker.json]
 
+'=== storage volume ==========================================================================
+' WHERE we are running from is not a given. The obvious answer is the SD card, and every
+' BrightSign example assumes it — but this player also boots FLASH:/autorun.brs straight out of
+' internal eMMC, which is the ONLY path on a unit whose microSD interface is dead (ours has
+' liquid corrosion on the card lines; the host controller probes at 400kHz and no card ever
+' answers). Hard-coding "SD:" there means the script loads and then cannot find its own files.
+'
+' So ask the filesystem instead of assuming: whichever volume holds this script is the volume
+' that holds everything else beside it.
+Function StorageRoot() As String
+    ba = CreateObject("roByteArray")
+    if ba.ReadFile("FLASH:/autorun.brs") then return "FLASH:"
+    return "SD:"
+End Function
+
 '=== configuration ==========================================================================
 ' Provisioning order: screentinker.json on the card (imaging a batch) > registry (set once at
 ' pairing, survives content updates) > the built-in default.
@@ -42,7 +57,7 @@ Function LoadConfig() As Object
 
     ' 2) a JSON file on the card wins — that is how a batch gets imaged without touching each box
     ba = CreateObject("roByteArray")
-    if ba.ReadFile("SD:/screentinker.json") then
+    if ba.ReadFile(StorageRoot() + "/screentinker.json") then
         json = ParseJson(ba.ToAsciiString())
         if json <> invalid then
             if json.server_url <> invalid then cfg.server_url = json.server_url
@@ -132,15 +147,19 @@ Sub Main()
 
     ' Crash dumps land here if the widget ever falls over — cheap, and the only forensic trail
     ' available on a panel nobody can reach.
-    dir = CreateDirectory("SD:/brightsign-dumps")
+    dir = CreateDirectory(StorageRoot() + "/brightsign-dumps")
 
     ' Must happen BEFORE the widget starts: it can reboot.
     EnsurePtpDomain(cfg)
 
     port = CreateObject("roMessagePort")
 
-    ' Second output. XC2055/XC4055 and XT245/XT1145/XT2145 expose more than one HDMI connector;
-    ' every other model is single-output and must fall through to it. GetResX/GetResY only ever
+    ' Second output. The XC5 family exposes more than one HDMI connector (XC2055 dual, XC4055
+    ' quad). Do NOT trust the series-level spec blurb here: it credits the whole XT5 family with
+    ' "dual HDMI outputs", but an XT245 in hand is single-output — that phrase appears to cover
+    ' HDMI in + out. Check the individual model, not the family.
+    '
+    ' Every single-output model must fall through this cleanly. GetResX/GetResY only ever
     ' describe output 1, so a second widget is created ONLY when the config asks for it — an
     ' unsupported model then keeps working as a normal single-screen player rather than failing
     ' to start. Screen 2 loads the SAME player with &screen=2, so the server can hand it its own
@@ -189,7 +208,7 @@ Sub Main()
                 if retries >= 3 then
                     ' The server URL rides along so the fallback page can name it on screen and
                     ' keep probing it — the page has no other way to learn where home is.
-                    widget = RebuildWidget(widget, "file:/SD:/offline.html?server=" + cfg.server_url, rect, port, cfg)
+                    widget = RebuildWidget(widget, "file:/" + StorageRoot() + "/offline.html?server=" + cfg.server_url, rect, port, cfg)
                 else
                     widget = RebuildWidget(widget, PlayerUrl(cfg, 1), rect, port, cfg)
                 end if
@@ -198,7 +217,12 @@ Sub Main()
                 m = data.message
                 lastBeat.Mark()
 
-                if m.type = "heartbeat" then
+                ' A missing member is `invalid`, and comparing invalid to a literal is a TYPE
+                ' MISMATCH that aborts the script — taking the whole player down with it. Every
+                ' field is existence-checked before it is compared.
+                if m = invalid or m.type = invalid then
+                    ' nothing addressable in this message
+                else if m.type = "heartbeat" then
                     ' nothing to do — marking the timespan above IS the handling
 
                 else if m.type = "restart" then
@@ -211,7 +235,7 @@ Sub Main()
                     ' Pairing completed in the page — persist it where a reboot can find it.
                     ' clear:true is the operator reset; the registry must forget the display or
                     ' the next boot re-adopts it and the reset silently does nothing.
-                    if m.clear = true then
+                    if m.clear <> invalid and m.clear = true then
                         SaveRegistry("device_id", "")
                         cfg.device_id = ""
                     end if
