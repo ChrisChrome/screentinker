@@ -8,6 +8,7 @@ const { accessContext } = require('../lib/tenancy');
 // #public-api: operational fleet commands (reboot/shutdown/...) need the 'full' token
 // scope. No-op for JWT sessions; for tokens a read/write scope is rejected.
 const { requireScope } = require('../middleware/apiToken');
+const { resolveSyncBackend, BACKENDS } = require('../lib/sync-backend');
 
 const VALID_COLOR = /^#[0-9A-Fa-f]{6}$/;
 const ALLOWED_COMMANDS = [
@@ -50,6 +51,21 @@ function requireGroupWrite(req, res, next) {
   next();
 }
 
+// What the group's sync_backend setting actually RESOLVES to, for the dashboard. The stored value
+// is only a request: 'brightsign' on a mixed fleet, or on players spread across subnets, is refused
+// by the resolver. Sending the decision alongside the request is what lets the UI explain the
+// refusal instead of showing a setting that quietly isn't in force.
+function syncDecisionFor(group) {
+  if (!group?.playlist_id) return { sync_effective: null, sync_reason: null, sync_downgraded: false };
+  const members = db.prepare(`
+    SELECT d.id, d.platform, d.ip_address FROM devices d
+    JOIN device_group_members dgm ON dgm.device_id = d.id
+    WHERE dgm.group_id = ? AND d.playlist_id = ?
+  `).all(group.id, group.playlist_id);
+  const d = resolveSyncBackend(group.sync_backend, members);
+  return { sync_effective: d.backend, sync_reason: d.reason, sync_downgraded: d.downgraded };
+}
+
 // List groups in the caller's current workspace.
 router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
@@ -61,7 +77,7 @@ router.get('/', (req, res) => {
     GROUP BY g.id
     ORDER BY g.name ASC
   `).all(req.workspaceId);
-  res.json(groups);
+  res.json(groups.map(g => ({ ...g, ...syncDecisionFor(g) })));
 });
 
 // Create group in the caller's current workspace.
@@ -78,7 +94,13 @@ router.post('/', (req, res) => {
 
 // Update group
 router.put('/:id', requireGroupWrite, (req, res) => {
-  const { name, color, sync_enabled, leader_device_id, reboot_schedule } = req.body;
+  const { name, color, sync_enabled, leader_device_id, reboot_schedule, sync_backend } = req.body;
+  // Reject an unknown backend rather than storing it: the resolver reads anything unrecognised as
+  // 'auto', so a typo would silently give the operator a different protocol from the one they
+  // picked, with the UI still showing their typo back to them.
+  if (sync_backend !== undefined && !BACKENDS.includes(sync_backend)) {
+    return res.status(400).json({ error: `sync_backend must be one of: ${BACKENDS.join(', ')}` });
+  }
   if (color && !VALID_COLOR.test(color)) return res.status(400).json({ error: 'invalid color format, use #RRGGBB' });
   // #12 scheduled reboot: group-level default nightly-reboot time ("HH:MM" or null/'' = off).
   // A member device's own reboot_schedule overrides this in the scheduler.
@@ -105,12 +127,18 @@ router.put('/:id', requireGroupWrite, (req, res) => {
     }
     db.prepare('UPDATE device_groups SET leader_device_id = ? WHERE id = ?').run(leader_device_id || null, req.params.id);
   }
+  if (sync_backend !== undefined) {
+    db.prepare('UPDATE device_groups SET sync_backend = ? WHERE id = ?').run(sync_backend, req.params.id);
+  }
   // Re-push to every member so they enter/exit sync mode and refresh their is_leader flag.
-  if (sync_enabled !== undefined || leader_device_id !== undefined) {
+  // sync_backend belongs here too: switching protocol has to reach the players, or the group keeps
+  // running the old one until something unrelated happens to re-push.
+  if (sync_enabled !== undefined || leader_device_id !== undefined || sync_backend !== undefined) {
     const members = db.prepare('SELECT device_id FROM device_group_members WHERE group_id = ?').all(req.params.id);
     for (const m of members) pushPlaylistToDevice(req, m.device_id);
   }
-  res.json(db.prepare('SELECT * FROM device_groups WHERE id = ?').get(req.params.id));
+  const updated = db.prepare('SELECT * FROM device_groups WHERE id = ?').get(req.params.id);
+  res.json({ ...updated, ...syncDecisionFor(updated) });
 });
 
 // #group-sync: manual "Resync now" — nudge every member to re-snap to the shared schedule

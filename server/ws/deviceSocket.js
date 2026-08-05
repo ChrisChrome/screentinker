@@ -16,6 +16,7 @@ const { protectSocket } = require('../lib/safe-socket');
 const flapLimiter = require('../lib/flap-limiter');
 const sessionSettle = require('../lib/session-settle');   // #148 patch2: eviction-storm debounce
 const { resolveIdentity } = require('../lib/device-identity');
+const { resolveSyncBackend } = require('../lib/sync-backend');
 const logCoalescer = require('../lib/log-coalescer');
 const loopLag = require('../services/loop-lag');
 const deviceSettings = require('../lib/device-settings'); // #150 delete+re-pair settings restore
@@ -144,10 +145,12 @@ function logDeviceStatus(deviceId, status, reason, detail) {
 // groups). Sync-eligible members = the group's members whose playlist MATCHES the group's shared
 // playlist. A member on a different playlist is ignored (never synced) — index sync would be
 // meaningless. Ordered by id for a stable auto-election.
+// platform + ip_address are selected for the sync-backend resolver, not for election: it decides
+// native-vs-ours from what the members ARE (BrightSign?) and where they are (one L2 network?).
 function groupSyncMembers(group) {
   if (!group || !group.playlist_id) return [];
   return db.prepare(`
-    SELECT d.id, d.status FROM devices d
+    SELECT d.id, d.status, d.platform, d.ip_address FROM devices d
     JOIN device_group_members dgm ON dgm.device_id = d.id
     WHERE dgm.group_id = ? AND d.playlist_id = ? ORDER BY d.id
   `).all(group.id, group.playlist_id);
@@ -170,7 +173,7 @@ function resolveGroupLeader(group) {
 function deviceSyncGroup(deviceId, devicePlaylistId) {
   if (!devicePlaylistId) return null;
   return db.prepare(`
-    SELECT g.id, g.sync_enabled, g.playlist_id, g.leader_device_id
+    SELECT g.id, g.sync_enabled, g.playlist_id, g.leader_device_id, g.sync_backend
     FROM device_groups g JOIN device_group_members dgm ON dgm.group_id = g.id
     WHERE dgm.device_id = ? AND g.sync_enabled = 1 AND g.playlist_id = ?
     ORDER BY g.name ASC, g.id ASC LIMIT 1
@@ -181,9 +184,38 @@ function deviceSyncGroup(deviceId, devicePlaylistId) {
 function resolveGroupSync(device, deviceId) {
   const group = deviceSyncGroup(deviceId, device?.playlist_id);
   if (!group) return null;
+  const members = groupSyncMembers(group);
   const leaderId = resolveGroupLeader(group);
   if (!leaderId) return null;
-  return { group_id: group.id, is_leader: leaderId === deviceId };
+
+  // Which protocol this group actually runs. The decision lives in one pure function so the
+  // dashboard, the tests and this payload can never disagree about it — an operator being told
+  // "native sync" while the players ran ours would be undebuggable.
+  const decision = resolveSyncBackend(group.sync_backend, members);
+
+  // Native sync is leader/follower and the leader broadcasts; ours is leaderless. A group whose
+  // elected leader is OFFLINE would therefore sit unsynchronised on the native protocol — nobody
+  // is announcing — where our own clock-derived sync carries on regardless. So fall back rather
+  // than leave a wall frozen on whatever it happened to be showing.
+  const leaderOnline = members.some(m => m.id === leaderId && m.status === 'online');
+  let backend = decision.backend;
+  let reason = decision.reason;
+  let downgraded = decision.downgraded;
+  if (backend === 'brightsign' && !leaderOnline) {
+    backend = 'screentinker';
+    reason = 'the group leader is offline — native sync has nobody to broadcast';
+    downgraded = true;
+  }
+
+  return {
+    group_id: group.id,
+    is_leader: leaderId === deviceId,
+    backend,
+    // Carried to the player for logging, and to the dashboard so an operator can see WHY a
+    // requested backend was refused instead of guessing.
+    sync_reason: reason,
+    sync_downgraded: downgraded,
+  };
 }
 
 // A widget's CONTENT is always live — /api/widgets/:id/render reads the current config — but the
@@ -1476,3 +1508,8 @@ module.exports.__resetTimers = () => {
   pendingOfflines.clear();
   evictedSockets.clear();
 };
+
+// Test seam: which protocol a group runs, and whether a request was refused, is the one piece of
+// branching in this file with nothing to do with sockets. Exposing it lets that decision be tested
+// against a real database without standing up a socket server.
+module.exports.__test = { resolveGroupSync, resolveGroupLeader, groupSyncMembers };

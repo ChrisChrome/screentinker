@@ -597,6 +597,15 @@
     let groupAlignPending = true;
     let groupLastAlignedIndex = -1;
     let groupLastSeekAt = 0;   // seek cooldown — don't hard-seek every tick (decoder-thrash guard)
+    // BrightSign native sync (SyncManager). An ALTERNATIVE to the clock-derived correction above,
+    // never an addition: when it is running, the seek/nudge maths is skipped entirely because the
+    // video element aligns itself once setSyncParams has been applied. Item SELECTION stays
+    // clock-derived either way — that is what keeps images and widgets, which have no
+    // setSyncParams, advancing together with the videos.
+    let nativeSync = null;          // the ScreenTinkerBSSync instance while active
+    let nativeSyncEvent = null;     // latest sync event awaiting a video to bind
+    let nativeSyncBoundId = null;   // sync id already bound, so we attach once per session
+    let nativeSyncAnnounced = -1;   // last index the LEADER announced, to announce once per advance
     // Double buffer: a hidden <video> for the NEXT clip, buffered/decoded ahead of the boundary so the
     // switch is instant (no black hold). Reused by renderContent when it reaches that index.
     let groupPreloadEl = null;
@@ -1859,6 +1868,20 @@
         currentIndex = t.index;
         playCurrentItem();
         action = 'jump>' + t.index;
+        // LEADER ONLY: open a new sync session for the item we just moved to. The id must change
+        // on every advance or the followers' 1Hz dedupe swallows it and the group sits on the
+        // previous item forever.
+        if (nativeSync && groupSync.is_leader && nativeSyncAnnounced !== t.index) {
+          nativeSyncAnnounced = t.index;
+          const key = (playlist[t.index]?.content_id || playlist[t.index]?.id || t.index);
+          nativeSync.announce(key, Date.now());
+        }
+      } else if (nativeSync) {
+        // Native sync owns alignment: setSyncParams has the element keeping itself in step, so the
+        // seek/nudge maths below would fight it — every correction we applied would be a frame the
+        // player then had to undo. Just make sure the current item is bound.
+        bindNativeSyncVideo();
+        action = 'native';
       } else if (currentVideoEl && isFinite(currentVideoEl.duration) && currentVideoEl.duration > 0) {
         const dur = currentVideoEl.duration;
         const target = t.posSec % dur;                                    // loop-safe when duration_sec > clip length
@@ -1914,10 +1937,55 @@
 
     // Enter/leave group sync. No CSS transform, no forced mute (per-item mute honored), no leader —
     // just start the schedule tick. Idempotent across refreshes/role churn (there is no role now).
+    // Enter/leave BrightSign native sync for this group. Returns true if it is running afterwards.
+    // Deliberately fails CLOSED: if the module is missing, the platform is not BrightSign, or the
+    // session will not start, we return false and the caller keeps the clock-derived path — a group
+    // that silently ran neither protocol would drift with no indication of why.
+    function applyNativeSync(cfg) {
+      const want = cfg && cfg.backend === 'brightsign';
+      if (!want || !global_ScreenTinkerBSSync() || !global_ScreenTinkerBSSync().available()) {
+        if (nativeSync) { try { nativeSync.stop(); } catch (e) {} }
+        nativeSync = null; nativeSyncEvent = null; nativeSyncBoundId = null; nativeSyncAnnounced = -1;
+        if (want) groupReport('warn', 'native sync requested but SyncManager is unavailable — using clock sync');
+        return false;
+      }
+      if (nativeSync) { try { nativeSync.stop(); } catch (e) {} nativeSync = null; }
+      nativeSyncEvent = null; nativeSyncBoundId = null; nativeSyncAnnounced = -1;
+
+      const s = global_ScreenTinkerBSSync().create({ domain: 'ST-' + String(cfg.group_id).slice(0, 8) });
+      // The leader receives its OWN broadcast and starts from that, like every follower — starting
+      // at announce() time instead would put it ahead of the group by the width of the network.
+      s.onItem = function (ev) { nativeSyncEvent = ev; bindNativeSyncVideo(); };
+      if (!s.start(!!cfg.is_leader)) {
+        groupReport('warn', 'native sync failed to start — using clock sync');
+        return false;
+      }
+      nativeSync = s;
+      console.log('[native-sync] started as ' + (cfg.is_leader ? 'LEADER' : 'follower') + ' group=' + cfg.group_id);
+      groupReport('info', 'native sync started (' + (cfg.is_leader ? 'leader' : 'follower') + ')');
+      return true;
+    }
+    function global_ScreenTinkerBSSync() {
+      return (typeof window !== 'undefined' && window.ScreenTinkerBSSync) || null;
+    }
+    // Bind the mounted video to the current session, exactly once per sync id. The event can arrive
+    // before the element exists (the leader announces as it advances), so this is called both from
+    // the event and from the tick — whichever wins, the guard makes it idempotent.
+    function bindNativeSyncVideo() {
+      if (!nativeSync || !nativeSyncEvent) return;
+      if (nativeSyncEvent.id === nativeSyncBoundId) return;
+      if (!currentVideoEl) return;                 // images/widgets have no setSyncParams to bind
+      if (nativeSync.attachVideo(currentVideoEl, nativeSyncEvent)) {
+        nativeSyncBoundId = nativeSyncEvent.id;
+        groupReport('info', 'native sync bound id=' + String(nativeSyncEvent.id).slice(0, 24));
+      }
+    }
+
     function applyGroupSync(cfg) {
       if (groupSyncTimer) { clearInterval(groupSyncTimer); groupSyncTimer = null; }
       try { if (cfg) localStorage.setItem('st_group_sync', JSON.stringify(cfg)); else localStorage.removeItem('st_group_sync'); } catch (e) {}
       if (!cfg) {
+        applyNativeSync(null);
         if (groupSync) groupReport('info', 'group-sync exited'); groupSync = null; console.log('[group-sync] exited');
         if (groupPreloadEl) { try { groupPreloadEl.remove(); } catch (e) {} groupPreloadEl = null; groupPreloadIdx = -1; }
         reconcileAdvanceTimerForMode();   // #200: back to solo -> re-arm a surviving image/widget's timer
@@ -1926,7 +1994,14 @@
       const first = !groupSync;
       groupSync = cfg;
       groupAlignPending = true; groupLastAlignedIndex = -1;   // snap the first item into sync on entry
-      console.log('[group-sync] group=' + cfg.group_id + ' (clock/schedule, offset=' + clockOffsetMs + 'ms)');
+      // Tell the host which protocol won, so a cold boot with no network starts in the right mode.
+      try { if (BS && cfg.backend) BS.setSyncBackend(cfg.backend); } catch (e) { /* not on BrightSign */ }
+      if (cfg.sync_downgraded && cfg.sync_reason) {
+        groupReport('warn', 'sync downgraded to ' + cfg.backend + ': ' + cfg.sync_reason);
+      }
+      applyNativeSync(cfg);
+      console.log('[group-sync] group=' + cfg.group_id + ' backend=' + (cfg.backend || 'screentinker')
+        + ' (clock/schedule, offset=' + clockOffsetMs + 'ms)');
       groupReport('info', 'group-sync ' + (first ? 'entered' : 'refresh') + ' group=' + String(cfg.group_id).slice(0, 8) + ' off=' + clockOffsetMs + 'ms');
       groupScheduleTick();                                    // align immediately
       groupSyncTimer = setInterval(groupScheduleTick, 250);   // 4Hz local correction
@@ -2035,9 +2110,15 @@
         socket.emit('wall:sync-request', { wall_id: wallConfig.wall_id });
       }
       // #group-sync: enter/leave on group membership change (mutually exclusive with wall — the
-      // server sends group_sync=null for a wall member). There's no leader role, so the key is just
-      // the group id; a plain refresh re-aligns the schedule locally (no server round-trip needed).
-      const groupKey = (g) => (g ? String(g.group_id) : '');
+      // server sends group_sync=null for a wall member). A plain refresh re-aligns the schedule
+      // locally (no server round-trip needed).
+      //
+      // The clock-derived protocol has no leader and one mode, so the group id alone used to be
+      // enough. Native sync has both: switching protocol, or leadership moving because the old
+      // leader went offline, changes what THIS player must do — and neither changes the group id.
+      // Keying on the id alone would leave a player running the old protocol, or leave a promoted
+      // leader silently not announcing, until something unrelated forced a re-enter.
+      const groupKey = (g) => (g ? [g.group_id, g.backend || '', g.is_leader ? 'L' : 'f'].join('|') : '');
       const groupChanged = groupKey(groupSync) !== groupKey(data.group_sync);
       if (groupChanged) applyGroupSync(data.group_sync || null);
       else if (groupSync) groupScheduleTick();
