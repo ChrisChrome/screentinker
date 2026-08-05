@@ -17,6 +17,7 @@ const flapLimiter = require('../lib/flap-limiter');
 const sessionSettle = require('../lib/session-settle');   // #148 patch2: eviction-storm debounce
 const { resolveIdentity } = require('../lib/device-identity');
 const { resolveSyncBackend } = require('../lib/sync-backend');
+const playerCapabilities = require('../lib/player-capabilities');
 const logCoalescer = require('../lib/log-coalescer');
 const loopLag = require('../services/loop-lag');
 const deviceSettings = require('../lib/device-settings'); // #150 delete+re-pair settings restore
@@ -139,6 +140,26 @@ function applyHardwareIdentity(deviceId, data) {
       output_index        = COALESCE(?, output_index)
     WHERE id = ?`)
     .run(model, serial, osVersion, output, deviceId);
+}
+
+/*
+ * Persist what the player says it can do.
+ *
+ * Routed through parseDeclared so a malformed or hostile declaration can never reach the
+ * dashboard: unknown capability names are dropped, and anything that is not an array is treated
+ * as no declaration at all.
+ *
+ * The null/empty distinction is the whole point and is easy to lose. A player that declares
+ * NOTHING (old build, absent field) must keep its per-platform baseline, or the several hundred
+ * displays already in the field lose their controls the moment this ships. A player that declares
+ * an EMPTY set is making a real statement — a BrightSign widget with no host bridge, say — and is
+ * stored as '[]' so it is honoured rather than silently upgraded.
+ */
+function applyCapabilities(deviceId, data) {
+  const declared = playerCapabilities.parseDeclared(data && data.capabilities);
+  if (declared === null) return;   // no usable declaration: leave the baseline in charge
+  db.prepare('UPDATE devices SET capabilities = ? WHERE id = ?')
+    .run(JSON.stringify(declared), deviceId);
 }
 
 function generateDeviceToken() {
@@ -866,6 +887,7 @@ module.exports = function setupDeviceSocket(io) {
           // register payload, not device_info, so the emptiness guard above does not apply to
           // them. The function no-ops when the panel reports none of them.
           applyHardwareIdentity(device_id, data);
+          applyCapabilities(device_id, data);
 
           heartbeat.registerConnection(device_id, socket.id);
           // #134: a same-socket re-register is a playlist REFRESH (~45-60s), NOT a reconnect and NOT
