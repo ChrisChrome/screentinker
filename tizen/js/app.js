@@ -444,7 +444,11 @@
       try {
         var item = player.getCurrentItem();
         var v = player.getCurrentVideo();
-        if (data && item && data.content_id && item.content_id === data.content_id && v) v.muted = !!data.muted;
+        if (!data || !item || !data.content_id || item.content_id !== data.content_id) return;
+        // `v` is null for a YouTube item — it is an iframe, not a <video> — so this handler did
+        // nothing at all for the one content type people most often want muted.
+        if (v) { v.muted = !!data.muted; return; }
+        if (item.mime_type === 'video/youtube') player.setYouTubeMuted(!!data.muted);
       } catch (e) {}
     });
 

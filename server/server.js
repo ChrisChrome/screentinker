@@ -376,6 +376,15 @@ app.get('/player/st-sync.js', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'brightsign', 'st-sync.js'));
 });
 
+// The mute decision, from its single source (server/lib/media-mute.js). Served rather than
+// duplicated because this rule disagreed with itself across players for exactly as long as it was
+// written three times: a YouTube embed ignored the per-item mute on the web player and could never
+// unmute at all on Tizen.
+app.get('/player/media-mute.js', (req, res) => {
+  res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'lib', 'media-mute.js'));
+});
+
 // #146 web-player fix: serve the media-surface health decision from its single source
 // (server/lib/player-media-health.js) so the player and the Node test can't drift.
 app.get('/player/player-media-health.js', (req, res) => {

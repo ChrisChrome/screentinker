@@ -843,12 +843,38 @@ PlaylistPlayer.prototype.renderVideo = function (item, single) {
   }
 };
 
+// Flip an already-playing YouTube embed without reloading it. The IFrame API accepts commands by
+// postMessage when enablejsapi=1, which is the only handle on a cross-origin iframe — setting
+// `muted` on the element reaches nothing, which is why the toggle appeared to do nothing here.
+PlaylistPlayer.prototype.setYouTubeMuted = function (muted) {
+  try {
+    var f = document.querySelector('iframe[src*="youtube.com/embed"]');
+    if (!f || !f.contentWindow) return false;
+    f.contentWindow.postMessage(JSON.stringify({
+      event: 'command', func: muted ? 'mute' : 'unMute', args: []
+    }), 'https://www.youtube.com');
+    return true;
+  } catch (e) { return false; }
+};
+
 PlaylistPlayer.prototype.renderYouTube = function (item, single) {
   var id = this.youtubeId(item.remote_url);
   if (!id) { this.skipSoon(); return; }
   var vertical = /st_aspect=vertical/.test(item.remote_url || '');
+  // Audio parity (#129) — this URL hardcoded `mute=1`, so YouTube on Tizen was permanently silent:
+  // the per-item mute flag was never consulted and nothing could ever unmute it. Same feature as
+  // the `<video>` path a few lines up, which honoured the flag correctly.
+  //
+  // The rule is the one in server/lib/media-mute.js, mirrored rather than imported because this
+  // file ships inside the .wgt: a wall follower is always silent (one wall, one audio source),
+  // otherwise the item's flag decides. Tizen is a privileged app with no autoplay-gesture
+  // requirement, so there is no user-gesture term here.
+  var muted = this.wallFollower ? true : !!item.muted;
+  // enablejsapi lets a live mute toggle reach the embed by postMessage without reloading it —
+  // reloading would restart the video from zero every time an operator touched the control.
   var src = 'https://www.youtube.com/embed/' + id +
-    '?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&loop=1&playlist=' + id + '&playsinline=1';
+    '?autoplay=1&mute=' + (muted ? 1 : 0) +
+    '&controls=0&rel=0&modestbranding=1&loop=1&playlist=' + id + '&playsinline=1&enablejsapi=1';
   this.renderFrame(src, single ? 0 : this.durationMs(item), 'autoplay; encrypted-media', vertical);
 };
 

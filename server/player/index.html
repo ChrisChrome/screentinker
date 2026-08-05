@@ -239,6 +239,7 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/player/schedule-eval.js"></script>
+  <script src="/player/media-mute.js"></script>
   <script src="/player/player-media-health.js"></script>
   <!-- feat/transition-engine: WebGL transition runtime (renderer + shaders). Optional; if it fails to
        load the player just hard-cuts. Not deferred so it's ready before the first content swap. -->
@@ -657,6 +658,47 @@
     let ytApiReady = false;
     let ytApiCallbacks = [];
     let activeYtPlayer = null;
+    // The item currently mounted, so a live mute toggle can re-resolve without waiting for the
+    // next advance, and #129's per-item flag survives a remote override being cleared.
+    let activeMuteItem = null;
+    // Live operator override: null means "not set", which defers to the item. Distinguishing
+    // null from false is the difference between "operator wants sound" and "nobody has said".
+    let remoteMuteOverride = null;
+
+    function muteState(item) {
+      return {
+        wallFollower: (typeof isWallFollower === 'function') ? !!isWallFollower() : false,
+        remoteMuted: remoteMuteOverride,
+        itemMuted: !!(item && item.muted),
+        userGesture: !!userHasInteracted,
+      };
+    }
+
+    // Resolve once, apply to whatever surface is actually playing. A YouTube item is a
+    // cross-origin iframe: `el.muted` reaches nothing, which is why a muted item used to play
+    // with sound. The IFrame API is the only handle on it.
+    // The decision alone, touching no surface — needed when BUILDING a player, where the answer
+    // is a construction parameter rather than something applied afterwards.
+    function applyMuteWanted(item) {
+      return window.MediaMute ? window.MediaMute.resolveMuted(muteState(item)) : true;
+    }
+
+    function applyMute(item) {
+      if (item !== undefined) activeMuteItem = item;
+      const want = window.MediaMute
+        ? window.MediaMute.resolveMuted(muteState(activeMuteItem))
+        : true;   // no resolver loaded => stay silent rather than blare
+      document.querySelectorAll('video, audio').forEach((el) => {
+        try { el.muted = want; } catch (e) { /* torn down */ }
+      });
+      if (activeYtPlayer) {
+        try {
+          if (want) activeYtPlayer.mute();
+          else { activeYtPlayer.unMute(); activeYtPlayer.setVolume(mediaVolume != null ? Math.round(mediaVolume * 100) : 100); }
+        } catch (e) { /* player not ready yet; onReady applies it again */ }
+      }
+      return want;
+    }
     let ytGeneration = 0;
     // #215: fallback advance timer for YouTube. Shorts (and some Android TV WebViews)
     // never fire the ENDED state, so onStateChange alone can stall the playlist. Armed
@@ -1494,6 +1536,9 @@
       socket.on('device:mute-changed', (data) => {
         const item = playlist[currentIndex];
         if (data && item && data.content_id && item.content_id === data.content_id && currentVideoEl) {
+          // Was `<video>`-only, so a YouTube item ignored the toggle entirely.
+          remoteMuteOverride = !!data.muted;
+          applyMute();
           try { currentVideoEl.muted = !!data.muted; } catch (_) {}
         }
       });
@@ -2462,7 +2507,9 @@
       container.appendChild(mountEl);
 
       // Add a click-to-unmute overlay on top of the YouTube iframe
-      if (!userHasInteracted) {
+      // Only when a gesture is the ONLY thing in the way: prompting on an item an operator
+      // deliberately muted trains viewers to click a button that undoes that.
+      if (window.MediaMute ? window.MediaMute.shouldOfferUnmute(muteState(item)) : !userHasInteracted) {
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:absolute;inset:0;z-index:10;cursor:pointer;display:flex;align-items:end;justify-content:center;padding-bottom:40px;';
         overlay.innerHTML = '<div style="background:rgba(0,0,0,0.7);color:#fff;padding:10px 24px;border-radius:8px;font:14px sans-serif;pointer-events:none">Click to unmute</div>';
@@ -2470,11 +2517,8 @@
           e.stopPropagation();
           userHasInteracted = true;
           unlockAudio();
-          if (activeYtPlayer && typeof activeYtPlayer.unMute === 'function') {
-            activeYtPlayer.unMute();
-            activeYtPlayer.setVolume(100);
-            console.log('Unmuted YouTube player via overlay');
-          }
+          applyMute(item);   // resolves to unmuted here — the gesture was the only blocker
+          console.log('Unmuted YouTube player via overlay');
           overlay.remove();
         };
         // Don't override container.style.position here — #playerContainer is already
@@ -2496,7 +2540,10 @@
           height: '100%',
           playerVars: {
             autoplay: 1,
-            mute: userHasInteracted ? 0 : 1,
+            // Was `userHasInteracted ? 0 : 1`, which consulted autoplay policy and NOTHING else — so an
+            // item an operator muted in the admin console played with sound, and a wall follower blared
+            // alongside its leader.
+            mute: applyMuteWanted(item) ? 1 : 0,
             controls: 0,
             rel: 0,
             modestbranding: 1,
@@ -2514,9 +2561,13 @@
               if (myGeneration !== ytGeneration) return;
               console.log('YouTube player ready:', item.filename);
               event.target.playVideo();
-              if (userHasInteracted) {
+              // Re-resolve here too: playerVars are read once at construction, and a mute toggle can
+              // land while the IFrame API is still loading.
+              if (applyMuteWanted(item)) {
+                event.target.mute();
+              } else {
                 event.target.unMute();
-                event.target.setVolume(100);
+                event.target.setVolume(mediaVolume != null ? Math.round(mediaVolume * 100) : 100);
               }
               // #215 safety net: if ENDED never fires (Shorts, flaky Android TV
               // WebViews), advance from the reported duration + 3s slack. Cleared
