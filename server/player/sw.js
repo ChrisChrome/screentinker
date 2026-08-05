@@ -1,3 +1,5 @@
+// v22: worker scope widened to '/' (it never controlled /player before) + prune-to-playlist, so a
+// replaced asset's superseded copy is reclaimed rather than waiting on the quota.
 // v21: chunked resumable content prefetch + revision-keyed media URLs — index.html gained
 // mediaUrl()/requestOfflineCache() and this worker gained the message handler, so an old shell
 // cache would pair a new worker with a player that never posts it a playlist.
@@ -6,7 +8,7 @@
 // — a player then ran a new index.html against a stale st-bridge.js and threw on every heartbeat.
 // Bump whenever a shipped /player asset changes shape; content lives in its own cache, so this
 // costs a small re-download and never re-fetches the playlist.
-const CACHE_NAME = 'rd-player-v21';
+const CACHE_NAME = 'rd-player-v22';
 // Content lives in its own cache so the shell can be re-versioned (the activate handler deletes
 // every cache that is not CACHE_NAME) WITHOUT throwing away megabytes of media that are still
 // perfectly valid. Rolling the shell used to mean a player re-downloaded its entire playlist.
@@ -132,6 +134,14 @@ let prefetchChain = Promise.resolve();
 self.addEventListener('message', (event) => {
   const data = event.data;
   if (!data || data.type !== 'st-cache-playlist' || !Array.isArray(data.urls)) return;
+
+  // The player sends the COMPLETE set of media this display needs, so anything else in the content
+  // cache is superseded and can go. Revision-keyed sweeping alone is not enough: replacing an asset
+  // writes a new randomly-named file, so the old copy lives at a different PATH and nothing keyed
+  // on the asset path can find it. Without this the cache only grows, and on a panel with a 1GB
+  // widget quota a handful of replaced videos is the entire budget.
+  if (data.prune) prefetchChain = prefetchChain.then(() => pruneToPlaylist(data.urls)).catch(() => {});
+
   for (const url of data.urls) {
     if (typeof url !== 'string' || !POLICY || !POLICY.isCacheableContent(url, 'GET')) continue;
     if (prefetching.has(url)) continue;   // single-flight: a 60s playlist sweep must not restart it
@@ -232,6 +242,18 @@ async function ensureCached(url) {
   }));
   await dropChunks(cache, url);
   await sweepOldRevisions(cache, url);
+}
+
+async function pruneToPlaylist(urls) {
+  const cache = await caches.open(CONTENT_CACHE);
+  const keep = new Set(urls);
+  for (const key of await cache.keys()) {
+    if (keep.has(key.url)) continue;
+    // An in-flight transfer's bookkeeping belongs to a URL that IS in the keep set; deleting it
+    // because the chunk key itself is not listed would restart that download on every sweep.
+    if (POLICY.isInternalKey(key.url) && [...keep].some((u) => POLICY.assetKey(u) === POLICY.assetKey(key.url))) continue;
+    await cache.delete(key);
+  }
 }
 
 async function dropChunks(cache, url) {

@@ -415,6 +415,16 @@ app.use('/player', express.static(path.join(__dirname, 'player'), { etag: true, 
   if (filePath.endsWith('.js') || filePath.endsWith('.css') || filePath.endsWith('.html')) {
     res.setHeader('Cache-Control', 'no-cache');
   }
+  if (filePath.endsWith('sw.js')) {
+    // A worker's default scope is its own directory, so sw.js at /player/sw.js can only control
+    // /player/ AND BELOW — which does not include /player itself. The player is served at all three
+    // of /player, /player/ and /player/index.html, and /player (no trailing slash) is the one
+    // everybody actually uses: it is what the dashboard shows and what gets typed into a panel.
+    // On that URL the worker registered, reported success, and then controlled nothing at all — no
+    // shell cache, no content cache, no offline playback, silently. Widening the permitted scope is
+    // what makes the registration below able to claim the page it was loaded from.
+    res.setHeader('Service-Worker-Allowed', '/');
+  }
 }}));
 
 // Serve setup scripts

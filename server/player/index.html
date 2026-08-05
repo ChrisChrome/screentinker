@@ -438,7 +438,11 @@
         const urls = (items || [])
           .filter((it) => it && it.filepath && !it.remote_url)
           .map((it) => mediaUrl(it));
-        if (urls.length) sw.postMessage({ type: 'st-cache-playlist', urls });
+        // `urls` is the COMPLETE set for this display, so the worker may treat anything else in
+        // the content cache as superseded. That is what reclaims a replaced asset: a replace writes
+        // a new randomly-named file, so the old copy is not merely a different revision of the same
+        // URL — it is a different URL entirely, and nothing keyed on the asset path can find it.
+        sw.postMessage({ type: 'st-cache-playlist', urls, prune: true });
       } catch (e) { /* never let caching break playback */ }
     }
 
@@ -2404,7 +2408,11 @@
       playlist = newItems;
       imgPreloadCache = {}; // playlist changed — drop stale one-ahead preloads (feat/player-image-preload)
       savePlaylistCache(playlist);
-      requestOfflineCache(playlist);
+      // The RAW assignments, not the split `playlist`: multi-zone items live in their own lists,
+      // and a keep-set that omitted them would have the worker prune assets a zone is still
+      // playing. This is also what makes the prune safe — it is the whole truth about what this
+      // display needs.
+      requestOfflineCache(Array.isArray(data.assignments) ? data.assignments : playlist);
       // #157: a fresh structural update supersedes any pending deferred rotation; the branches
       // below re-arm it only if the current item was removed while live in solo playback.
       deferredRotation = false;
@@ -4044,7 +4052,12 @@
 
     // Register service worker for offline content caching
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/player/sw.js').then(reg => {
+      // Explicit scope. The default would be the worker's own directory (/player/), which does NOT
+      // include /player — the URL the dashboard shows and the one panels are actually configured
+      // with. Registration succeeded there and then controlled nothing: no shell cache, no content
+      // cache, no offline playback, and no error to notice. The server sends
+      // Service-Worker-Allowed so this wider scope is permitted.
+      navigator.serviceWorker.register('/player/sw.js', { scope: '/' }).then(reg => {
         console.log('Service Worker registered');
         // When a new SW activates, reload so the fresh code takes effect immediately
         reg.addEventListener('updatefound', () => {
