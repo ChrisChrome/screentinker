@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.9.29-rc2
+
+Fixes for three things rc1 only revealed once it was deployed and pointed at real hardware.
+
+### Fixed
+- **The player assets 404'd in a container.** `/player/st-bridge.js` and `/player/st-sync.js` are
+  served from `../brightsign` so the copy the player loads can never drift from the copy on the
+  player's own storage — but the Dockerfile never copied that directory into the image, so both
+  routes worked from a dev checkout and failed in Docker. Note how this fails when the route is
+  absent entirely: the SPA fallback answers **200 with `text/html`**, so the browser gets a page
+  where it expected JavaScript and the bridge silently never exists.
+- **A BrightSign kept re-pairing on every boot.** The bridge persisted `device_id` but not
+  `device_token`. The server authenticates a claim to an existing display with the token, so an id
+  presented without one reads as a brand-new player and gets a fresh device row.
+- **A BrightSign was labelled "Web Player".** It runs the same web player, so `client_type` is
+  `player` and the device view fell through to a hardcoded label — indistinguishable from a
+  browser tab, for a dedicated signage appliance.
+
+### Added
+- **`autorun.zip` — a single-file player installer**, attached to every release and built by
+  `scripts/build-autorun-zip.sh`. Drop it on the root of a player's storage and power-cycle.
+- **Booting from internal flash.** A player runs `FLASH:/autorun.brs` with no card present at all,
+  so a failed card slot no longer ends a player's life. Confirmed on an XT245 with a physically
+  dead microSD interface.
+
 ## 1.9.29-rc1
 
 **BrightSign port.** The player on BrightSign is the ordinary web player running in an
