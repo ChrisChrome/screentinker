@@ -1718,7 +1718,11 @@
             device_utc: Date.now(),
             // Real values where the platform has them (temperature, storage quota). Spread LAST so
             // it overrides the nulls above, and empty off-platform so nothing else changes.
-            ...(BS ? BS.telemetrySnapshot() : {}),
+            // typeof, not truthiness: the bridge and this page are halves of one contract but are
+            // fetched separately, so a player can run a NEW page against a CACHED older bridge.
+            // Calling a method that version lacks threw here every 15s and took the whole heartbeat
+            // with it — the display kept playing while silently reporting nothing at all.
+            ...(BS && typeof BS.telemetrySnapshot === 'function' ? BS.telemetrySnapshot() : {}),
           }
         });
       }, HEARTBEAT_INTERVAL);

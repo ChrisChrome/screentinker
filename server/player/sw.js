@@ -1,4 +1,9 @@
-const CACHE_NAME = 'rd-player-v19';
+// v20: rc3 changed the fetch strategy AND the shipped player assets. The activate handler deletes
+// every cache whose name does not match, so leaving this at v19 kept the previous shell cache alive
+// — a player then ran a new index.html against a stale st-bridge.js and threw on every heartbeat.
+// Bump whenever a shipped /player asset changes shape; content lives in its own cache, so this
+// costs a small re-download and never re-fetches the playlist.
+const CACHE_NAME = 'rd-player-v20';
 // Content lives in its own cache so the shell can be re-versioned (the activate handler deletes
 // every cache that is not CACHE_NAME) WITHOUT throwing away megabytes of media that are still
 // perfectly valid. Rolling the shell used to mean a player re-downloaded its entire playlist.
