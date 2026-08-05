@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.9.29-rc1
+
+**BrightSign port.** The player on BrightSign is the ordinary web player running in an
+`roHtmlWidget` — that part already worked. This release adds the host around it, which covers what a
+page cannot do for itself, and a per-group choice of synchronisation protocol.
+
+Release candidate: cut for testing on alpha, not for production fleets.
+
+### Added
+- **`brightsign/autorun.brs` — a supervised host, not a URL wrapper.** It owns the widget lifecycle,
+  because a page-initiated `location.reload()` does not reliably bring an `roHtmlWidget` back: a
+  deploy on 2026-07-28 reloaded every connected player and the BrightSign was the only one that never
+  returned. The page now posts `{type:"restart"}` and the host rebuilds the widget. It also retries
+  `load-error` with backoff, falls back to a local page, and runs a heartbeat watchdog that catches a
+  page which loaded fine and then wedged — the case `load-error` never reports.
+- **`brightsign/st-bridge.js` — the page's half of that contract**, over `@brightsign/messageport`.
+  Registry-backed identity (the registry outlives `localStorage` on this platform),
+  restart-instead-of-reload, heartbeat, and sync-backend reporting. Every method degrades to a no-op
+  off-platform, so it is served to every player rather than gated on a user agent.
+- **`brightsign/st-sync.js` — native SyncManager support.** Frame-accurate video sync between
+  BrightSign players via `setSyncParams` on the standard `<video>` element.
+- **`server/lib/sync-backend.js` — whose protocol a group runs.** `auto` picks BrightSign's native
+  sync when every member is a BrightSign and ours otherwise. Native sync selected for a mixed group,
+  or for players on different subnets, downgrades and reports why: BrightWall is multicast and
+  cannot cross networks, and a half-synced group looks perfectly healthy on the dashboard while one
+  panel drifts alone.
+- **Boot from internal flash.** A player will run `FLASH:/autorun.brs` with no card present at all,
+  confirmed on an XT245 whose microSD interface is physically dead. `StorageRoot()` probes for it and
+  falls back to `SD:`, so a failed card slot no longer ends a player's life.
+
+### Changed
+- The web player restarts through a single `restartPlayer()` path instead of four separate
+  `location.reload()` call sites. Off BrightSign the behaviour is unchanged.
+- Storage keys carry a per-output suffix so a dual-output player's two widgets, which share an origin
+  and one `localStorage`, cannot collapse into a single device row.
+
 ## 1.9.28
 
 **Platform-wide QA sweep — 25 fixes.** Findings from an audit of the Android player, the browser and
