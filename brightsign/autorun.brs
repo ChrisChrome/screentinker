@@ -174,6 +174,12 @@ Sub Main()
 
                 else if m.type = "identity" then
                     ' Pairing completed in the page — persist it where a reboot can find it.
+                    ' clear:true is the operator reset; the registry must forget the display or
+                    ' the next boot re-adopts it and the reset silently does nothing.
+                    if m.clear = true then
+                        SaveRegistry("device_id", "")
+                        cfg.device_id = ""
+                    end if
                     if m.device_id <> invalid then
                         SaveRegistry("device_id", m.device_id)
                         cfg.device_id = m.device_id

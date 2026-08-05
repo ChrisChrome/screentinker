@@ -294,6 +294,19 @@ app.get('/player/schedule-eval.js', (req, res) => {
   res.sendFile(path.join(__dirname, 'lib', 'schedule-eval.js'));
 });
 
+// BrightSign bridge, served from its single source (brightsign/st-bridge.js) so the copy the
+// player loads can never drift from the one sitting on the SD card next to autorun.brs — the two
+// are halves of one messageport contract, and a skew between them is exactly what would leave a
+// panel unable to restart itself.
+//
+// Served to every player rather than gated on a user agent: it costs one small request, every
+// method degrades to a no-op off-platform, and a panel reporting an unexpected UA would otherwise
+// silently lose restart-instead-of-reload — the one thing it most needs.
+app.get('/player/st-bridge.js', (req, res) => {
+  res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, '..', 'brightsign', 'st-bridge.js'));
+});
+
 // #146 web-player fix: serve the media-surface health decision from its single source
 // (server/lib/player-media-health.js) so the player and the Node test can't drift.
 app.get('/player/player-media-health.js', (req, res) => {

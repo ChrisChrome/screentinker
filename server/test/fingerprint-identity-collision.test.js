@@ -44,7 +44,7 @@ after(() => { try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } cat
 // ---------------------------------------------------------------- client: distinct identities
 
 // Run the real client function against a fake localStorage, one per simulated panel.
-function makePanel(hw, store = {}) {
+function makePanel(hw, store = {}, screenSuffix = '') {
   const start = HTML.indexOf('function generateBrowserFingerprint()');
   assert.notEqual(start, -1);
   let depth = 0, end = -1;
@@ -54,6 +54,9 @@ function makePanel(hw, store = {}) {
   }
   const src = HTML.slice(start, end);
   const scope = {
+    // A dual-output BrightSign runs two widgets against one localStorage, so the install
+    // salt is namespaced per output. Empty for every single-output player.
+    SCREEN_SUFFIX: screenSuffix,
     generateHardwareFingerprint: () => hw,
     localStorage: {
       getItem: (k) => (k in store ? store[k] : null),
@@ -70,6 +73,17 @@ test('THE BUG: two identical panels no longer share an identity', () => {
   const a = makePanel(HW), b = makePanel(HW);
   assert.notEqual(a.fp(), b.fp(), 'identical hardware, different identities');
   assert.ok(a.fp().startsWith(HW), 'the hardware value is still recognisable inside it');
+});
+
+test('two OUTPUTS of one dual-HDMI player also get distinct identities', () => {
+  // autorun.brs gives the second HDMI output its own widget; both share an origin and one
+  // localStorage. Without the per-output salt they would fingerprint identically and the server
+  // would merge them into a single device row.
+  const HW = 'web-m73u8w-5f';
+  const shared = {};
+  const out1 = makePanel(HW, shared, '');
+  const out2 = makePanel(HW, shared, '_s2');
+  assert.notEqual(out1.fp(), out2.fp(), 'one player, two screens, two displays');
 });
 
 test('an identity is stable across reloads of the same install', () => {
@@ -94,6 +108,7 @@ test('storage being unavailable degrades to hardware rather than to nothing', ()
     else if (HTML[j] === '}' && --depth === 0) { end = j + 1; break; }
   }
   const scope = {
+    SCREEN_SUFFIX: '',
     generateHardwareFingerprint: () => 'web-hw',
     localStorage: { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } },
     window: { crypto: { getRandomValues: (b) => crypto.randomFillSync(b) } },

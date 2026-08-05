@@ -69,17 +69,37 @@
     try { registry = new RegistryClass(); } catch (e) { registry = null; }
   }
 
-  function regRead(key, fallback) {
+  function screenNumber() {
+    try {
+      var m = new RegExp('[?&]screen=([^&]*)').exec(global.location.search || '');
+      var n = m ? parseInt(decodeURIComponent(m[1]), 10) : 1;
+      return (isNaN(n) || n < 1) ? 1 : n;
+    } catch (e) { return 1; }
+  }
+
+  /*
+   * Registry keys are namespaced per output. On a dual-output player autorun.brs runs TWO
+   * widgets against the same registry, the same SD storage_path and the same origin — so an
+   * un-namespaced "device_id" would have both outputs adopt one identity and collapse into a
+   * single device row. Screen 1 keeps the bare key so existing single-output panels are
+   * unaffected.
+   */
+  function key(name) {
+    var s = screenNumber();
+    return s > 1 ? name + '_s' + s : name;
+  }
+
+  function regRead(name, fallback) {
     if (!registry) return fallback;
     try {
-      var v = registry.read('screentinker', key);
+      var v = registry.read('screentinker', key(name));
       return (v === undefined || v === null || v === '') ? fallback : v;
     } catch (e) { return fallback; }
   }
 
-  function regWrite(key, value) {
+  function regWrite(name, value) {
     if (!registry) return false;
-    try { registry.write('screentinker', key, String(value)); return true; } catch (e) { return false; }
+    try { registry.write('screentinker', key(name), String(value)); return true; } catch (e) { return false; }
   }
 
   var deviceInfo = null;
@@ -132,9 +152,16 @@
     },
 
     /* Which physical output this widget is painting. 1 unless autorun.brs made a second one. */
-    screen: function () {
-      var n = parseInt(qs('screen') || '1', 10);
-      return (isNaN(n) || n < 1) ? 1 : n;
+    screen: screenNumber,
+
+    /*
+     * Suffix callers should append to any per-display storage key. Two widgets on one player
+     * share an origin and therefore share localStorage, so the config, playlist cache and
+     * install salt all need separating or the second output silently becomes the first.
+     */
+    storageSuffix: function () {
+      var s = screenNumber();
+      return s > 1 ? '_s' + s : '';
     },
 
     /*
@@ -152,6 +179,16 @@
       if (deviceId) regWrite('device_id', deviceId);
       if (serverUrl) regWrite('server_url', serverUrl);
       post({ type: 'identity', device_id: deviceId || null, server_url: serverUrl || null });
+    },
+
+    /*
+     * Forget this display. Required for the operator reset to mean anything: the registry
+     * outlives localStorage, so clearing local storage alone would leave the panel re-adopting
+     * the same identity on its next boot — a reset that resets nothing.
+     */
+    clearIdentity: function () {
+      regWrite('device_id', '');
+      return post({ type: 'identity', clear: true });
     },
 
     /*

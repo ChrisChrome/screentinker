@@ -116,6 +116,10 @@
        few-ms delay vs the inline trap is fine since errors before this
        loads are already captured in __debugLog by the inline trap above. -->
   <script src="/player/debug-overlay.js" defer></script>
+  <!-- BrightSign bridge. NOT deferred: the player asks it who this device is and whether a
+       restart can be delegated to the host, and both questions are asked during boot. Off
+       BrightSign every method is a no-op, so this is inert in a browser. -->
+  <script src="/player/st-bridge.js"></script>
   <title>ScreenTinker Player</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -314,18 +318,70 @@
     });
 
     // ==================== Config ====================
-    const STORAGE_KEY = 'rd_web_player';
+    // The BrightSign bridge, or null. Resolved before the storage keys because on a dual-output
+    // player it decides what those keys are called.
+    const BS = (typeof window !== 'undefined' && window.ScreenTinkerBS) || null;
+    const ON_BRIGHTSIGN = !!(BS && BS.isBrightSign());
+
+    // Per-output storage namespace. A dual-output BrightSign runs TWO widgets against one origin
+    // and one SD storage_path, so they share localStorage: without this the second output reads
+    // the first one's config and device id and the two collapse into a single device row. Empty
+    // for screen 1 and for every other platform, so nothing existing moves.
+    const SCREEN_SUFFIX = (() => {
+      try { return BS ? (BS.storageSuffix() || '') : ''; } catch (e) { return ''; }
+    })();
+
+    const STORAGE_KEY = 'rd_web_player' + SCREEN_SUFFIX;
     const HEARTBEAT_INTERVAL = 15000;
     const PLAYLIST_REFRESH_INTERVAL = 60000;
     // #104: device-free dashboard preview mode (set by the ?preview=1 boot branch).
     // Gates the webpage-widget honest note and keeps the pairing/socket path off.
     let PREVIEW_MODE = false;
 
-    function getConfig() {
-      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
+    // Restarting the player — the only way any call site should do it.
+    //
+    // On BrightSign a page-initiated location.reload() does not reliably bring the roHtmlWidget
+    // back: a deploy on 2026-07-28 reloaded every connected player, and the BrightSign was the
+    // only one that never returned, while a browser on the same deploy was heartbeating minutes
+    // later. autorun.brs rebuilds the widget instead, which is a restart the OS actually
+    // performs.
+    //
+    // Falls through to reload() whenever the host isn't there to take the request — a browser, or
+    // a widget built without nodejs_enabled — so a caller is never left with nothing done.
+    function restartPlayer(reason) {
+      try {
+        if (BS && BS.hasHost() && BS.restart(reason)) {
+          console.log('[bs] restart delegated to host:', reason);
+          return;
+        }
+      } catch (e) { /* a broken bridge must not strand the player */ }
+      location.reload();
     }
-    function saveConfig(cfg) { localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); }
-    const PLAYLIST_CACHE_KEY = 'rd_playlist_cache';
+
+    function getConfig() {
+      let cfg = {};
+      try { cfg = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { cfg = {}; }
+      // On BrightSign localStorage is bound to the page origin and its quota; the registry is
+      // not. When local storage comes back empty but the registry still knows who we are, adopt
+      // that identity instead of re-pairing — otherwise a provisioned panel spawns a second
+      // device row, which is the same duplicate-row failure the hardware-only fingerprint caused.
+      if (BS && !cfg.deviceId) {
+        try {
+          const known = BS.deviceId();
+          if (known) { cfg.deviceId = known; cfg.paired = true; }
+        } catch (e) { /* registry unavailable — carry on unpaired */ }
+      }
+      return cfg;
+    }
+    function saveConfig(cfg) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+      // Mirror identity into the registry so it survives a reboot, a content update or a storage
+      // wipe. Best-effort by design: failing to persist here must never break pairing itself.
+      if (BS && cfg && cfg.deviceId) {
+        try { BS.setIdentity(cfg.deviceId, cfg.serverUrl || null); } catch (e) { /* ignore */ }
+      }
+    }
+    const PLAYLIST_CACHE_KEY = 'rd_playlist_cache' + SCREEN_SUFFIX;
     function savePlaylistCache(items) {
       try { localStorage.setItem(PLAYLIST_CACHE_KEY, JSON.stringify(items)); } catch {}
     }
@@ -335,7 +391,7 @@
     // Cache the layout alongside the playlist so a cold start renders the correct
     // zone layout on the FIRST pass, instead of rendering fullscreen and only
     // switching to zones once the server payload arrives.
-    const LAYOUT_CACHE_KEY = 'rd_layout_cache';
+    const LAYOUT_CACHE_KEY = 'rd_layout_cache' + SCREEN_SUFFIX;
     function saveLayoutCache(l) {
       try { localStorage.setItem(LAYOUT_CACHE_KEY, JSON.stringify(l || null)); } catch {}
     }
@@ -369,7 +425,7 @@
         delete cfg.deviceId; delete cfg.deviceToken; delete cfg.pairingCode;
         cfg.paired = false;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
-        localStorage.removeItem('st_install_id');      // mint a NEW identity, not the old one
+        localStorage.removeItem('st_install_id' + SCREEN_SUFFIX);      // mint a NEW identity, not the old one
         localStorage.removeItem(PLAYLIST_CACHE_KEY);
         localStorage.removeItem(LAYOUT_CACHE_KEY);
         localStorage.removeItem('st_group_sync');
@@ -732,12 +788,12 @@
       const hw = generateHardwareFingerprint();
       let salt = null;
       try {
-        salt = localStorage.getItem('st_install_id');
+        salt = localStorage.getItem('st_install_id' + SCREEN_SUFFIX);
         if (!salt) {
           const buf = new Uint8Array(16);
           (window.crypto || window.msCrypto).getRandomValues(buf);
           salt = Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
-          localStorage.setItem('st_install_id', salt);
+          localStorage.setItem('st_install_id' + SCREEN_SUFFIX, salt);
         }
       } catch (e) { salt = null; }
       return salt ? hw + '-' + salt.slice(0, 16) : hw;
@@ -1373,7 +1429,7 @@
 
       socket.on('device:command', (data) => {
         console.log('Command:', data.type);
-        if (data.type === 'refresh') location.reload();
+        if (data.type === 'refresh') restartPlayer('operator refresh');
         if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); }
         if (data.type === 'screen_off') toggleScreenOff();
         if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); }
@@ -1510,7 +1566,21 @@
       // server consumes one thing). Backward-compatible: an old server ignores unknown fields.
       data.client_type = 'player';
       data.client_version = PLAYER_VERSION;
-      data.platform = browserPlatform();
+      // A BrightSign must say so rather than registering as "Chrome 120", because the sync
+      // resolver (server/lib/sync-backend.js) decides native-vs-ours from exactly this field —
+      // and a wall that reports itself as a browser can never be offered BrightWall.
+      data.platform = ON_BRIGHTSIGN ? 'brightsign' : browserPlatform();
+      if (ON_BRIGHTSIGN) {
+        try {
+          data.bs_model = BS.model() || null;
+          data.bs_os_version = BS.osVersion() || null;
+          data.bs_serial = BS.serial() || null;
+          // Which physical output this widget paints. autorun.brs gives the second output its
+          // own widget with &screen=2, so two rows from one player stay distinguishable.
+          data.bs_screen = BS.screen();
+          data.sync_backend = BS.syncBackend();
+        } catch (e) { /* identity extras are additive — never block registration */ }
+      }
       data.contract_version = 'v4';
       // Device identity. `fingerprint` is per-INSTALL and is what the server matches on.
       // `hw_fingerprint` is the old hardware-only value, sent alongside so a panel whose storage
@@ -1579,7 +1649,9 @@
         fetch(config.serverUrl + '/api/version').then(r => r.json()).then(data => {
           if (knownServerHash && data.hash !== knownServerHash) {
             console.log('Server code updated, reloading...', knownServerHash, '->', data.hash);
-            location.reload();
+            // THE deploy path — this is the exact line that darkened a BrightSign panel on
+            // 2026-07-28, when every connected player self-reloaded and that one never returned.
+            restartPlayer('server code updated');
           }
         }).catch(() => {});
       }, 30000);
@@ -3472,7 +3544,7 @@
             newWorker.addEventListener('statechange', () => {
               if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
                 console.log('New Service Worker activated — reloading for fresh code');
-                location.reload();
+                restartPlayer('service worker activated');
               }
             });
           }
@@ -3488,7 +3560,11 @@
           localStorage.removeItem(STORAGE_KEY);
           localStorage.removeItem(PLAYLIST_CACHE_KEY);
           localStorage.removeItem(LAYOUT_CACHE_KEY);
-          location.reload();
+          // The registry outlives localStorage, and getConfig() re-adopts the identity it finds
+          // there. Without this the reset would appear to work and the panel would come straight
+          // back paired as the same display — a reset that resets nothing.
+          if (BS) { try { BS.clearIdentity(); } catch (e) { /* best effort */ } }
+          restartPlayer('operator reset');
         }
       }
       if (e.key === 'f' || e.key === 'F11') {
