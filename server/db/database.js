@@ -398,6 +398,12 @@ const migrations = [
   // Which physical output this row paints. A dual-output player runs one player per connector and
   // registers as two devices; without this they are indistinguishable in the dashboard.
   "ALTER TABLE devices ADD COLUMN output_index INTEGER",
+  // What the player says it can do, as a JSON array (see lib/player-capabilities.js). NULL means
+  // the panel has never declared — the overwhelming majority of the fleet on the day this ships —
+  // and resolves to a per-platform baseline. That NULL is load bearing: an empty array is a player
+  // genuinely reporting it can do nothing, and collapsing the two would either strip the UI from
+  // every existing display or ignore a player that told us the truth.
+  "ALTER TABLE devices ADD COLUMN capabilities TEXT",
   // Backfill a unique 6-digit PIN for already-paired devices that predate the
   // settings_pin column (their next reconnect re-sends device:paired with it, so
   // the existing fleet isn't locked out of the on-device menu). Idempotent: the

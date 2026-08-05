@@ -1,5 +1,6 @@
 const { db } = require('../db/database');
 const { _localParts } = require('../lib/schedule-eval');
+const playerCapabilities = require('../lib/player-capabilities');
 
 let io = null;
 
@@ -120,6 +121,11 @@ function rebootDue(schedule, tz, now, lastDate) {
 function maybeRebootDevice(device, now, deviceNs) {
   const { due, today } = rebootDue(effectiveRebootSchedule(device), deviceTz(device), now, device.reboot_last_date);
   if (!due) return;
+  // A nightly reboot can be scheduled on a group, and a group holds browser tabs. Sending it
+  // anyway was harmless in itself, but the log line below then claimed a reboot had fired every
+  // night for a display that cannot reboot — which is what someone reads when they are trying to
+  // work out why a panel never came back.
+  if (!playerCapabilities.supports(device, 'system.reboot')) return;
   db.prepare('UPDATE devices SET reboot_last_date = ? WHERE id = ?').run(today, device.id);
   deviceNs.to(device.id).emit('device:command', { type: 'reboot', payload: { scheduled: true } });
   console.log(`[reboot] scheduled reboot fired for device ${device.id} (${device.name || 'unnamed'}) at local ${today}`);

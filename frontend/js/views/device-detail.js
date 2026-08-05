@@ -192,6 +192,22 @@ async function loadDevice(deviceId, activeTab = null) {
   try {
     const device = await api.getDevice(deviceId);
     currentDevice = device;
+
+    /*
+     * Does this display support `cap`? Drives which controls render at all.
+     *
+     * Every control used to be offered to every display: a browser tab was shown "Reboot device",
+     * a Tizen TV was shown screen power. They did nothing, silently, and read as bugs. Hidden
+     * rather than disabled — a greyed-out button on a panel that will NEVER gain the capability is
+     * a permanent question ("what do I have to do to enable this?") with no answer. The capability
+     * list is shown in the Info tab so a missing control is explainable.
+     *
+     * The server resolves the baseline for the ~440 displays that declare nothing, so this sees a
+     * populated list either way and never has to know the difference.
+     */
+    const caps = Array.isArray(device.capabilities) ? device.capabilities : null;
+    const can = (cap) => (caps ? caps.includes(cap) : true);   // no list at all => pre-capability server, show everything
+
     const latestTelemetry = device.telemetry?.[0] || {};
     const diagWidget = (device.assignments || []).find(a => a && a.widget_type === 'diag-smoothness');
 
@@ -205,13 +221,14 @@ async function loadDevice(deviceId, activeTab = null) {
         <div style="display:flex;gap:8px">
           <button class="btn btn-secondary btn-sm" id="devicePreviewBtn">${t('device.preview_btn')}</button>
           <button class="btn btn-secondary btn-sm" id="renameBtn">${t('device.rename')}</button>
+          ${can('remote.screenshot') ? `
           <button class="btn btn-secondary btn-sm" id="screenshotBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
               <polyline points="21 15 16 10 5 21"/>
             </svg>
             ${t('device.screenshot_btn')}
-          </button>
+          </button>` : ''}
           ${device.android_version && !device.android_version.startsWith('Web/') ? `
           <button class="btn btn-secondary btn-sm" id="deviceOwnerBtn" title="${t('device.owner_provision.tip')}">${t('device.owner_provision.btn')}</button>` : ''}
           <button class="btn btn-secondary btn-sm" id="blockDeviceBtn">${device.blocked ? 'Unblock' : 'Block'}</button>
@@ -219,21 +236,25 @@ async function loadDevice(deviceId, activeTab = null) {
         </div>
       </div>
 
-      ${device.tier === 2 ? `
+      ${/* tier===2 is kept alongside the capability: it is already an accurate RUNTIME signal from
+            the panel, and a device-owner display that has not yet shipped a capability declaration
+            would otherwise lose these buttons the day this deploys. */
+        (device.tier === 2 || can('system.device_owner')) ? `
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 0 4px" title="${t('device.tier2.tip')}">
         <span style="font-size:12px;color:var(--text-muted)">${t('device.tier2.label')}</span>
         <button class="btn btn-secondary btn-sm" id="t2Reboot">${t('device.tier2.reboot')}</button>
         <button class="btn btn-secondary btn-sm" id="t2Lock">${t('device.tier2.lock')}</button>
+        ${(device.tier === 2 || can('system.kiosk')) ? `
         <button class="btn btn-secondary btn-sm" id="t2KioskOn">${t('device.tier2.kiosk_on')}</button>
-        <button class="btn btn-secondary btn-sm" id="t2KioskOff">${t('device.tier2.kiosk_off')}</button>
+        <button class="btn btn-secondary btn-sm" id="t2KioskOff">${t('device.tier2.kiosk_off')}</button>` : ''}
       </div>` : ''}
 
       <div class="tabs">
         <div class="tab active" data-tab="nowplaying">${t('device.tab.now_playing')} <span class="help-tip" data-tip="${t('device.tab.now_playing_tip')}">?</span></div>
         <div class="tab" data-tab="playlist">${t('device.tab.playlist')} <span class="help-tip" data-tip="${t('device.tab.playlist_tip')}">?</span></div>
         <div class="tab" data-tab="info">${t('device.tab.info')} <span class="help-tip" data-tip="${t('device.tab.info_tip')}">?</span></div>
-        <div class="tab" data-tab="remote">${t('device.tab.remote')} <span class="help-tip" data-tip="${t('device.tab.remote_tip')}">?</span></div>
-        ${(device.client_type === 'apk' || device.android_version) ? `<div class="tab" data-tab="controls">${t('device.tab.controls')} <span class="help-tip" data-tip="${t('device.tab.controls_tip')}">?</span></div>` : ''}
+        ${(can('remote.stream') || can('remote.input') || can('remote.screenshot')) ? `<div class="tab" data-tab="remote">${t('device.tab.remote')} <span class="help-tip" data-tip="${t('device.tab.remote_tip')}">?</span></div>` : ''}
+        ${(can('audio.volume') || can('display.brightness') || can('system.brightness') || can('system.screen_timeout')) ? `<div class="tab" data-tab="controls">${t('device.tab.controls')} <span class="help-tip" data-tip="${t('device.tab.controls_tip')}">?</span></div>` : ''}
         ${device.tier === 2 ? `<div class="tab" data-tab="terminal">${t('device.tab.terminal')} <span class="help-tip" data-tip="${t('device.tab.terminal_tip')}">?</span></div>` : ''}
       </div>
 
@@ -443,6 +464,22 @@ async function loadDevice(deviceId, activeTab = null) {
           ` : ''}
         </div>
 
+        <!-- What this display can do.
+             Controls are now hidden when the player cannot honour them, which on its own looks
+             like the dashboard has lost features. This is the answer to "where did the reboot
+             button go" — it names the exact set the panel reported, and says plainly when the set
+             is a per-platform assumption rather than something the player actually declared. -->
+        <div style="margin-top:20px">
+          <h4 style="font-size:13px;margin-bottom:8px">${t('device.caps.title')}</h4>
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+            ${caps ? t('device.caps.declared') : t('device.caps.assumed')}
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${(device.capabilities || []).map(c => `<span style="font-family:monospace;font-size:11px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:2px 6px">${esc(c)}</span>`).join('')
+              || `<span style="font-size:12px;color:var(--danger)">${t('device.caps.none')}</span>`}
+          </div>
+        </div>
+
         <!-- Uptime Timeline (24h) -->
         <div style="margin-top:20px">
           <h4 style="font-size:13px;margin-bottom:8px">${t('device.timeline.title')}</h4>
@@ -515,42 +552,48 @@ async function loadDevice(deviceId, activeTab = null) {
         </div>
 
         <div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap">
+          ${can('system.reboot') ? `
           <button class="btn btn-secondary btn-sm" id="rebootBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
             </svg>
             ${t('device.ctl.reboot_device')}
-          </button>
+          </button>` : ''}
+          ${can('display.power') ? `
           <button class="btn btn-secondary btn-sm" id="screenOffBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
             </svg>
             ${t('device.ctl.screen_off')}
-          </button>
+          </button>` : ''}
+          ${can('display.power') ? `
           <button class="btn btn-secondary btn-sm" id="screenOnBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
             </svg>
             ${t('device.ctl.screen_on')}
-          </button>
+          </button>` : ''}
+          ${can('system.restart_player') ? `
           <button class="btn btn-secondary btn-sm" id="launchAppBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="5 3 19 12 5 21 5 3"/>
             </svg>
             ${t('device.ctl.launch_player')}
-          </button>
+          </button>` : ''}
+          ${can('system.self_update') ? `
           <button class="btn btn-secondary btn-sm" id="forceUpdateBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
             ${t('device.ctl.force_update')}
-          </button>
+          </button>` : ''}
+          ${can('system.reboot') ? `
           <button class="btn btn-danger btn-sm" id="shutdownBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
             </svg>
             ${t('device.ctl.shutdown')}
-          </button>
+          </button>` : ''}
         </div>
 
         <!-- #109: PiP overlay tester. Pushes device:pip-show/clear via POST /api/pip
@@ -577,9 +620,11 @@ async function loadDevice(deviceId, activeTab = null) {
         </div>
       </div>
 
+      ${(can('remote.stream') || can('remote.input') || can('remote.screenshot')) ? `
       <!-- Remote Control Tab -->
       <div class="tab-content" id="tab-remote">
         <div class="remote-container">
+          ${can('remote.stream') ? `
           <div class="remote-screen" id="remoteScreen">
             <canvas id="remoteCanvas" width="960" height="540" style="background:#000;width:100%"></canvas>
             <div class="no-screenshot" id="remoteOverlay" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">
@@ -592,12 +637,14 @@ async function loadDevice(deviceId, activeTab = null) {
                 <p style="color:var(--text-secondary)">${t('device.remote.start_prompt')}</p>
               </div>
             </div>
-          </div>
+          </div>` : ''}
           <div class="remote-controls">
+            ${can('remote.stream') ? `
             <button class="btn btn-primary" id="startRemoteBtn">${t('device.remote.start')}</button>
             <button class="btn btn-secondary" id="stopRemoteBtn" style="display:none">${t('device.remote.stop')}</button>
-            <hr style="border-color:var(--border);margin:8px 0">
-            <!-- Always available -->
+            <hr style="border-color:var(--border);margin:8px 0">` : ''}
+            ${can('remote.input') ? `
+            <!-- Key pad -->
             <button class="btn btn-secondary btn-sm" onclick="window._sendKey('KEYCODE_VOLUME_UP')">${t('device.remote.vol_up')}</button>
             <button class="btn btn-secondary btn-sm" onclick="window._sendKey('KEYCODE_VOLUME_DOWN')">${t('device.remote.vol_down')}</button>
             <hr style="border-color:var(--border);margin:8px 0">
@@ -623,28 +670,31 @@ async function loadDevice(deviceId, activeTab = null) {
                 <button class="btn btn-secondary btn-sm" style="flex:1" onclick="window._sendCmd('screen_off')">${t('device.remote.scrn_off')}</button>
                 <button class="btn btn-secondary btn-sm" style="flex:1" onclick="window._sendCmd('screen_on')">${t('device.remote.scrn_on')}</button>
               </div>
-            </div>
+            </div>` : ''}
             ${device.tier === 2 ? `
             <span style="font-size:10px;color:var(--success);line-height:1.2;display:block;margin-top:8px">${t('device.remote.system_view_owner')}</span>
             ` : `
+            ${can('remote.screenshot') ? `
             <button class="btn btn-primary btn-sm" id="enableSystemCaptureBtn" onclick="window._enableSystemView()" title="${t('device.remote.system_view_tooltip')}" style="margin-top:8px">
               ${t('device.remote.enable_system_view')}
             </button>
-            <span id="systemViewHint" style="font-size:10px;color:var(--text-muted);line-height:1.2;display:block;margin-top:4px">${t('device.remote.system_view_hint')}</span>`}
+            <span id="systemViewHint" style="font-size:10px;color:var(--text-muted);line-height:1.2;display:block;margin-top:4px">${t('device.remote.system_view_hint')}</span>` : ''}`}
           </div>
         </div>
-      </div>
+      </div>` : ''}
 
-      ${(device.client_type === 'apk' || device.android_version) ? `
+      ${(can('audio.volume') || can('display.brightness') || can('system.brightness') || can('system.screen_timeout')) ? `
       <!-- Controls Tab (#160 Track-A system control — no device owner needed) -->
       <div class="tab-content" id="tab-controls">
         <div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">${t('device.sysctl.subtitle')}</div>
         <div style="display:grid;grid-template-columns:130px 1fr;gap:14px 14px;align-items:center;font-size:13px;max-width:480px">
+          ${can('audio.volume') ? `
           <label>${t('device.sysctl.volume')}</label>
-          <input type="range" min="0" max="100" value="${Math.round((device.media_volume != null ? device.media_volume : 0.5) * 100)}" id="sysVolume" style="width:100%">
+          <input type="range" min="0" max="100" value="${Math.round((device.media_volume != null ? device.media_volume : 0.5) * 100)}" id="sysVolume" style="width:100%">` : ''}
+          ${can('display.brightness') ? `
           <label>${t('device.sysctl.brightness_window')}</label>
-          <input type="range" min="5" max="100" value="${Math.round((device.window_brightness != null && device.window_brightness >= 0 ? device.window_brightness : 1) * 100)}" id="sysWinBrightness" style="width:100%">
-          ${(device.can_write_settings || device.tier === 2) ? `
+          <input type="range" min="5" max="100" value="${Math.round((device.window_brightness != null && device.window_brightness >= 0 ? device.window_brightness : 1) * 100)}" id="sysWinBrightness" style="width:100%">` : ''}
+          ${(device.can_write_settings || device.tier === 2 || can('system.brightness') || can('system.screen_timeout')) ? `
           <label>${t('device.sysctl.brightness_system')}</label>
           <input type="range" min="5" max="100" value="${Math.round((device.system_brightness != null ? device.system_brightness : 0.8) * 100)}" id="sysBrightness" style="width:100%">
           <label>${t('device.sysctl.sleep')}</label>
@@ -755,9 +805,14 @@ async function loadDevice(deviceId, activeTab = null) {
     if (activeTab) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-      const tab = document.querySelector(`.tab[data-tab="${activeTab}"]`);
+      // Both loops above just cleared every tab, so a requested tab that no longer renders (its
+      // capability went away, or the page was reloaded against a player that has since declared a
+      // smaller set) would leave NO tab selected and the page blank. Fall back to Info, which is
+      // never gated.
+      const wanted = document.getElementById(`tab-${activeTab}`) ? activeTab : 'info';
+      const tab = document.querySelector(`.tab[data-tab="${wanted}"]`);
       if (tab) tab.classList.add('active');
-      const content = document.getElementById(`tab-${activeTab}`);
+      const content = document.getElementById(`tab-${wanted}`);
       if (content) content.classList.add('active');
     }
 
@@ -1230,13 +1285,18 @@ function setupActions(device) {
     }, 3000);
   });
 
-  // Send a command and surface the three-state ack as a toast.
+  // Send a command and surface the ack as a toast.
   // - delivered: device received it (green/success)
   // - queued: device is offline, will deliver on reconnect (amber/warning)
+  // - unsupported: the player cannot do this at all (red/error, names the capability)
   // - no_ack / fallback: server didn't respond or queue unavailable (red/error)
   function sendWithFeedback(type, cmdLabel, successKey) {
     sendCommand(device.id, type, {}, (ack) => {
       if (ack?.delivered) showToast(t(successKey), 'success');
+      // Reachable from a stale tab rendered before the panel declared its capabilities: the
+      // button was there when the page loaded and is gone on reload. Say why rather than
+      // showing the generic "undeliverable", which reads as a network problem.
+      else if (ack?.reason === 'unsupported') showToast(t('device.toast.command_unsupported', { cmd: cmdLabel, cap: ack.capability || '' }), 'error');
       else if (ack?.queued) showToast(t('device.toast.command_queued', { cmd: cmdLabel }), 'warning');
       else if (ack?.reason === 'no_ack') showToast(t('device.toast.command_no_ack', { cmd: cmdLabel }), 'error');
       else showToast(t('device.toast.command_undeliverable', { cmd: cmdLabel }), 'error');

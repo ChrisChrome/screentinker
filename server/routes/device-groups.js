@@ -9,6 +9,7 @@ const { accessContext } = require('../lib/tenancy');
 // scope. No-op for JWT sessions; for tokens a read/write scope is rejected.
 const { requireScope } = require('../middleware/apiToken');
 const { resolveSyncBackend, BACKENDS } = require('../lib/sync-backend');
+const playerCapabilities = require('../lib/player-capabilities');
 
 const VALID_COLOR = /^#[0-9A-Fa-f]{6}$/;
 const ALLOWED_COMMANDS = [
@@ -385,8 +386,10 @@ router.post('/:id/command', requireScope('full'), requireGroupWrite, (req, res) 
   if (!type) return res.status(400).json({ error: 'command type required' });
   if (!ALLOWED_COMMANDS.includes(type)) return res.status(400).json({ error: 'invalid command type' });
 
+  // SELECT * because the capability check needs the platform/declaration columns, not just the
+  // three fields the response uses.
   const devices = db.prepare(`
-    SELECT d.id, d.name, d.status FROM devices d
+    SELECT d.* FROM devices d
     JOIN device_group_members dgm ON d.id = dgm.device_id
     WHERE dgm.group_id = ?
   `).all(req.params.id);
@@ -395,6 +398,16 @@ router.post('/:id/command', requireScope('full'), requireGroupWrite, (req, res) 
   const results = [];
 
   for (const device of devices) {
+    // A group is the mixed-platform case by definition — a lobby group holding two Android panels
+    // and a BrightSign gets "reboot" sent to all three, and the one that cannot honour it used to
+    // report 'sent'. Reporting per-device rather than refusing the whole command: the operator's
+    // intent is valid for the members that can do it, and failing the lot because one member is a
+    // browser tab would be its own bug.
+    const verdict = playerCapabilities.commandAllowed(device, type);
+    if (!verdict.ok) {
+      results.push({ device_id: device.id, name: device.name, status: 'unsupported', capability: verdict.capability });
+      continue;
+    }
     const room = deviceNs.adapter.rooms.get(device.id);
     if (room && room.size > 0) {
       deviceNs.to(device.id).emit('device:command', { type, payload: payload || {} });
@@ -406,8 +419,9 @@ router.post('/:id/command', requireScope('full'), requireGroupWrite, (req, res) 
 
   const sent = results.filter(r => r.status === 'sent').length;
   const offline = results.filter(r => r.status === 'offline').length;
-  console.log(`Group command '${type}' sent to group '${req.group.name}': ${sent} sent, ${offline} offline`);
-  res.json({ success: true, sent, offline, total: devices.length, results });
+  const unsupported = results.filter(r => r.status === 'unsupported').length;
+  console.log(`Group command '${type}' sent to group '${req.group.name}': ${sent} sent, ${offline} offline, ${unsupported} unsupported`);
+  res.json({ success: true, sent, offline, unsupported, total: devices.length, results });
 });
 
 module.exports = router;
