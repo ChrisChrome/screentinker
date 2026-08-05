@@ -89,17 +89,81 @@
     return s > 1 ? name + '_s' + s : name;
   }
 
-  function regRead(name, fallback) {
-    if (!registry) return fallback;
-    try {
-      var v = registry.read('screentinker', key(name));
-      return (v === undefined || v === null || v === '') ? fallback : v;
-    } catch (e) { return fallback; }
+  /*
+   * The registry API is ASYNCHRONOUS and section-oriented:
+   *   registry.read(section, key)      -> Promise<string>
+   *   registry.write(section, {k: v})  -> Promise
+   * (per @brightsign/registry in the dev-cookbook enable-ldws example and the trace-event docs).
+   *
+   * The player needs identity synchronously during boot, so the values are prefetched once into
+   * a cache and every accessor reads the cache. Callers wait on whenReady() before trusting it.
+   * Both shapes are tolerated — a Promise or a bare value — so a firmware that returns
+   * synchronously still works rather than caching a Promise object as if it were a device id,
+   * which would register a "[object Promise]" display.
+   */
+  var SECTION = 'screentinker';
+  var CACHED_KEYS = ['device_id', 'server_url', 'sync_backend'];
+  var cache = {};
+  var ready = false;
+  var readyWaiters = [];
+
+  function markReady() {
+    if (ready) return;
+    ready = true;
+    var waiters = readyWaiters;
+    readyWaiters = [];
+    for (var i = 0; i < waiters.length; i++) {
+      try { waiters[i](); } catch (e) { /* one bad waiter must not block the rest */ }
+    }
   }
 
-  function regWrite(name, value) {
+  function normalise(v) {
+    return (v === undefined || v === null || v === '') ? null : String(v);
+  }
+
+  function prefetch() {
+    if (!registry) { markReady(); return; }
+    var pending = CACHED_KEYS.length;
+    var settle = function () { if (--pending <= 0) markReady(); };
+
+    for (var i = 0; i < CACHED_KEYS.length; i++) {
+      (function (name) {
+        var result;
+        try { result = registry.read(SECTION, key(name)); } catch (e) { settle(); return; }
+        if (result && typeof result.then === 'function') {
+          result.then(
+            function (v) { cache[name] = normalise(v); settle(); },
+            function () { settle(); }
+          );
+        } else {
+          cache[name] = normalise(result);
+          settle();
+        }
+      })(CACHED_KEYS[i]);
+    }
+  }
+
+  function regGet(name, fallback) {
+    var v = cache[name];
+    return (v === undefined || v === null) ? fallback : v;
+  }
+
+  /* values: { device_id: 'x', ... } using UNPREFIXED names; the screen suffix is applied here. */
+  function regSet(values) {
+    var payload = {};
+    for (var name in values) {
+      if (!Object.prototype.hasOwnProperty.call(values, name)) continue;
+      var v = values[name];
+      payload[key(name)] = v === null || v === undefined ? '' : String(v);
+      cache[name] = normalise(v);
+    }
     if (!registry) return false;
-    try { registry.write('screentinker', key(name), String(value)); return true; } catch (e) { return false; }
+    try {
+      var r = registry.write(SECTION, payload);
+      // A rejected write must not surface as an unhandled rejection on a signage player.
+      if (r && typeof r.catch === 'function') r.catch(function () {});
+      return true;
+    } catch (e) { return false; }
   }
 
   var deviceInfo = null;
@@ -169,15 +233,17 @@
      * then the URL, then localStorage for the browser case.
      */
     deviceId: function () {
-      var v = regRead('device_id', null) || qs('device_id');
+      var v = regGet('device_id', null) || qs('device_id');
       if (v) return v;
       try { return global.localStorage.getItem('st_device_id'); } catch (e) { return null; }
     },
 
     /* Called once pairing completes, so a reboot comes back as the same display. */
     setIdentity: function (deviceId, serverUrl) {
-      if (deviceId) regWrite('device_id', deviceId);
-      if (serverUrl) regWrite('server_url', serverUrl);
+      var values = {};
+      if (deviceId) values.device_id = deviceId;
+      if (serverUrl) values.server_url = serverUrl;
+      regSet(values);
       post({ type: 'identity', device_id: deviceId || null, server_url: serverUrl || null });
     },
 
@@ -187,7 +253,7 @@
      * the same identity on its next boot — a reset that resets nothing.
      */
     clearIdentity: function () {
-      regWrite('device_id', '');
+      regSet({ device_id: '' });
       return post({ type: 'identity', clear: true });
     },
 
@@ -210,13 +276,27 @@
      *   'brightsign'   — native BrightWall; the host drives it over the bridge.
      */
     syncBackend: function () {
-      return qs('sync_backend') || regRead('sync_backend', 'auto');
+      return qs('sync_backend') || regGet('sync_backend', 'auto');
     },
 
     setSyncBackend: function (backend) {
       if (!backend) return false;
-      regWrite('sync_backend', backend);
+      regSet({ sync_backend: backend });
       return post({ type: 'set-sync-backend', backend: backend });
+    },
+
+    /*
+     * Identity readiness. The registry is async, so a caller that registers with the server
+     * before this resolves would pair as a NEW display and leave a duplicate row behind. The
+     * callback always runs — on success, on failure, or off-platform — so nothing can hang the
+     * player waiting for hardware that isn't there.
+     */
+    isReady: function () { return ready; },
+
+    onReady: function (fn) {
+      if (typeof fn !== 'function') return;
+      if (ready) { try { fn(); } catch (e) { /* ignore */ } return; }
+      readyWaiters.push(fn);
     },
 
     setVideoMode: function (mode) {
@@ -245,6 +325,11 @@
   };
 
   global.ScreenTinkerBS = API;
+
+  // Kick the registry prefetch immediately, and never let a silent module hold boot: the player
+  // stops waiting after this and carries on with whatever identity it has.
+  prefetch();
+  if (global.setTimeout) global.setTimeout(markReady, 5000);
 
   if (API.hasHost()) API.startHeartbeat();
 })(typeof window !== 'undefined' ? window : this);

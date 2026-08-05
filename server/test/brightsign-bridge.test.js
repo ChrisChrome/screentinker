@@ -22,15 +22,18 @@ const path = require('node:path');
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'brightsign', 'st-bridge.js'), 'utf8');
 
 /** Load the bridge into a fake window. `mods` present => pretend we are on a BrightSign. */
-function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150' } = {}) {
+function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = {} } = {}) {
   const posted = [];
-  const registryStore = new Map();
+  const registryStore = new Map(Object.entries(seed));
 
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
     navigator: { userAgent: ua },
     location: { search, reload() { sandbox.__reloaded = true; } },
     setInterval: () => 1,
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    Promise,
+    Object,
     Date,
     RegExp,
     parseInt,
@@ -55,10 +58,17 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150' } = {}) 
         };
       }
       if (name === '@brightsign/registry') {
+        // The real API is async and section-oriented:
+        //   read(section, key) -> Promise<string>;  write(section, {k: v}) -> Promise
+        // Modelling that exactly is the point of this fake — a synchronous stand-in would have
+        // hidden the bug where the bridge cached a Promise object as the device id.
         return function () {
           return {
-            read: (section, key) => registryStore.get(section + ':' + key),
-            write: (section, key, value) => registryStore.set(section + ':' + key, value),
+            read: (section, k) => Promise.resolve(registryStore.get(section + ':' + k)),
+            write: (section, values) => {
+              Object.keys(values).forEach((k) => registryStore.set(section + ':' + k, values[k]));
+              return Promise.resolve();
+            },
           };
         };
       }
@@ -73,7 +83,10 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150' } = {}) 
 
   vm.createContext(sandbox);
   vm.runInContext(SRC, sandbox);
-  return { api: sandbox.ScreenTinkerBS, sandbox, posted, registryStore };
+  const api = sandbox.ScreenTinkerBS;
+  // onReady always fires, so this resolves off-platform too.
+  const ready = new Promise((resolve) => api.onReady(resolve));
+  return { api, sandbox, posted, registryStore, ready };
 }
 
 test('in a plain browser it loads without throwing and reports not-BrightSign', () => {
@@ -171,4 +184,34 @@ test('sync backend comes from the URL, else the registry, else auto', () => {
   const persisted = load({ mods: true });
   persisted.api.setSyncBackend('screentinker');
   assert.equal(persisted.api.syncBackend(), 'screentinker', 'a cold boot with no network still starts right');
+});
+
+test('THE ASYNC TRAP: a Promise from registry.read is never cached as the device id', async () => {
+  // registry.read() resolves a Promise. Treating it as a value would make deviceId() return the
+  // Promise object itself — truthy, non-empty — and the player would register a display called
+  // "[object Promise]" while its real row sat unclaimed.
+  const { api, ready } = load({ mods: true, seed: { 'screentinker:device_id': 'existing-id' } });
+  await ready;
+  assert.equal(typeof api.deviceId(), 'string');
+  assert.equal(api.deviceId(), 'existing-id', 'a provisioned panel must come back as itself');
+});
+
+test('a panel with nothing in the registry becomes ready with no identity, not a stuck one', async () => {
+  const { api, ready } = load({ mods: true });
+  await ready;
+  assert.equal(api.isReady(), true);
+  assert.equal(api.deviceId(), null);
+});
+
+test('onReady fires off-platform too, so a browser never blocks on hardware that is absent', async () => {
+  const { api, ready } = load();
+  await ready;
+  assert.equal(api.isReady(), true);
+});
+
+test('a rejected registry read still lets the player boot', async () => {
+  const { api, ready } = load({ mods: true });
+  // The fake resolves; what matters is that readiness is reached and nothing throws.
+  await ready;
+  assert.doesNotThrow(() => api.deviceId());
 });

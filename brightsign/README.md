@@ -132,7 +132,34 @@ Stated plainly so nobody reads this as finished:
 - **Registry from a remote origin is still unproven** — the original probe question. If injection
   turns out to be origin-dependent, identity moves to a local shim page that owns the registry and
   passes it to the hosted player in an iframe via `postMessage`.
-- **Nothing here has run on hardware.** It is written against the BrightDeveloper docs.
+- **Nothing here has run on hardware.** It is written against the BrightDeveloper docs and
+  checked line-by-line against the `brightsign/dev-cookbook` examples, which corrected four
+  config keys, the registry API and a hard SyncManager requirement (see below).
+
+## Verified against the dev-cookbook
+
+`autorun.brs` and `st-bridge.js` were reviewed against the real examples rather than the prose:
+
+- **`brightsign_js_objects_enabled: true` is required** alongside `nodejs_enabled` for
+  `require("@brightsign/*")` (`syncmanager-js/autorun.brs`). Without it the bridge degrades to
+  no-ops and the player silently loses identity *and* restart delegation — the failure would look
+  like "BrightSign just doesn't work" rather than a missing flag.
+- **`storage_path` is a directory name** (`"/cache"`), not a volume, and **`storage_quota` is a
+  string** (`indexeddb-caching/autorun.brs`).
+- **`security_params: { websecurity: true }`** and `hwz_default: "on"` are the shapes the examples
+  use; local URLs carry the volume (`file:/SD:/index.html`).
+- **The registry API is asynchronous and section-oriented**: `read(section, key)` returns a
+  **Promise** and writes take an object — `write(section, {k: v})`. The bridge prefetches into a
+  cache and exposes `onReady()`; the player waits for it before its first connect, because
+  registering early would pair the panel as a new display and strand its real row.
+- **SyncManager needs `networking/ptp_domain = "0"`, applied by a reboot**
+  (`syncmanager-js/autorun.brs`). Done only when this player is configured for native sync, and
+  read-before-write so it reboots at most once rather than every boot.
+- Confirmed correct as written: `@brightsign/messageport` (`new`, `addEventListener('bsmessage')`,
+  `PostBSMessage`), the `roHtmlWidgetEvent` loop, and `RebootSystem()`.
+- The notes state a widget URL may be **"an externally hosted page"** with the same access to the
+  BrightSign JS APIs, which is the answer the original probe was built to get — still worth
+  confirming on hardware, but the documented answer is the favourable one.
 
 ## Model notes
 

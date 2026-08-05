@@ -1151,6 +1151,26 @@
 
     // ==================== Socket Connection ====================
     function connect(serverUrl) {
+      // BrightSign's registry is ASYNCHRONOUS (registry.read returns a Promise), so on a cold
+      // boot the identity is not in hand yet when this first runs. Registering before it lands
+      // would pair the panel as a NEW display and strand its real row — so wait once, then adopt
+      // whatever the registry knows and carry on. onReady always fires (success, failure, or a
+      // 5s cap inside the bridge), so this can defer boot but never block it.
+      if (BS && !BS.isReady()) {
+        BS.onReady(() => {
+          try {
+            const known = BS.deviceId();
+            if (known && !config.deviceId) {
+              config.deviceId = known;
+              config.paired = true;
+              console.log('[bs] adopted identity from registry:', known);
+            }
+          } catch (e) { /* carry on unpaired rather than not at all */ }
+          connect(serverUrl);
+        });
+        return;
+      }
+
       if (socket) { socket.disconnect(); socket = null; }
 
       socket = io(serverUrl + '/device', {

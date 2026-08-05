@@ -82,10 +82,15 @@ End Function
 Function MakeWidget(url As String, rect As Object, port As Object, cfg As Object) As Object
     config = {
         url: url
-        nodejs_enabled: true            ' REQUIRED for require("@brightsign/*")
+        nodejs_enabled: true                    ' Node runtime inside the widget
+        brightsign_js_objects_enabled: true     ' REQUIRED for require("@brightsign/*") — without
+                                                ' this the bridge silently degrades to no-ops and
+                                                ' the player loses identity AND restart delegation
         javascript_enabled: true
-        storage_path: "SD:/"
-        storage_quota: 1073741824       ' 1GB — service-worker cache for offline playback
+        security_params: { websecurity: true }
+        hwz_default: "on"                       ' hardware z-order — video on its own plane
+        storage_path: "/cache"                  ' DIRECTORY NAME for the local storage cache
+        storage_quota: "1073741824"             ' 1GB, as a STRING — service-worker offline cache
         port: port
         mouse_enabled: false
     }
@@ -94,6 +99,26 @@ Function MakeWidget(url As String, rect As Object, port As Object, cfg As Object
     w = CreateObject("roHtmlWidget", rect, config)
     return w
 End Function
+
+' SyncManager will not work unless the PTP domain is set, and applying it needs a reboot. Done
+' ONLY when this player is actually configured for native sync — a reboot on every boot would be
+' a boot loop, and a player using our own protocol has no use for it.
+'
+' The read-before-write is what makes it safe: it reboots at most once, on the first boot after
+' the mode is selected, and is a no-op forever after.
+Sub EnsurePtpDomain(cfg As Object)
+    if cfg.sync_backend <> "brightsign" then return
+
+    regSec = CreateObject("roRegistrySection", "networking")
+    if regSec.Read("ptp_domain") = "0" then
+        print "[st] ptp_domain already 0"
+    else
+        print "[st] setting ptp_domain=0 for SyncManager — rebooting once to apply"
+        regSec.Write("ptp_domain", "0")
+        regSec.Flush()
+        RebootSystem()
+    end if
+End Sub
 
 Function FullScreenRect() As Object
     vm = CreateObject("roVideoMode")
@@ -104,6 +129,14 @@ End Function
 
 Sub Main()
     cfg = LoadConfig()
+
+    ' Crash dumps land here if the widget ever falls over — cheap, and the only forensic trail
+    ' available on a panel nobody can reach.
+    dir = CreateDirectory("SD:/brightsign-dumps")
+
+    ' Must happen BEFORE the widget starts: it can reboot.
+    EnsurePtpDomain(cfg)
+
     port = CreateObject("roMessagePort")
 
     ' Second output. XC2055/XC4055 and XT245/XT1145/XT2145 expose more than one HDMI connector;
@@ -154,7 +187,7 @@ Sub Main()
                 print "[st] load-error ("; retries; "): "; data.url
                 sleep(ChooseBackoff(retries))
                 if retries >= 3 then
-                    widget = RebuildWidget(widget, "file:///offline.html", rect, port, cfg)
+                    widget = RebuildWidget(widget, "file:/SD:/offline.html", rect, port, cfg)
                 else
                     widget = RebuildWidget(widget, PlayerUrl(cfg, 1), rect, port, cfg)
                 end if
