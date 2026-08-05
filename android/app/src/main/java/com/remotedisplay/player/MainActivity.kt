@@ -784,14 +784,8 @@ class MainActivity : AppCompatActivity() {
                 "screen_on" -> Log.w("MainActivity", "screen_on: no privileged wake path on a non-rooted panel — no-op")
                 // #161 Tier-2 (all no-op off-owner via STPolicy): kiosk lock-task, time/tz, status bar,
                 // uninstall block. Device owner enters lock-task silently; others get screen-pinning.
-                "kiosk_lock" -> {
-                    stPolicy().setLockTaskAllowed(true)
-                    try { startLockTask() } catch (e: Throwable) { Log.w("MainActivity", "startLockTask: ${e.message}") }
-                }
-                "kiosk_unlock" -> {
-                    try { stopLockTask() } catch (e: Throwable) { Log.w("MainActivity", "stopLockTask: ${e.message}") }
-                    stPolicy().setLockTaskAllowed(false)
-                }
+                "kiosk_lock" -> setKioskMode(true)
+                "kiosk_unlock" -> setKioskMode(false)
                 "set_time" -> { val ms = payload?.optLong("millis", 0L) ?: 0L; if (ms > 0) stPolicy().setTime(ms) }
                 "set_timezone" -> { val tz = payload?.optString("timezone", "") ?: ""; if (tz.isNotEmpty()) stPolicy().setTimeZone(tz) }
                 "status_bar" -> stPolicy().setStatusBarDisabled(payload?.optBoolean("disabled", true) ?: true)
@@ -1138,10 +1132,20 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.settings_exit)
         )
 
+        // Requested from the field: with kiosk on, the PIN menu is the ONLY way back out on a
+        // panel with no other input. Shown only when locked — an entry that does nothing is worse
+        // than no entry, and this menu is already long.
+        val kiosk = kioskModeEnabled()
+        val menu = if (kiosk) items + getString(R.string.settings_exit_kiosk) else items
+
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.settings_title))
-            .setItems(items) { _, which ->
+            .setItems(menu) { _, which ->
                 when (which) {
+                    items.size -> {   // the appended exit-kiosk entry; only present when locked
+                        setKioskMode(false)
+                        Toast.makeText(this, getString(R.string.settings_exit_kiosk_done), Toast.LENGTH_LONG).show()
+                    }
                     0 -> showChangeServerDialog(serverUrl)
                     1 -> {
                         config.clearDeviceCredentials()
@@ -1155,6 +1159,48 @@ class MainActivity : AppCompatActivity() {
             }
             .setOnCancelListener { /* dismissed, back to kiosk */ }
             .show()
+    }
+
+    /*
+     * Kiosk lock, remembered.
+     *
+     * startLockTask() is a runtime call on the Activity — it does not survive a reboot. A panel
+     * locked from the dashboard came back up unlocked, with nothing to say so, and the only way
+     * to notice was that someone could suddenly leave the app. Reported from the field.
+     *
+     * The flag is written BEFORE the lock is attempted so a device that reboots mid-call still
+     * comes back in the state the operator asked for; a lock that then fails is retried on the
+     * next start rather than being forgotten.
+     */
+    private fun setKioskMode(enabled: Boolean) {
+        try {
+            getSharedPreferences("screentinker", Context.MODE_PRIVATE)
+                .edit().putBoolean("kiosk_enabled", enabled).apply()
+        } catch (e: Throwable) { Log.w("MainActivity", "kiosk pref: ${e.message}") }
+
+        if (enabled) {
+            stPolicy().setLockTaskAllowed(true)
+            try { startLockTask() } catch (e: Throwable) { Log.w("MainActivity", "startLockTask: ${e.message}") }
+        } else {
+            try { stopLockTask() } catch (e: Throwable) { Log.w("MainActivity", "stopLockTask: ${e.message}") }
+            stPolicy().setLockTaskAllowed(false)
+        }
+    }
+
+    private fun kioskModeEnabled(): Boolean = try {
+        getSharedPreferences("screentinker", Context.MODE_PRIVATE).getBoolean("kiosk_enabled", false)
+    } catch (e: Throwable) { false }
+
+    /** Re-enter lock task after a restart, if that is the state the operator left it in. */
+    private fun restoreKioskMode() {
+        if (!kioskModeEnabled()) return
+        stPolicy().setLockTaskAllowed(true)
+        try {
+            startLockTask()
+            Log.i("MainActivity", "Kiosk mode restored after restart")
+        } catch (e: Throwable) {
+            Log.w("MainActivity", "Kiosk restore failed: ${e.message}")
+        }
     }
 
     // #161: device-policy wrapper (degrades safely off-tier — every Tier-2 call no-ops when not owner).
@@ -1337,6 +1383,26 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         if (::mediaPlayer.isInitialized) mediaPlayer.onAppForegrounded()
+
+        // Clear the boot "Starting display…" prompt EVERY time the player becomes visible, not
+        // just in onCreate.
+        //
+        // Relauncher launches the activity directly when the overlay permission is granted — the
+        // normal kiosk setup — and THEN posts the notification, deliberately, so a device that
+        // could not auto-launch still has a tappable way back. On a device where the launch DID
+        // work, that ordering means the prompt is posted after onCreate already cancelled it, and
+        // nothing clears it again: a permanent "Starting display…" banner over content that is
+        // already playing. Reported from the field with a photo of exactly that.
+        //
+        // If the player is on screen, the prompt is stale by definition — so clearing it here is
+        // correct regardless of who posted it or when.
+        (getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager)?.cancel(999)
+
+        // Re-enter kiosk if that is how the operator left it. Done in onStart rather than onCreate
+        // because lock-task can be dropped by the system on some transitions, and a panel that
+        // quietly stopped being locked is the failure people notice only when someone walks out of
+        // the app.
+        restoreKioskMode()
     }
 
     override fun onDestroy() {
