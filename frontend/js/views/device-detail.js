@@ -89,9 +89,8 @@ function renderDeviceClock(device) {
 // covers panels paired before that existed, which registered as "Chrome 120" with a BrightSign UA.
 function isBrightSignDevice(device) {
   if (!device) return false;
-  const platform = String(device.platform || '').toLowerCase();
-  if (platform.includes('brightsign')) return true;
-  return String(device.user_agent || '').toLowerCase().includes('brightsign');
+  // platform only: `devices` has no user_agent column, so a fallback on it could never fire.
+  return String(device.platform || '').toLowerCase().includes('brightsign');
 }
 
 export function render(container, deviceId) {

@@ -66,11 +66,15 @@ test('unknown or missing settings read as auto rather than throwing', () => {
   assert.equal(resolveSyncBackend('auto', null).backend, 'screentinker');
 });
 
-test('a player paired before the port is still recognised by its user agent', () => {
-  // Both of giyokun's devices registered platform "Chrome 120" with a BrightSign UA.
+test('a pre-port panel is NOT recognised until it re-registers — no phantom user-agent match', () => {
+  // Panels paired before this port registered as "Chrome 120" with a BrightSign user agent, and an
+  // earlier version tried to catch them that way. It could never work: `devices` has no user_agent
+  // column, so the field is always undefined on a row read from the database — the check passed
+  // only in tests that fabricated it, which is exactly how dead code survives.
   const legacy = { id: 'old', platform: 'Chrome 120', user_agent: 'BrightSign/9.1.92.2 (HD1026) Chrome/120' };
-  assert.equal(isBrightSignDevice(legacy), true);
-  assert.equal(resolveSyncBackend('auto', [legacy, bs(2)]).backend, 'brightsign');
+  assert.equal(isBrightSignDevice(legacy), false, 'a fabricated user_agent must not create a match');
+  assert.equal(resolveSyncBackend('auto', [legacy, bs(2)]).backend, 'screentinker',
+    'so a group containing one reads as mixed until that panel re-registers as brightsign');
 });
 
 test('a non-BrightSign device is never mistaken for one', () => {

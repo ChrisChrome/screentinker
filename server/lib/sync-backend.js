@@ -24,16 +24,22 @@
 const BACKENDS = ['auto', 'screentinker', 'brightsign'];
 
 /*
- * A device is a BrightSign if it said so. The player sends ?platform=brightsign (autorun.brs
- * puts it there), which lands in devices.platform. The UA fallback covers players paired before
- * the port existed — those registered a platform of "Chrome 120" with a BrightSign UA.
+ * A device is a BrightSign if it said so: the player sends ?platform=brightsign (autorun.brs puts
+ * it there), which lands in devices.platform.
+ *
+ * There is deliberately NO user-agent fallback. An earlier version had one, to catch panels paired
+ * before this port existed — which registered as "Chrome 120" with a BrightSign user agent. It
+ * could never fire: `devices` has no user_agent column, so the field is always undefined on a row
+ * read from the database. It read as defensive and was dead code.
+ *
+ * Those pre-port panels are identified the moment they re-register on a build that carries the
+ * host, which every one of them gets on its next update. Recognising them earlier would mean
+ * persisting the user agent, and a column added solely to identify a population that disappears on
+ * its own is not worth carrying.
  */
 function isBrightSignDevice(device) {
   if (!device) return false;
-  const platform = String(device.platform || '').toLowerCase();
-  if (platform.includes('brightsign')) return true;
-  const ua = String(device.user_agent || '').toLowerCase();
-  return ua.includes('brightsign');
+  return String(device.platform || '').toLowerCase().includes('brightsign');
 }
 
 /*
