@@ -95,11 +95,37 @@ Stated plainly so nobody reads this as finished:
   reload, sync backend) is the next commit.
 - **No server-side plumbing**: no `sync_backend` column, no dashboard control, nothing sends
   `set-sync-backend` down. The resolver is ready for it.
-- **BrightWall runtime API is unverified.** The MCP doc set covers BrightWall only at provisioning
-  level (`BrightWallName`, `BrightWallScreenNumber` like `"3x2"`) and video walls via `PlayFile`
-  `MultiscreenX/Y/Width/Height`. The runtime sync object is not in that doc set —
-  `documentation/part-6-appendices/api-reference.md` is a stub. **The `brightsign` backend is a
-  resolved decision, not yet an implementation.**
+- **The `brightsign` backend is a resolved decision, not yet an implementation.** The API is now
+  known (it was not in the MCP doc set — `part-6-appendices/api-reference.md` is a stub — but
+  `docs.brightsign.biz/developers/syncmanager` and the `brightsign/dev-cookbook`
+  `examples/browser/syncmanager-js` example document it fully):
+
+  ```js
+  const SyncManager = require('@brightsign/syncmanager');          // BrightSignOS 8.2.10+
+  const sync = new SyncManager('', 'BrightSignDomain', '224.0.126.10', 1539);
+  sync.leader = true;                                              // followers just omit this
+  sync.addEventListener('syncevent', (e) => {                      // BOTH roles listen
+    if (e.id === lastId) return;                                   // 1Hz rebroadcast — dedupe!
+    lastId = e.id;
+    video.setSyncParams(e.domain, e.id, e.iso_timestamp);          // extension on <video>
+    video.load(); video.play();
+  });
+  sync.synchronize('item_' + Date.now(), 1000);                    // leader only; msDelay to prep
+  ```
+
+  Good news for the port: it is **pure JavaScript on the standard `<video>` element**, so it
+  needs no BrightScript round-trip and drops into the existing player. Three things it implies:
+
+  1. **It is leader/follower**; ours is leaderless. A group using it needs a designated leader.
+  2. **It is a video mechanism.** `setSyncParams` is on the video element, so images and widgets
+     get item-boundary alignment at best, where ours covers every item type.
+  3. **Multicast means one L2 network.** A group spanning sites or VLANs cannot use it, which is
+     a selection criterion the resolver does not model yet.
+
+  Also: MP4/MOV are fine, MPEG-TS needs its presentation timestamp starting at 0, MPEG-PS is
+  unsupported. Followers accept only the first message per id, and `synchronize()` rebroadcasts
+  at 1Hz so late-powered players still join — which is exactly why the dedupe above is mandatory
+  rather than an optimisation.
 - **Addressing a specific HDMI connector from JS is unverified.** `@brightsign/videooutput`
   documents `setMode({width,height,refreshRate})` with no output index. Dual output above assumes
   a second widget maps to the second connector; that needs hardware confirmation.
