@@ -22,7 +22,7 @@ const path = require('node:path');
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'brightsign', 'st-bridge.js'), 'utf8');
 
 /** Load the bridge into a fake window. `mods` present => pretend we are on a BrightSign. */
-function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = {} } = {}) {
+function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = {}, storageEstimate = null, temperature = null } = {}) {
   const posted = [];
   const registryStore = new Map(Object.entries(seed));
   const cec = { sent: [] };
@@ -30,7 +30,13 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
 
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
-    navigator: { userAgent: ua },
+    // navigator.storage.estimate() is a REAL browser API the bridge reads for the cache quota,
+    // and it is async — modelled as such so a synchronous stand-in cannot hide a pending-Promise
+    // bug the way one previously did for the registry.
+    navigator: {
+      userAgent: ua,
+      storage: storageEstimate ? { estimate: () => Promise.resolve(storageEstimate) } : undefined,
+    },
     location: { search, reload() { sandbox.__reloaded = true; } },
     setInterval: () => 1,
     setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -38,6 +44,9 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
     Object,
     Array,
     Uint8Array,
+    Number,
+    isFinite,
+    Math,
     Date,
     RegExp,
     parseInt,
@@ -85,7 +94,13 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
       }
       if (name === '@brightsign/deviceinfo') {
         return function () {
-          return { model: 'XT1145', osVersion: '9.1.92.2', serialNumber: 'SN-TEST-1' };
+          return {
+            model: 'XT1145', osVersion: '9.1.92.2', serialNumber: 'SN-TEST-1',
+            // getTemperature() resolves a PROMISE on real hardware. Modelled async on purpose.
+            getTemperature: () => (temperature == null
+              ? Promise.reject(new Error('no sensor'))
+              : Promise.resolve({ celsius: temperature })),
+          };
         };
       }
       throw new Error('no such module ' + name);
@@ -279,4 +294,67 @@ test('output 2 addresses HDMI-2 — a dual-output player must sleep the screen i
   await ready;
   api.displayPower(true);
   assert.deepEqual(cecConnectors, ['HDMI-2']);
+});
+
+// --- telemetry ------------------------------------------------------------------------------
+//
+// The heartbeat builds its payload SYNCHRONOUSLY every 15s, but the only real number this platform
+// exposes — temperature — arrives from a Promise. Awaiting it in the beat would either block the
+// beat or serialise a pending Promise into the telemetry object, which is precisely how device_id
+// once became "[object Promise]". Hence a cache the beat reads synchronously.
+
+const settle = () => new Promise((r) => setTimeout(r, 10));
+
+test('the snapshot is EMPTY off-platform, so a browser spreads nothing over its telemetry', async () => {
+  const { api, ready } = load();
+  await ready;
+  // Keys, not deepEqual: the object is built inside the vm realm, so a strict structural compare
+  // trips on prototype identity rather than on anything about the value.
+  assert.equal(Object.keys(api.telemetrySnapshot()).length, 0,
+    'nulls here would clobber another family’s values');
+});
+
+test('temperature is cached from the promise, never the promise itself', async () => {
+  const { api, ready } = load({ mods: true, temperature: 47.26 });
+  await ready;
+  api.refreshTelemetry();
+  await settle();
+  const snap = api.telemetrySnapshot();
+  assert.equal(typeof snap.temperature_c, 'number', 'a pending Promise here is the bug this guards');
+  assert.equal(snap.temperature_c, 47.3, 'rounded to one decimal');
+});
+
+test('a model with no temperature sensor reports nothing rather than a bogus reading', async () => {
+  const { api, ready } = load({ mods: true, temperature: null });   // getTemperature() rejects
+  await ready;
+  api.refreshTelemetry();
+  await settle();
+  assert.equal(api.telemetrySnapshot().temperature_c, undefined);
+});
+
+test('storage quota becomes free/total MB', async () => {
+  const { api, ready } = load({ mods: true, storageEstimate: { quota: 1073741824, usage: 268435456 } });
+  await ready;
+  api.refreshTelemetry();
+  await settle();
+  const snap = api.telemetrySnapshot();
+  assert.equal(snap.storage_total_mb, 1024);
+  assert.equal(snap.storage_free_mb, 768);
+});
+
+test('one failing source does not take the other down with it', async () => {
+  // No sensor, but storage is readable: the snapshot must still carry the storage figures.
+  const { api, ready } = load({ mods: true, temperature: null, storageEstimate: { quota: 2147483648, usage: 0 } });
+  await ready;
+  api.refreshTelemetry();
+  await settle();
+  const snap = api.telemetrySnapshot();
+  assert.equal(snap.temperature_c, undefined);
+  assert.equal(snap.storage_total_mb, 2048);
+});
+
+test('refreshTelemetry never throws when the platform offers neither source', async () => {
+  const { api, ready } = load();   // plain browser: no modules, no storage manager
+  await ready;
+  assert.doesNotThrow(() => api.refreshTelemetry());
 });

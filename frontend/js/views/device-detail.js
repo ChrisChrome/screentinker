@@ -354,7 +354,39 @@ async function loadDevice(deviceId, activeTab = null) {
             <div class="info-card-label">${t('device.info.player_type')}</div>
             <div class="info-card-value small">${isBrightSignDevice(device) ? t('device.info.brightsign_player') : t('device.info.web_player')}</div>
           </div>
+          ${device.hardware_model ? `
+          <div class="info-card">
+            <div class="info-card-label">${t('device.info.hardware_model')}</div>
+            <div class="info-card-value small">${esc(device.hardware_model)}${device.output_index > 1 ? ` <span style="color:var(--text-muted)">${t('device.info.output_n', { n: device.output_index })}</span>` : ''}</div>
+          </div>` : ''}
+          ${device.hardware_os_version ? `
+          <div class="info-card">
+            <div class="info-card-label">${t('device.info.os_version')}</div>
+            <div class="info-card-value small">${esc(device.hardware_os_version)}</div>
+          </div>` : ''}
+          ${device.hardware_serial ? `
+          <div class="info-card">
+            <div class="info-card-label">${t('device.info.serial')}</div>
+            <div class="info-card-value small">${esc(device.hardware_serial)}</div>
+          </div>` : ''}
+          ${latestTelemetry.storage_total_mb ? `
+          <div class="info-card">
+            <!-- Labelled "player storage", not "storage": on this family the number is the
+                 widget's cache quota, not the device filesystem. Same column as Android's real
+                 disk figures, so the label is what stops it being read as "the disk is 1 GB". -->
+            <div class="info-card-label">${t('device.info.player_storage')}</div>
+            <div class="info-card-value small" id="telStorage">${latestTelemetry.storage_free_mb != null ? t('device.info.size_free', { size: formatBytes(latestTelemetry.storage_free_mb) }) : '--'}</div>
+            <div class="progress-bar">
+              <div class="progress-bar-fill ${((latestTelemetry.storage_total_mb - latestTelemetry.storage_free_mb) / latestTelemetry.storage_total_mb) < 0.8 ? 'success' : 'warning'}"
+                   style="width:${((latestTelemetry.storage_total_mb - latestTelemetry.storage_free_mb) / latestTelemetry.storage_total_mb * 100)}%"></div>
+            </div>
+          </div>` : ''}
           `}
+          ${latestTelemetry.temperature_c != null ? `
+          <div class="info-card">
+            <div class="info-card-label">${t('device.info.temperature')}</div>
+            <div class="info-card-value small" id="telTemp">${latestTelemetry.temperature_c}&deg;C</div>
+          </div>` : ''}
           ${device.android_version && !device.android_version.startsWith('Web/') ? `
           <div class="info-card">
             <div class="info-card-label">${t('device.info.wifi')}</div>

@@ -476,6 +476,14 @@ export default {
   'device.info.battery': 'Battery',
   'device.info.storage': 'Storage',
   'device.info.size_free': '{size} free',
+  // "Player storage" rather than "Storage": on a browser-family player this is the widget's cache
+  // quota, not the device filesystem, and it sits in the same column as Android's real disk usage.
+  'device.info.player_storage': 'Player Storage',
+  'device.info.hardware_model': 'Model',
+  'device.info.os_version': 'OS Version',
+  'device.info.serial': 'Serial',
+  'device.info.temperature': 'Temperature',
+  'device.info.output_n': '(output {n})',
   'device.info.player_type': 'Player Type',
   'device.info.web_player': 'Web Player',
   'device.info.brightsign_player': 'BrightSign',

@@ -105,6 +105,42 @@ function applyDeviceInfo(deviceId, di) {
       deviceId);
 }
 
+/*
+ * Persist panel-reported hardware identity (model / OS build / serial / which output).
+ *
+ * Deliberately NOT folded into applyDeviceInfo. That function is a blind full-row overwrite, and
+ * an empty device_info once nulled seventeen columns every five minutes because `{}` is truthy —
+ * the exact failure that degraded the browser player family. These fields arrive only on a full
+ * register, so the same shape here would wipe them on every lightweight refresh.
+ *
+ * COALESCE is the guard: a report that omits a field leaves the stored value alone. Hardware
+ * identity does not change under a device that is still the same device, so "no news" must mean
+ * "unchanged", never "gone".
+ *
+ * Accepts the fields from device_info OR the top level. The player sends them at the top level
+ * today; device_info is where every other panel-reported fact lives, so reading both means the
+ * client can move without a flag day in either direction.
+ */
+function applyHardwareIdentity(deviceId, data) {
+  const di = (data && data.device_info) || {};
+  const str = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 64) : null);
+  const model = str(di.hardware_model ?? data.bs_model);
+  const serial = str(di.hardware_serial ?? data.bs_serial);
+  const osVersion = str(di.hardware_os_version ?? data.bs_os_version);
+  const rawOutput = di.output_index ?? data.bs_screen;
+  const output = Number.isInteger(rawOutput) && rawOutput > 0 ? rawOutput : null;
+
+  if (model == null && serial == null && osVersion == null && output == null) return;
+
+  db.prepare(`UPDATE devices SET
+      hardware_model      = COALESCE(?, hardware_model),
+      hardware_serial     = COALESCE(?, hardware_serial),
+      hardware_os_version = COALESCE(?, hardware_os_version),
+      output_index        = COALESCE(?, output_index)
+    WHERE id = ?`)
+    .run(model, serial, osVersion, output, deviceId);
+}
+
 function generateDeviceToken() {
   return crypto.randomBytes(32).toString('hex');
 }
@@ -826,6 +862,10 @@ module.exports = function setupDeviceSocket(io) {
           // shape — recordReconnect/persistIdentity are gated behind `if (!isPlaylistRefresh)` —
           // this call was the one that was not.
           if (device_info && Object.keys(device_info).length > 0) applyDeviceInfo(device_id, device_info);
+          // AFTER applyDeviceInfo, and unconditionally: these fields ride the top level of the
+          // register payload, not device_info, so the emptiness guard above does not apply to
+          // them. The function no-ops when the panel reports none of them.
+          applyHardwareIdentity(device_id, data);
 
           heartbeat.registerConnection(device_id, socket.id);
           // #134: a same-socket re-register is a playlist REFRESH (~45-60s), NOT a reconnect and NOT
@@ -1046,8 +1086,8 @@ module.exports = function setupDeviceSocket(io) {
       if (telemetry && deviceExists(device_id)) {
         db.prepare(`
           INSERT INTO device_telemetry (device_id, battery_level, battery_charging, storage_free_mb, storage_total_mb,
-            ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds, local_ip)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds, local_ip, temperature_c)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           device_id,
           telemetry.battery_level ?? null,
@@ -1062,7 +1102,11 @@ module.exports = function setupDeviceSocket(io) {
           telemetry.uptime_seconds ?? null,
           // Device-supplied text headed for a column the dashboard renders: trim and cap it.
           // 45 chars is the longest legitimate value (a full IPv6 address).
-          typeof telemetry.local_ip === 'string' ? telemetry.local_ip.trim().slice(0, 45) || null : null
+          typeof telemetry.local_ip === 'string' ? telemetry.local_ip.trim().slice(0, 45) || null : null,
+          // Only a finite number is a reading. A panel with no sensor sends nothing, and NaN or
+          // Infinity from a flaky one must land as "no reading" rather than poisoning the column.
+          typeof telemetry.temperature_c === 'number' && Number.isFinite(telemetry.temperature_c)
+            ? telemetry.temperature_c : null
         );
         pruneTelemetry(device_id);
 
@@ -1500,6 +1544,9 @@ module.exports = function setupDeviceSocket(io) {
 // so the cause-1 re-arm race (evicted socket arming an offline timer for a
 // just-reconnected device) is test-PROVEN, not just correct-by-construction. Prefixed
 // `__` and never used by production code.
+// Test-only, same convention as the handles below: the COALESCE semantics are the whole point of
+// this function and are not reachable through a socket handshake in a unit test.
+module.exports.__applyHardwareIdentity = applyHardwareIdentity;
 module.exports.__hasPendingOffline = (deviceId) => pendingOfflines.has(deviceId);
 module.exports.__pendingOfflineCount = () => pendingOfflines.size;
 module.exports.__evictedSize = () => evictedSockets.size;

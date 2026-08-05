@@ -377,6 +377,27 @@ const migrations = [
   // the PUBLIC address the server sees the connection arrive from — both are useful and they are
   // not the same thing. A customer reading the public IP as "my screen's IP" prompted this.
   "ALTER TABLE device_telemetry ADD COLUMN local_ip TEXT",
+  // Panel temperature in Celsius. REAL because the sensor reports fractions, and nullable because
+  // only some hardware exposes one — Android and the browser players send nothing and must keep
+  // reading as "no sensor" rather than "0 degrees", which is why every read site treats null as
+  // absent instead of coercing.
+  "ALTER TABLE device_telemetry ADD COLUMN temperature_c REAL",
+  // Hardware identity as the PANEL reports it, distinct from anything the server infers. A
+  // BrightSign knows its model (XT245 vs XC4055 — different capabilities, notably output count),
+  // its OS build, and its serial, and none of that had anywhere to live: the devices row carried
+  // only `platform`. Deliberately generic names rather than bs_* — an Android panel has a model
+  // and a serial too, and naming the columns after one vendor would mean a second set later.
+  "ALTER TABLE devices ADD COLUMN hardware_model TEXT",
+  "ALTER TABLE devices ADD COLUMN hardware_serial TEXT",
+  // The OS build, in its OWN column rather than reusing android_version. That column is load
+  // bearing as a TYPE discriminator, not just a value: the device view decides between the
+  // Android layout and the browser layout with android_version.startsWith('Web/'), so writing
+  // "BrightSign OS 9.0.189" there would render a BrightSign with battery and WiFi cards. It would
+  // also be clobbered on the next lightweight device_info refresh, which rewrites that column.
+  "ALTER TABLE devices ADD COLUMN hardware_os_version TEXT",
+  // Which physical output this row paints. A dual-output player runs one player per connector and
+  // registers as two devices; without this they are indistinguishable in the dashboard.
+  "ALTER TABLE devices ADD COLUMN output_index INTEGER",
   // Backfill a unique 6-digit PIN for already-paired devices that predate the
   // settings_pin column (their next reconnect re-sends device:paired with it, so
   // the existing fleet isn't locked out of the on-device menu). Idempotent: the
