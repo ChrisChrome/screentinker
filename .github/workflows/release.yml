@@ -143,6 +143,7 @@ jobs:
             --title "ScreenTinker ${{ steps.ver.outputs.tag }}" \
             --notes-file RELEASE_NOTES.md \
             "${TARBALL}" \
+            autorun.zip \
             tizen/ScreenTinker.wgt
 
   docker:
