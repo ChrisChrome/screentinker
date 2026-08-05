@@ -380,6 +380,14 @@ app.get('/player/st-sync.js', (req, res) => {
 // duplicated because this rule disagreed with itself across players for exactly as long as it was
 // written three times: a YouTube embed ignored the per-item mute on the web player and could never
 // unmute at all on Tizen.
+// Orientation geometry, from its single source. Rotating a box does not move it: the previous
+// inline rule spun the container about its own top-left-pinned centre and put portrait content
+// 420px off-screen on a 1920x1080 panel.
+app.get('/player/orientation-style.js', (req, res) => {
+  res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'lib', 'orientation-style.js'));
+});
+
 app.get('/player/media-mute.js', (req, res) => {
   res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(__dirname, 'lib', 'media-mute.js'));

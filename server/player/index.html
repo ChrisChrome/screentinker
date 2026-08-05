@@ -240,6 +240,7 @@
   <script src="/socket.io/socket.io.js"></script>
   <script src="/player/schedule-eval.js"></script>
   <script src="/player/media-mute.js"></script>
+  <script src="/player/orientation-style.js"></script>
   <script src="/player/player-media-health.js"></script>
   <!-- feat/transition-engine: WebGL transition runtime (renderer + shaders). Optional; if it fails to
        load the player just hard-cuts. Not deferred so it's ready before the first content swap. -->
@@ -2154,20 +2155,25 @@
             console.log('[bs] output rotated by host; CSS transform cleared');
           });
         }
-        const rotations = { 'landscape': '0deg', 'portrait': '90deg', 'landscape-flipped': '180deg', 'portrait-flipped': '270deg' };
-        const portrait = data.orientation.includes('portrait');
-        [document.getElementById('playerContainer'), document.getElementById('pipContainer')].forEach((el) => {
-          if (!el) return;
-          el.style.transform = `rotate(${rotations[data.orientation] || '0deg'})`;
-          if (portrait) {
-            el.style.transformOrigin = 'center center';
-            el.style.width = '100vh';
-            el.style.height = '100vw';
-          } else {
-            el.style.width = '';
-            el.style.height = '';
-          }
-        });
+        // Geometry from the shared rule (server/lib/orientation-style.js). The previous inline
+        // version rotated the container about its own centre while it stayed pinned top-left, so
+        // portrait content landed 420px off-screen on a 1920x1080 panel — rotated correctly and
+        // placed wrongly. Tizen and Android both centre the box first; the web player did not.
+        const st = window.OrientationStyle
+          ? window.OrientationStyle.orientationStyle(data.orientation)
+          : null;
+        if (st) {
+          [document.getElementById('playerContainer'), document.getElementById('pipContainer')]
+            .forEach((el) => {
+              if (!el) return;
+              el.style.transform = st.transform;
+              el.style.transformOrigin = st.transformOrigin;
+              el.style.width = st.width;
+              el.style.height = st.height;
+              el.style.top = st.top;
+              el.style.left = st.left;
+            });
+        }
       }
 
       // Apply (or clear) wall mode. Force re-render when wall config changes
