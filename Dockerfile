@@ -39,6 +39,12 @@ COPY VERSION /app/VERSION
 COPY docs/openapi.yaml /app/docs/openapi.yaml
 # database.js requires scripts/migrate-multitenancy at boot
 COPY scripts/ /app/scripts/
+# The BrightSign bridge and sync modules are served to the player from ../brightsign so the copy
+# the player loads can never drift from the one on the player's own storage. That RUNTIME path
+# does not exist unless the directory is in the image: without this the routes 404 in a container
+# while working perfectly from a dev checkout — and a missing player asset fails silently, because
+# the SPA fallback answers 200 with HTML where JavaScript was expected.
+COPY brightsign/ /app/brightsign/
 VOLUME ["/data"]
 EXPOSE 3001
 CMD ["node", "server.js"]
