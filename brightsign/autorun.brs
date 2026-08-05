@@ -249,6 +249,72 @@ Sub SetOrientation(widget As Object, o As String)
     widget.PostJSMessage({ type: "orientation-result", ok: ok, transform: transform$ })
 End Sub
 
+'=== capability probe =======================================================================
+' What this unit can actually do, answered by the only component that can see it.
+'
+' The page cannot determine any of this. There is no JavaScript API for device storage —
+' @brightsign/storage exposes format/eject and nothing that enumerates volumes — so a player asked
+' "do you have a disk?" could only guess. It matters because the DWS snapshot endpoint writes the
+' full-size capture to disk before returning a thumbnail: with no card or SSD fitted it answers
+' "No primary storage found", which is exactly what our XT245 does today. Declaring
+' remote.screenshot on such a unit puts a button in the dashboard that cannot work.
+'
+' FLASH: is deliberately NOT counted. This player boots from internal flash because its card
+' interface is physically dead, and the DWS still refuses the capture — internal flash is not
+' "primary storage" as that endpoint means it. Counting it would re-create the exact lie this
+' probe exists to prevent.
+Function StorageProbe() As Object
+    result = { present: false, volume: "", free_mb: 0, total_mb: 0 }
+
+    volumes = ["SSD:", "SD:", "USB1:"]
+    for each v in volumes
+        mounted = false
+        hp = CreateObject("roStorageHotplug")
+        if hp <> invalid then
+            st = hp.GetStorageStatus(v)
+            if st <> invalid and st.mounted then mounted = true
+        end if
+
+        if mounted then
+            result.present = true
+            result.volume = v
+            si = CreateObject("roStorageInfo", v)
+            if si <> invalid then
+                ' Real device capacity. The widget's storage quota — all the page can see via
+                ' navigator.storage.estimate() — is the cache budget, not the disk.
+                result.free_mb = si.GetFreeInMegabytes()
+                result.total_mb = si.GetSizeInMegabytes()
+            end if
+            return result
+        end if
+    end for
+
+    return result
+End Function
+
+' Everything the page cannot ask the hardware directly.
+Sub SendProbeResult(widget As Object)
+    di = CreateObject("roDeviceInfo")
+    storage = StorageProbe()
+
+    osVer$ = ""
+    model$ = ""
+    if di <> invalid then
+        osVer$ = di.GetVersion()
+        model$ = di.GetModel()
+    end if
+
+    widget.PostJSMessage({
+        type: "probe-result"
+        storage_present: storage.present
+        storage_volume: storage.volume
+        storage_free_mb: storage.free_mb
+        storage_total_mb: storage.total_mb
+        os_version: osVer$
+        model: model$
+    })
+End Sub
+
 Function FullScreenRect() As Object
     vm = CreateObject("roVideoMode")
     return CreateObject("roRectangle", 0, 0, vm.GetResX(), vm.GetResY())
@@ -568,6 +634,11 @@ Sub Main()
                         SaveRegistry("server_url", m.server_url)
                         cfg.server_url = m.server_url
                     end if
+
+                else if m.type = "probe" then
+                    ' Asked once during boot, before the player registers: the answer decides which
+                    ' controls the dashboard is allowed to offer for this display.
+                    SendProbeResult(widget)
 
                 else if m.type = "set-orientation" then
                     if m.orientation <> invalid then SetOrientation(widget, m.orientation)

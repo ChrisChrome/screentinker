@@ -102,6 +102,13 @@
    * synchronously still works rather than caching a Promise object as if it were a device id,
    * which would register a "[object Promise]" display.
    */
+  /*
+   * What the HOST told us about the hardware. Empty until the probe answers, and it may never
+   * answer — a widget built without nodejs_enabled has no host at all. Every consumer treats
+   * absence as "unknown", never as "no".
+   */
+  var probe = null;
+
   var SECTION = 'screentinker';
   // device_token belongs here as much as device_id: the server authenticates the claim to an
   // existing display with the token, so an id presented without one reads as a NEW display and
@@ -126,10 +133,43 @@
     return (v === undefined || v === null || v === '') ? null : String(v);
   }
 
+  /*
+   * Ask the host what the hardware can do. Folded into the SAME readiness gate as the registry
+   * prefetch, because the player declares its capabilities at registration — and registration
+   * happens once readiness fires. A probe that resolved afterwards would mean the first
+   * registration of every boot carried the wrong capability set, and the dashboard would show
+   * controls for a disk that is not there until the display happened to re-register.
+   *
+   * Never blocks: settle() runs on the answer, and the 5s cap in the boot path fires markReady
+   * regardless, so a host that says nothing costs a slower boot rather than a dead player.
+   */
+  function probeHost(settle) {
+    if (!port) { settle(); return; }
+    var answered = false;
+    listeners.push(function (msg) {
+      if (answered || !msg || msg.type !== 'probe-result') return;
+      answered = true;
+      probe = msg;
+      settle();
+    });
+    if (!post({ type: 'probe' })) { settle(); return; }
+    // Independent of the global cap: if the host is alive but this one message is lost, readiness
+    // must not wait the full 5s for it.
+    if (global.setTimeout) global.setTimeout(function () {
+      if (answered) return;
+      answered = true;
+      settle();
+    }, 3000);
+  }
+
   function prefetch() {
-    if (!registry) { markReady(); return; }
-    var pending = CACHED_KEYS.length;
+    // The probe still runs without a registry: a widget can have a host bridge and no registry
+    // module, and the capability set matters more than the identity cache in that case.
+    var pending = (registry ? CACHED_KEYS.length : 0) + 1;   // +1 = the host probe
     var settle = function () { if (--pending <= 0) markReady(); };
+
+    probeHost(settle);
+    if (!registry) return;
 
     for (var i = 0; i < CACHED_KEYS.length; i++) {
       (function (name) {
@@ -202,6 +242,142 @@
       var m = new RegExp('[?&]' + name + '=([^&]*)').exec(global.location.search || '');
       return m ? decodeURIComponent(m[1]) : null;
     } catch (e) { return null; }
+  }
+
+  /*
+   * Compare dotted versions. Returns -1/0/1. Missing or unparseable reads as OLDEST, so a feature
+   * with a firmware floor is withheld when we cannot prove the floor is met — the safe direction
+   * for a capability declaration.
+   */
+  function compareVersions(a, b) {
+    var pa = String(a || '').split('.');
+    var pb = String(b || '').split('.');
+    for (var i = 0; i < Math.max(pa.length, pb.length); i++) {
+      var na = parseInt(pa[i], 10); if (isNaN(na)) na = -1;
+      var nb = parseInt(pb[i], 10); if (isNaN(nb)) nb = -1;
+      if (na > nb) return 1;
+      if (na < nb) return -1;
+    }
+    return 0;
+  }
+
+  // SyncManager is documented from BrightSignOS 8.2.10. Below it the module may resolve and do
+  // nothing, which is the worst outcome for a video wall: every panel reports healthy and drifts.
+  var SYNCMANAGER_MIN_OS = '8.2.10';
+
+  /*
+   * WHAT THIS PLAYER CAN ACTUALLY DO — computed, never assumed.
+   *
+   * Declared to the server at registration and used by the dashboard to decide which controls to
+   * offer. The whole point is that a static per-platform table cannot know any of this: the same
+   * XT245 supports remote.screenshot with an SSD fitted and not without, and native sync only
+   * above a firmware floor.
+   *
+   * The bias is deliberate. A capability is declared only when the thing it gates will actually
+   * work; anything uncertain is withheld. A control that appears later, when a disk is fitted, is
+   * a far smaller problem than a button that silently does nothing — which is the bug this whole
+   * mechanism exists to remove.
+   */
+  function computeCapabilities() {
+    var caps = [];
+    var add = function (c) { caps.push(c); };
+
+    // ---- always true on this platform -----------------------------------------------------
+    // The player IS the web player; these are properties of the renderer, not of the hardware.
+    add('playback.video'); add('playback.image'); add('playback.widget'); add('playback.youtube');
+    add('playback.zones');
+    add('audio.mute'); add('audio.volume');
+    add('sync.clock');            // clock-derived group sync is pure JS and needs nothing
+    add('remote.input');          // synthesised DOM events; needs no host and no mouse_enabled
+
+    /*
+     * ⚠️ Both of these composite DOM content over video, and with hwz the video is on a hardware
+     * plane the DOM sits behind. They work over images and widgets and may be INVISIBLE over
+     * video. Declared anyway because the failure is benign — a transition degrades to a hard cut,
+     * which the engine already does on any failure — and withholding them would remove a feature
+     * that genuinely works for the non-video majority of content.
+     *
+     * The likely fix is roVideoMode.SetGraphicsZOrder("front"), deliberately NOT applied here:
+     * changing the z-order blind risks hiding video entirely on a player that currently works.
+     * See the README — it wants a hardware experiment, not a guess.
+     */
+    add('playback.transitions'); add('playback.pip');
+
+    // Service-worker content caching. The quota is configured in autorun.brs (storage_path +
+    // storage_quota); without a service worker there is no offline story at all.
+    try {
+      if (global.navigator && global.navigator.serviceWorker) add('offline.cache');
+    } catch (e) { /* no SW in this widget */ }
+
+    // ---- needs the host bridge --------------------------------------------------------------
+    // Each of these is a BrightScript call. Without a host the page can only reload itself, and a
+    // page-initiated reload does not reliably bring an roHtmlWidget back — the failure that
+    // darkened a customer's panel on 2026-07-28. So none of them are declared without one.
+    if (port) {
+      add('system.restart_player');   // host rebuilds the widget
+      add('system.reboot');           // RebootSystem
+      add('display.rotation');        // roVideoMode transform — the ONLY way video rotates here
+      add('display.resolution');      // roVideoMode SetMode
+    } else if (VideoOutputClass) {
+      // No host, but the JS video-output module resolved: resolution alone is still reachable.
+      add('display.resolution');
+    }
+
+    /*
+     * Storage-gated. The DWS snapshot endpoint writes the full-size capture to disk before
+     * returning a thumbnail, so with no card or SSD it answers "No primary storage found" —
+     * verified on our XT245, which boots from internal flash and is refused. Self-update needs a
+     * volume to stage autorun.zip onto for the same reason.
+     *
+     * Unknown (no probe answer) is treated as NO. Claiming a disk we could not confirm is exactly
+     * the button-that-does-nothing case.
+     */
+    if (port && probe && probe.storage_present) {
+      add('remote.screenshot');
+      add('remote.stream');
+      add('system.self_update');
+    }
+
+    /*
+     * CEC. Module presence is a weak signal and we know it: our XT245 resolves @brightsign/cec
+     * perfectly while the kernel logs "failed to get cec clock" and the display never responds.
+     * There is no reliable way to distinguish "sent" from "received" without a cooperating
+     * display, so this is declared on module presence and the README states the limitation.
+     *
+     * Blanking does NOT depend on this — the player tears the media down, which is what actually
+     * works — so a display that ignores CEC still goes dark.
+     */
+    if (CecClass) add('display.power');
+
+    /*
+     * Native sync needs the module AND the firmware floor. Below 8.2.10 the module may exist and
+     * silently do nothing, which on a video wall means every panel reports healthy while drifting
+     * apart — strictly worse than falling back to our own clock-derived protocol.
+     */
+    var osVer = probe && probe.os_version ? probe.os_version : null;
+    if (!osVer && deviceInfo) {
+      try { osVer = deviceInfo.osVersion ? String(deviceInfo.osVersion) : null; } catch (e) { osVer = null; }
+    }
+    var syncManagerPresent = !!tryRequire('@brightsign/syncmanager');
+    if (syncManagerPresent && osVer && compareVersions(osVer, SYNCMANAGER_MIN_OS) >= 0) {
+      add('sync.native');
+    }
+
+    /*
+     * NEVER declared, because BrightSign has no equivalent — this is the half of parity that is
+     * about removing controls rather than adding features:
+     *
+     *   system.kiosk           there is no lock-task or device-owner concept; the player is the
+     *                          only application on the box, so "kiosk" is not a mode to enter
+     *   system.brightness      no per-window or system brightness control
+     *   system.screen_timeout  no OS screen timeout; blanking is scheduled content, not a setting
+     *   system.install_apk     not Android
+     *   system.shell           no remote shell exposed to the player
+     *   system.time            BrightScript CAN set time and timezone, but this host does not
+     *                          implement it — declaring an unimplemented capability is the same
+     *                          lie in the opposite direction
+     */
+    return caps;
   }
 
   var API = {
@@ -431,6 +607,22 @@
       });
     },
 
+    /*
+     * The capability list to send at registration.
+     *
+     * Call AFTER onReady() — the host probe resolves inside the same readiness gate, and calling
+     * earlier returns a set computed without it, which would under-report a display that does
+     * have a disk. Cheap enough to call every registration rather than caching, so a display that
+     * gains an SSD declares it at its next reconnect instead of at its next reboot.
+     */
+    capabilities: computeCapabilities,
+
+    /*
+     * The raw host probe, for diagnostics. Null until the host answers, and null forever on a
+     * widget with no bridge — callers must treat that as "unknown", not as "nothing".
+     */
+    hostProbe: function () { return probe; },
+
     onHostMessage: function (fn) { if (typeof fn === 'function') listeners.push(fn); },
 
     /*
@@ -467,28 +659,50 @@
       }
 
       /*
-       * Storage. This is the WIDGET'S storage quota (storage_path/storage_quota in autorun.brs),
-       * NOT the device's filesystem — there is no documented JS API for the latter, and reporting
-       * eMMC/SD capacity would need the host. It is still the number that matters operationally,
-       * because it is the budget the player actually has for cached content, and it is what fills
-       * up. The dashboard labels it distinctly for this family so it is never read as "the disk".
+       * REAL device storage, when the host could see a volume.
+       *
+       * There is no JavaScript API for this — @brightsign/storage formats and ejects but does not
+       * enumerate — which is why this previously reported the widget's cache quota instead. The
+       * host has roStorageInfo and answers with the actual free/total of the mounted volume, so
+       * "storage" in the dashboard now means the disk rather than a browser budget.
+       *
+       * Set BEFORE the quota estimate below so the real numbers win: the estimate only fills in
+       * when the host had nothing to report.
        */
-      try {
-        var s = global.navigator && global.navigator.storage;
-        if (s && typeof s.estimate === 'function') {
-          var e = s.estimate();
-          if (e && typeof e.then === 'function') {
-            e.then(function (est) {
-              if (!est) return;
-              var quota = Number(est.quota), usage = Number(est.usage);
-              if (isFinite(quota) && quota > 0) {
-                telemetry.storage_total_mb = Math.round(quota / 1048576);
-                if (isFinite(usage)) telemetry.storage_free_mb = Math.round((quota - usage) / 1048576);
-              }
-            }, function () { /* estimate refused */ });
+      if (probe && probe.storage_present) {
+        var total = Number(probe.storage_total_mb);
+        var free = Number(probe.storage_free_mb);
+        if (isFinite(total) && total > 0) telemetry.storage_total_mb = Math.round(total);
+        if (isFinite(free) && free >= 0) telemetry.storage_free_mb = Math.round(free);
+      }
+
+      /*
+       * Fallback: the WIDGET'S storage quota (storage_path/storage_quota in autorun.brs), used
+       * only when the host reported no volume. It is the budget the player has for cached content
+       * and it is what fills up, so it is worth reporting — but it is not the disk, and it must
+       * never overwrite a real figure from the host.
+       */
+      if (!telemetry.storage_total_mb) {
+        try {
+          var s = global.navigator && global.navigator.storage;
+          if (s && typeof s.estimate === 'function') {
+            var e = s.estimate();
+            if (e && typeof e.then === 'function') {
+              e.then(function (est) {
+                if (!est) return;
+                // Re-checked inside the callback: a host probe can land while this is in flight,
+                // and the disk figure must not be overwritten by the cache budget afterwards.
+                if (telemetry.storage_total_mb) return;
+                var quota = Number(est.quota), usage = Number(est.usage);
+                if (isFinite(quota) && quota > 0) {
+                  telemetry.storage_total_mb = Math.round(quota / 1048576);
+                  if (isFinite(usage)) telemetry.storage_free_mb = Math.round((quota - usage) / 1048576);
+                }
+              }, function () { /* estimate refused */ });
+            }
           }
-        }
-      } catch (e) { /* no storage manager */ }
+        } catch (e) { /* no storage manager */ }
+      }
     },
 
     /*

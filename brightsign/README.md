@@ -214,6 +214,99 @@ Still Android-only, and correctly inert here: the Tier-2 device-owner commands (
 `install_apk`, `shell`, `block_uninstall`, …) and `set_brightness` / `set_screen_timeout`, which
 have no BrightSign equivalent — a signage player has no per-window brightness or screen timeout.
 
+## Declared capabilities
+
+The table above says what a BrightSign *can* do. What the dashboard actually offers comes from
+`BS.capabilities()`, computed fresh on every call and sent with the device registration, where
+`server/lib/player-capabilities.js` turns it into rendered controls.
+
+It is computed rather than tabulated because **the same model differs from unit to unit**. Our
+XT245 supports remote screenshots with an SSD fitted and not without — the DWS snapshot endpoint
+writes the full-size capture to disk before returning a thumbnail, so a unit booting from internal
+flash is answered `No primary storage found`. No static per-platform table can know that, and a
+table that guessed would put a button in the dashboard that cannot work.
+
+### How each one is decided
+
+| capability | condition | why |
+|---|---|---|
+| `playback.video` `.image` `.widget` `.youtube` `.zones` | always | properties of the renderer, not the hardware |
+| `audio.mute` `audio.volume` | always | media-element level, re-applied per `play` |
+| `sync.clock` | always | pure JS, needs no host |
+| `remote.input` | always | synthesised DOM events; needs no `mouse_enabled` |
+| `playback.transitions` `playback.pip` | always, **with a caveat** | see below |
+| `offline.cache` | `navigator.serviceWorker` exists | no SW, no offline story |
+| `system.restart_player` `system.reboot` `display.rotation` `display.resolution` | host bridge is live | each is a BrightScript call |
+| `remote.screenshot` `remote.stream` `system.self_update` | host reports a mounted volume | DWS needs primary storage; the updater needs somewhere to stage `autorun.zip` |
+| `display.power` | `@brightsign/cec` resolves | weak signal — see below |
+| `sync.native` | `@brightsign/syncmanager` **and** OS ≥ 8.2.10 | below the floor the module can exist and silently do nothing |
+
+The storage answer comes from a `probe` message the bridge posts to the host during boot, before
+the player registers. `StorageProbe()` in `autorun.brs` walks `SSD:`, `SD:` and `USB1:` through
+`roStorageHotplug.GetStorageStatus().mounted` and reads real capacity via `roStorageInfo`. There is
+no JS equivalent for either, which is also why device telemetry now reports the **disk** rather than
+the widget's cache quota — the previous numbers were the `storage_quota` from `autorun.brs`
+presented as if they were the drive.
+
+`FLASH:` is deliberately excluded from that walk. Internal flash is where the player boots from, not
+a volume the DWS will accept a snapshot on; counting it would re-introduce exactly the button that
+does nothing.
+
+**Unknown is treated as NO.** If the probe never answers — a widget built without `nodejs_enabled`
+has no host at all — nothing storage-gated is declared. A control that appears later, once a disk is
+fitted and the player reconnects, is a much smaller problem than one that silently fails today.
+
+### Never declared
+
+| | |
+|---|---|
+| `system.kiosk` | no lock-task or device-owner concept. The player is the only application on the box, so kiosk is not a mode to enter — it is the permanent state |
+| `system.brightness` | no per-window or system brightness control |
+| `system.screen_timeout` | no OS screen timeout; blanking is scheduled content, not a setting |
+| `system.install_apk` | not Android |
+| `system.shell` | no remote shell exposed to the player |
+| `system.time` | BrightScript **can** set time and timezone — this host does not implement it. Declaring an unimplemented capability is the same lie in the other direction |
+
+Only the last one is a gap rather than a platform limit. The other five have no BrightSign
+equivalent and should stay undeclared permanently.
+
+### The two caveated declarations
+
+**`playback.transitions` / `playback.pip`** both composite DOM content over video, and with `hwz`
+the video is on a hardware plane the DOM sits *behind* (see above). They work over images and
+widgets and may be invisible over video. Declared anyway: the failure is benign — a transition
+degrades to a hard cut, which the engine already does on any failure — and withholding them would
+remove a feature that genuinely works for the non-video majority of content.
+
+The likely fix is `roVideoMode.SetGraphicsZOrder("front")`, **deliberately not applied**. Changing
+the z-order blind risks hiding video entirely on a player that currently works, and the trade is not
+obvious: putting graphics in front may mean video is only visible through a colour key. This wants a
+hardware experiment on a unit that is not in service — set the z-order in `autorun.brs` before
+`FullScreenRect()`, play a video, and check that (a) video is still visible and (b) a DOM overlay
+now covers it. Until someone runs it, the honest state is "transitions work except over video".
+
+**`display.power`** is declared on module presence, which we know is a weak signal: our XT245
+resolves `@brightsign/cec` perfectly while the kernel logs `failed to get cec clock` and the display
+never responds. There is no way to distinguish "sent" from "received" without a cooperating display.
+Blanking does not depend on it — the player tears the media down, which is what actually works — so
+a display that ignores CEC still goes dark. The capability being optimistic here costs an
+already-working feature nothing.
+
+### Needs hardware to verify
+
+Everything below was implemented against the documented APIs and the dev-cookbook, and reasoned
+through, but has not run on a unit in the state that exercises it:
+
+- **The storage probe returning `present: true`.** Our XT245 has a dead microSD interface and boots
+  from flash, so it has only ever been observed answering `false`. The false path is verified on
+  hardware; the true path is verified only in tests.
+- **`remote.screenshot` / `remote.stream` end to end** with a disk fitted — the DWS snapshot call
+  has never succeeded on our unit for that reason.
+- **`system.self_update`** staging `autorun.zip` onto a real volume.
+- **`sync.native`** on two or more units on one L2 network. Requires `networking/ptp_domain="0"`
+  and a reboot.
+- **The `SetGraphicsZOrder` experiment** above.
+
 ## Offline playback
 
 Content bytes are cached by the service worker (`server/player/sw.js`) into a dedicated
@@ -297,8 +390,9 @@ needs its rotation done at the output, and this is the second one we have found.
 
 Stated plainly so nobody reads this as finished:
 
-- **Nothing consumes the `bs_model` / `bs_serial` / `bs_screen` fields** the player reports. Device
-  telemetry (temperature, storage) also has no schema to land in yet.
+- **Nothing consumes the `bs_model` / `bs_serial` / `bs_screen` fields** the player reports.
+  Temperature telemetry likewise has no schema to land in yet. Storage does now report the real
+  drive (via the capability probe) rather than the widget's cache quota.
 - **Native sync is wired but UNPROVEN on hardware.** The player drives it end to end — the leader
   announces on each advance, every member (leader included) binds via `attachVideo()` on a new id,
   and the resolved backend is chosen per group and pushed down. It cannot be verified with one
@@ -335,9 +429,12 @@ Stated plainly so nobody reads this as finished:
 - **Registry from a remote origin is still unproven** — the original probe question. If injection
   turns out to be origin-dependent, identity moves to a local shim page that owns the registry and
   passes it to the hosted player in an iframe via `postMessage`.
-- **Nothing here has run on hardware.** It is written against the BrightDeveloper docs and
-  checked line-by-line against the `brightsign/dev-cookbook` examples, which corrected four
-  config keys, the registry API and a hard SyncManager requirement (see below).
+- **Written against the docs first, then corrected by hardware.** The port was checked
+  line-by-line against the `brightsign/dev-cookbook` examples, which corrected four config keys,
+  the registry API and a hard SyncManager requirement (see below). It has since run on a real
+  XT245 booting `FLASH:/autorun.brs` — playback, identity, blanking, rotation and the storage
+  probe's *negative* answer are all confirmed there. What that one unit cannot exercise is listed
+  under "Needs hardware to verify" above: it has no working storage and there is only one of it.
 
 ## Verified against the dev-cookbook
 
