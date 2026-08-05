@@ -307,6 +307,12 @@ app.get('/player/st-bridge.js', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'brightsign', 'st-bridge.js'));
 });
 
+// BrightSign native synchronisation (SyncManager), same single-source rule as the bridge.
+app.get('/player/st-sync.js', (req, res) => {
+  res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, '..', 'brightsign', 'st-sync.js'));
+});
+
 // #146 web-player fix: serve the media-surface health decision from its single source
 // (server/lib/player-media-health.js) so the player and the Node test can't drift.
 app.get('/player/player-media-health.js', (req, res) => {

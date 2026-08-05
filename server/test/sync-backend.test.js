@@ -16,7 +16,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { resolveSyncBackend, isBrightSignDevice } = require('../lib/sync-backend');
+const { resolveSyncBackend, isBrightSignDevice, networksDiffer } = require('../lib/sync-backend');
 
 const bs = (n = 1) => ({ id: `bs${n}`, platform: 'brightsign', name: `BrightSign ${n}` });
 const android = { id: 'a1', platform: 'Android 12', name: 'Lobby tablet' };
@@ -77,4 +77,45 @@ test('a non-BrightSign device is never mistaken for one', () => {
   assert.equal(isBrightSignDevice(android), false);
   assert.equal(isBrightSignDevice(null), false);
   assert.equal(isBrightSignDevice({}), false);
+});
+
+// --- multicast reach -----------------------------------------------------------------------
+//
+// SyncManager is multicast, so the whole group must share one L2 network. Two BrightSigns in
+// different buildings would each sync perfectly within their own subnet and drift from each other,
+// and the dashboard would show a healthy group the whole time. The IP comparison is a heuristic,
+// so it is only ever used as evidence AGAINST native sync — never as proof for it.
+
+const bsAt = (n, ip) => ({ id: `bs${n}`, platform: 'brightsign', ip_address: ip });
+
+test('THE SILENT SPLIT: all-BrightSign but on different subnets does not get native sync', () => {
+  const r = resolveSyncBackend('auto', [bsAt(1, '10.1.5.20'), bsAt(2, '10.9.5.20')]);
+  assert.equal(r.backend, 'screentinker');
+  assert.match(r.reason, /different networks/);
+});
+
+test('explicitly selecting native across subnets downgrades and explains multicast', () => {
+  const r = resolveSyncBackend('brightsign', [bsAt(1, '192.168.1.10'), bsAt(2, '192.168.2.10')]);
+  assert.equal(r.backend, 'screentinker');
+  assert.equal(r.downgraded, true);
+  assert.match(r.reason, /multicast/);
+});
+
+test('one subnet keeps native sync', () => {
+  const r = resolveSyncBackend('auto', [bsAt(1, '192.168.1.10'), bsAt(2, '192.168.1.11')]);
+  assert.equal(r.backend, 'brightsign');
+});
+
+test('unknown addresses block nothing — absence of evidence is not evidence', () => {
+  const r = resolveSyncBackend('auto', [bs(1), bs(2)]);
+  assert.equal(r.backend, 'brightsign', 'a fleet that never recorded IPs must still work');
+  assert.equal(networksDiffer([bs(1), bsAt(2, '10.0.0.1')]), false, 'one known address proves nothing');
+});
+
+test('IPv6 members are compared on their /64', () => {
+  const a = { id: 'a', platform: 'brightsign', ip_address: '2600:4040:917a:2200::10' };
+  const b = { id: 'b', platform: 'brightsign', ip_address: '2600:4040:917a:2200::11' };
+  const c = { id: 'c', platform: 'brightsign', ip_address: '2600:4040:9999:2200::12' };
+  assert.equal(resolveSyncBackend('auto', [a, b]).backend, 'brightsign');
+  assert.equal(resolveSyncBackend('auto', [a, c]).backend, 'screentinker');
 });

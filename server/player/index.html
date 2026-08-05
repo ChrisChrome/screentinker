@@ -120,6 +120,9 @@
        restart can be delegated to the host, and both questions are asked during boot. Off
        BrightSign every method is a no-op, so this is inert in a browser. -->
   <script src="/player/st-bridge.js"></script>
+  <!-- BrightSign native sync (SyncManager). Inert without the platform module, so the player
+       falls back to its own clock-derived group sync. -->
+  <script src="/player/st-sync.js"></script>
   <title>ScreenTinker Player</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }

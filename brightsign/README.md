@@ -19,8 +19,9 @@ the four things a page cannot do for itself.
 |---|---|
 | `autorun.brs` | BrightScript host. Builds the widget, supervises it, persists identity, drives a second output, executes what the page cannot. |
 | `st-bridge.js` | Loaded by the player on this platform. Registry identity, restart-instead-of-reload, heartbeat, sync-backend reporting. Degrades to no-ops everywhere else, so it is safe to load unconditionally. |
+| `st-sync.js` | Native SyncManager adapter. Inert without the platform module, so the player falls back to its own group sync. |
 | `probe.html` | The original capability probe. Still useful on a new model/OS build. |
-| `offline.html` | Local fallback page — see recovery below. **Not yet written.** |
+| `offline.html` | Local fallback page — names the server, keeps probing it, and asks the host to restart the player the moment it answers. |
 
 ## The four things the host exists for
 
@@ -44,6 +45,19 @@ hardware-only fingerprint once merged two identical panels into a single device 
 
 **4. It reaches BrightScript-only capabilities** — video mode, a second output, and native
 BrightWall sync — on the page's behalf, over `@brightsign/messageport`.
+
+## What goes on the SD card
+
+```
+autorun.brs          the host
+offline.html         local fallback, used after three failed loads
+screentinker.json    optional — server URL, sync backend, output mode
+```
+
+**`st-bridge.js` and `st-sync.js` do NOT go on the card.** The player pulls them from the server
+(`/player/st-bridge.js`, `/player/st-sync.js`) so they can never skew from the player that uses
+them. A stale copy on a card is precisely the version skew that would leave a panel unable to
+restart itself.
 
 ## Provisioning
 
@@ -89,18 +103,17 @@ A player paired before this port is still recognised, by its BrightSign user age
 
 Stated plainly so nobody reads this as finished:
 
-- **`offline.html` is not written.** The host references it as the fallback page.
 - **No server-side plumbing**: no `sync_backend` column, no dashboard control, nothing sends
   `set-sync-backend` down, and nothing consumes the `bs_model` / `bs_serial` / `bs_screen` fields
   the player now reports. The resolver is ready for all of it.
-- **The `brightsign` backend is a resolved decision, not yet an implementation.** The API is now
-  known (it was not in the MCP doc set — `part-6-appendices/api-reference.md` is a stub — but
-  `docs.brightsign.biz/developers/syncmanager` and the `brightsign/dev-cookbook`
-  `examples/browser/syncmanager-js` example document it fully):
+- **Native sync is implemented but not yet driven by the playlist engine.** `st-sync.js` wraps
+  SyncManager and is tested (`server/test/brightsign-sync.test.js`), but nothing in the player
+  calls `announce()` on item advance or binds `attachVideo()` yet, and no leader is designated.
+  That wiring is the next step and wants hardware to validate.
 
   ```js
   const SyncManager = require('@brightsign/syncmanager');          // BrightSignOS 8.2.10+
-  const sync = new SyncManager('', 'BrightSignDomain', '224.0.126.10', 1539);
+  const sync = new SyncManager('', 'ScreenTinkerSync', '224.0.126.10', 1539);
   sync.leader = true;                                              // followers just omit this
   sync.addEventListener('syncevent', (e) => {                      // BOTH roles listen
     if (e.id === lastId) return;                                   // 1Hz rebroadcast — dedupe!
@@ -111,19 +124,16 @@ Stated plainly so nobody reads this as finished:
   sync.synchronize('item_' + Date.now(), 1000);                    // leader only; msDelay to prep
   ```
 
-  Good news for the port: it is **pure JavaScript on the standard `<video>` element**, so it
-  needs no BrightScript round-trip and drops into the existing player. Three things it implies:
-
-  1. **It is leader/follower**; ours is leaderless. A group using it needs a designated leader.
-  2. **It is a video mechanism.** `setSyncParams` is on the video element, so images and widgets
-     get item-boundary alignment at best, where ours covers every item type.
-  3. **Multicast means one L2 network.** A group spanning sites or VLANs cannot use it, which is
-     a selection criterion the resolver does not model yet.
+  Three properties that shaped the design: it is **leader/follower** where ours is leaderless (and
+  the leader starts from its OWN broadcast, or it runs ahead of the group); it synchronises
+  **video only**, so images and widgets get item-boundary alignment at best; and it is
+  **multicast**, so the whole group must share one L2 network — the resolver now treats differing
+  subnets as evidence against it.
 
   Also: MP4/MOV are fine, MPEG-TS needs its presentation timestamp starting at 0, MPEG-PS is
-  unsupported. Followers accept only the first message per id, and `synchronize()` rebroadcasts
-  at 1Hz so late-powered players still join — which is exactly why the dedupe above is mandatory
-  rather than an optimisation.
+  unsupported. `synchronize()` rebroadcasts at 1Hz so late-powered players still join, which is
+  why the dedupe above is mandatory rather than an optimisation — without it every player reloads
+  its video once a second, forever.
 - **Addressing a specific HDMI connector from JS is unverified.** `@brightsign/videooutput`
   documents `setMode({width,height,refreshRate})` with no output index. Dual output above assumes
   a second widget maps to the second connector; that needs hardware confirmation.

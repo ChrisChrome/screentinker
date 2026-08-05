@@ -187,7 +187,9 @@ Sub Main()
                 print "[st] load-error ("; retries; "): "; data.url
                 sleep(ChooseBackoff(retries))
                 if retries >= 3 then
-                    widget = RebuildWidget(widget, "file:/SD:/offline.html", rect, port, cfg)
+                    ' The server URL rides along so the fallback page can name it on screen and
+                    ' keep probing it — the page has no other way to learn where home is.
+                    widget = RebuildWidget(widget, "file:/SD:/offline.html?server=" + cfg.server_url, rect, port, cfg)
                 else
                     widget = RebuildWidget(widget, PlayerUrl(cfg, 1), rect, port, cfg)
                 end if

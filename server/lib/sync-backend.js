@@ -36,6 +36,35 @@ function isBrightSignDevice(device) {
   return ua.includes('brightsign');
 }
 
+/*
+ * SyncManager is MULTICAST (224.0.126.10:1539), so every member must share one L2 network. A group
+ * spanning sites or VLANs cannot use it — and the failure is silent: each subnet would sync neatly
+ * within itself while drifting from the others.
+ *
+ * The evidence available server-side is the address each device connects from. Comparing the /24
+ * is a heuristic, not proof — two VLANs can share a public IP, and one subnet can span a routed
+ * boundary that blocks multicast. So it is used in ONE direction only: differing networks are
+ * treated as evidence against native sync, while matching ones are never treated as proof for it.
+ * Unknown addresses block nothing, because "we cannot see it" must not read as "it is broken".
+ */
+function networkOf(device) {
+  const ip = String((device && (device.ip_address || device.last_ip)) || '').trim();
+  if (!ip) return null;
+  if (ip.includes(':')) {                      // IPv6: compare the /64
+    const parts = ip.split(':');
+    return parts.slice(0, 4).join(':').toLowerCase();
+  }
+  const octets = ip.split('.');
+  if (octets.length !== 4) return null;
+  return octets.slice(0, 3).join('.');
+}
+
+function networksDiffer(members) {
+  const nets = members.map(networkOf).filter(Boolean);
+  if (nets.length < 2) return false;           // nothing to contradict
+  return new Set(nets).size > 1;
+}
+
 /**
  * @param {string} setting  'auto' | 'screentinker' | 'brightsign' (unknown values read as auto)
  * @param {Array}  members  device rows in the group
@@ -47,14 +76,24 @@ function resolveSyncBackend(setting, members) {
 
   const brightsignCount = list.filter(isBrightSignDevice).length;
   const allBrightSign = list.length > 0 && brightsignCount === list.length;
+  const split = networksDiffer(list);
 
   if (requested === 'screentinker') {
     return { backend: 'screentinker', reason: 'explicitly selected', downgraded: false };
   }
 
   if (requested === 'brightsign') {
-    if (allBrightSign) {
+    if (allBrightSign && !split) {
       return { backend: 'brightsign', reason: 'explicitly selected', downgraded: false };
+    }
+    if (allBrightSign && split) {
+      // Every member is a BrightSign, but they are not on one network. Native sync would appear
+      // to work inside each subnet while the subnets drifted apart — worse than not using it.
+      return {
+        backend: 'screentinker',
+        reason: 'displays are on different networks — native sync is multicast and cannot cross them',
+        downgraded: true
+      };
     }
     // Refusing to pretend: BrightWall cannot include a non-BrightSign screen, and a group that
     // half-syncs is worse than one that syncs to the second everywhere.
@@ -69,8 +108,15 @@ function resolveSyncBackend(setting, members) {
   }
 
   // auto
-  if (allBrightSign) {
+  if (allBrightSign && !split) {
     return { backend: 'brightsign', reason: 'every display is a BrightSign', downgraded: false };
+  }
+  if (allBrightSign && split) {
+    return {
+      backend: 'screentinker',
+      reason: 'displays are on different networks',
+      downgraded: false
+    };
   }
   return {
     backend: 'screentinker',
@@ -79,4 +125,4 @@ function resolveSyncBackend(setting, members) {
   };
 }
 
-module.exports = { resolveSyncBackend, isBrightSignDevice, BACKENDS };
+module.exports = { resolveSyncBackend, isBrightSignDevice, networksDiffer, BACKENDS };
