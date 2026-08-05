@@ -472,6 +472,7 @@ export default {
   'device.info.size_free': '{size} free',
   'device.info.player_type': 'Player Type',
   'device.info.web_player': 'Web Player',
+  'device.info.brightsign_player': 'BrightSign',
   'device.info.wifi': 'WiFi',
   'device.info.uptime': 'Uptime',
   'device.info.android_version': 'Android Version',

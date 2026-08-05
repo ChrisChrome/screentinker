@@ -83,6 +83,17 @@ function renderDeviceClock(device) {
   return `${tz}${local ? `<div style="font-size:11px;color:var(--text-muted)">${t('device.clock.reported', { time: local })}</div>` : ''}${warn}`;
 }
 
+// A BrightSign runs the same web player, so client_type is 'player' and it would otherwise read as
+// "Web Player" — indistinguishable from a browser tab on someone's desk. The player reports
+// platform 'brightsign' (autorun.brs puts ?platform=brightsign on the URL); the user-agent check
+// covers panels paired before that existed, which registered as "Chrome 120" with a BrightSign UA.
+function isBrightSignDevice(device) {
+  if (!device) return false;
+  const platform = String(device.platform || '').toLowerCase();
+  if (platform.includes('brightsign')) return true;
+  return String(device.user_agent || '').toLowerCase().includes('brightsign');
+}
+
 export function render(container, deviceId) {
   container.innerHTML = `
     <div class="device-detail">
@@ -341,7 +352,7 @@ async function loadDevice(deviceId, activeTab = null) {
           ` : `
           <div class="info-card">
             <div class="info-card-label">${t('device.info.player_type')}</div>
-            <div class="info-card-value small">${t('device.info.web_player')}</div>
+            <div class="info-card-value small">${isBrightSignDevice(device) ? t('device.info.brightsign_player') : t('device.info.web_player')}</div>
           </div>
           `}
           ${device.android_version && !device.android_version.startsWith('Web/') ? `
