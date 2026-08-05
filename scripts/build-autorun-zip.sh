@@ -103,7 +103,7 @@ if ! unzip -l "$OUT" | grep -qE ' autozip\.brs$'; then
 fi
 # Prove every entry is STORED. A single deflated member is enough to make the archive unopenable
 # on the player, and it is invisible until a deployment fails in the field.
-if unzip -v "$OUT" | awk '$1 ~ /^[0-9]+$/ && $2 != "Stored" {print $2}' | grep -q .; then
+if unzip -v "$OUT" | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[A-Za-z]/ && $2 != "Stored" {print $2}' | grep -q .; then
   echo "ERROR: archive contains compressed members; BrightSign needs it stored (zip -0)." >&2
   unzip -v "$OUT" | sed 's/^/    /' >&2
   exit 1
