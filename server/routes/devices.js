@@ -316,6 +316,56 @@ router.put('/:id', (req, res) => {
 // scoped by checkDeviceOwnership. OUTAGE PROCEDURE (dashboard down): set it by hand via
 // direct SQLite — `UPDATE devices SET blocked = 1 WHERE id = '<device_id>';` (0 to
 // unblock) — same column, same next-register effect.
+/*
+ * Set or rotate the on-device settings PIN.
+ *
+ * Body: { pin: "123456" } to set explicitly, or { rotate: true } for a fresh random one.
+ *
+ * Was provisioned once at pairing and never changeable, which made it a shared secret with no
+ * expiry: anyone who watched it typed kept it for the life of the panel, and revoking it meant
+ * unpairing and re-pairing. Now it can be rotated the moment an installer leaves.
+ *
+ * Pushed to the panel immediately over its socket. Without that the new PIN would only take effect
+ * at the next pairing — so the operator would believe they had revoked access while the old PIN
+ * still opened the menu, which is worse than not offering the feature.
+ */
+router.post('/:id/settings-pin', (req, res) => {
+  const device = checkDeviceOwnership(req, res);
+  if (!device) return;
+
+  const pinLib = require('../lib/settings-pin');
+  let pin;
+  if (req.body && req.body.rotate) {
+    pin = pinLib.generatePin();
+  } else {
+    const v = pinLib.validatePin(req.body && req.body.pin);
+    if (!v.ok) return res.status(400).json({ error: v.error });
+    pin = v.pin;
+  }
+
+  db.prepare("UPDATE devices SET settings_pin = ?, updated_at = strftime('%s','now') WHERE id = ?")
+    .run(pin, req.params.id);
+
+  // Live push. A panel that is offline picks it up on its next pair/reconnect; the response says
+  // which happened so the dashboard can tell the operator whether it is in force yet.
+  let delivered = false;
+  try {
+    const io = req.app.get('io');
+    if (io) {
+      const ns = io.of('/device');
+      const room = ns.adapter.rooms.get(req.params.id);
+      if (room && room.size > 0) {
+        ns.to(req.params.id).emit('device:settings-pin', { settings_pin: pin });
+        delivered = true;
+      }
+    }
+  } catch (e) { console.warn(`[settings-pin] push failed: ${e.message}`); }
+
+  // Deliberately NOT logging the PIN itself.
+  console.log(`[settings-pin] device ${req.params.id} pin ${req.body && req.body.rotate ? 'rotated' : 'set'} by user ${req.user.id} (delivered=${delivered})`);
+  res.json({ success: true, settings_pin: pin, delivered });
+});
+
 router.post('/:id/block', (req, res) => {
   const device = checkDeviceOwnership(req, res);
   if (!device) return;

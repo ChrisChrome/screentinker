@@ -41,6 +41,7 @@ export const api = {
   // and the re-adopt action that applies a snapshot onto a newly-paired device.
   getRemovedDevices: () => request('/devices/removed'),
   reAdoptDevice: (id, fingerprint) => request(`/devices/${id}/re-adopt`, { method: 'POST', body: JSON.stringify({ fingerprint }) }),
+  setDevicePin: (id, body) => request(`/devices/${id}/settings-pin`, { method: 'POST', body: JSON.stringify(body) }),
 
   // #109 PiP overlay: push/clear a floating overlay on a device or group. `id` may be a
   // device id OR a group id (the server resolves + expands). Needs full scope (no-op for JWT).

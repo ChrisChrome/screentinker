@@ -432,6 +432,18 @@ class WebSocketService : Service() {
                     handler.post { try { onPaired?.invoke(id, name) } catch (e: Throwable) { Log.e("WebSocketService", "onPaired cb: ${e.message}") } }
                 }
 
+                // A PIN set or rotated from the dashboard takes effect NOW, not at the next pairing.
+                // Without this an operator who rotated a leaked PIN would believe they had revoked
+                // access while the old one still opened the menu — worse than not offering it.
+                safeOn("device:settings-pin") { args ->
+                    val data = args.getOrNull(0) as? org.json.JSONObject ?: return@safeOn
+                    val pin = data.optString("settings_pin", "")
+                    if (pin.isNotEmpty()) {
+                        config.settingsPin = pin
+                        Log.i("WebSocketService", "Settings PIN updated from dashboard")   // never log the PIN
+                    }
+                }
+                
                 safeOn("device:playlist-update") { args ->
                     val data = args.firstOrNull() as? JSONObject ?: run {
                         Log.w("WebSocketService", "playlist-update with non-JSONObject payload: ${args.firstOrNull()}")

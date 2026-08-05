@@ -410,6 +410,10 @@ async function loadDevice(deviceId, activeTab = null) {
             <div class="info-card-label">${t('device.info.settings_pin')}</div>
             <div class="info-card-value small" style="font-family:monospace;letter-spacing:1px">${device.settings_pin || '--'}</div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${t('device.info.settings_pin_hint')}</div>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <button class="btn btn-secondary btn-sm" id="rotatePinBtn">${t('device.pin.rotate')}</button>
+              <button class="btn btn-secondary btn-sm" id="setPinBtn">${t('device.pin.set')}</button>
+            </div>
           </div>
           ` : ''}
           <div class="info-card">
@@ -967,6 +971,31 @@ async function showReAdoptModal(device) {
 
 function setupActions(device) {
   // #104 Preview button
+  // PIN rotate / set. The response says whether the panel took it LIVE: an offline display
+  // applies it on its next reconnect, and an operator rotating a leaked PIN needs to know
+  // which of those happened rather than assuming access is already revoked.
+  async function applyPin(body, confirmMsg) {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    try {
+      const r = await api.setDevicePin(device.id, body);
+      device.settings_pin = r.settings_pin;
+      const el = document.querySelector('#rotatePinBtn')?.closest('.info-card')?.querySelector('.info-card-value');
+      if (el) el.textContent = r.settings_pin;
+      showToast(r.delivered ? t('device.pin.updated_live') : t('device.pin.updated_offline'), 'success');
+    } catch (e) {
+      showToast(e?.message || t('device.pin.failed'), 'error');
+    }
+  }
+
+  document.getElementById('rotatePinBtn')?.addEventListener('click', () =>
+    applyPin({ rotate: true }, t('device.pin.rotate_confirm')));
+
+  document.getElementById('setPinBtn')?.addEventListener('click', () => {
+    const pin = prompt(t('device.pin.set_prompt'));
+    if (pin === null) return;
+    applyPin({ pin });
+  });
+
   document.getElementById('devicePreviewBtn')?.addEventListener('click', () => showDevicePreview(device));
 
   // Screenshot button
