@@ -294,6 +294,69 @@ app.get('/player/schedule-eval.js', (req, res) => {
   res.sendFile(path.join(__dirname, 'lib', 'schedule-eval.js'));
 });
 
+// Offline content-cache policy, imported by the service worker via importScripts and by the Node
+// tests via require — one source, so the range arithmetic the player depends on cannot drift from
+// the arithmetic that is actually tested. A service worker cannot require(), which is why this is
+// a served file rather than a bundled one.
+app.get('/player/cache-policy.js', (req, res) => {
+  res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'lib', 'player-cache-policy.js'));
+});
+
+// BrightSign player-package self-update. The manifest and the bytes are read from the SAME built
+// buffer, so a checksum can never describe a file the server is not actually serving — that
+// mismatch is the classic OTA-loop condition (download, fail verification, retry, forever).
+//
+// Unauthenticated on purpose, exactly like /download/apk: a player fetches this before it has any
+// identity, and the payload is the same public host script that ships attached to every release.
+const bsPackage = require('./lib/brightsign-package');
+const bsUpdate = require('./lib/brightsign-update');
+
+// The SERVER decides, exactly as /api/update/check does for Android, so the rule lives in one
+// tested place instead of being re-implemented in BrightScript where it cannot be tested at all.
+// The host does only what it is told.
+app.get('/api/brightsign/package', async (req, res) => {
+  const pkg = await bsPackage.getPackage();
+  res.setHeader('Cache-Control', 'no-cache');
+
+  // No package (a deployment without brightsign/, or an unreadable VERSION) is reported as a
+  // decision of "skip", not an error. A player that cannot be told about an update must keep
+  // running the one it has — an error here would otherwise be one more thing for the host to
+  // misinterpret at boot.
+  if (!pkg) return res.json({ action: 'skip', reason: 'package unavailable' });
+
+  const decision = bsUpdate.decidePackageUpdate({
+    currentVersion: req.query.version || null,
+    manifestVersion: pkg.version,
+    manifestSha256: pkg.sha256,
+    stagedSha256: req.query.staged_sha256 || null,
+    attempts: parseInt(req.query.attempts, 10) || 0,
+    allowPrerelease: req.query.allow_prerelease === '1'
+  });
+
+  res.json({
+    action: decision.action,
+    reason: decision.reason,
+    version: pkg.version,
+    sha256: pkg.sha256,
+    size: pkg.size,
+    url: '/api/brightsign/package/download'
+  });
+});
+
+app.get('/api/brightsign/package/download', async (req, res) => {
+  const pkg = await bsPackage.getPackage();
+  if (!pkg) return res.status(404).type('text/plain').send('package unavailable');
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Length', String(pkg.size));
+  res.setHeader('Content-Disposition', 'attachment; filename="autorun.zip"');
+  // The checksum rides along so a client that already has the manifest can verify without a second
+  // round trip, and so a proxy that mangles the body is detectable from the response alone.
+  res.setHeader('X-Package-Sha256', pkg.sha256);
+  res.setHeader('Cache-Control', 'no-cache');
+  res.send(pkg.buffer);
+});
+
 // BrightSign bridge, served from its single source (brightsign/st-bridge.js) so the copy the
 // player loads can never drift from the one sitting on the SD card next to autorun.brs — the two
 // are halves of one messageport contract, and a skew between them is exactly what would leave a
