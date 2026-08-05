@@ -684,7 +684,8 @@
       // gesture-driven start rather than the unmute of an autoplaying video.
       const t = video.currentTime;
       video.muted = false;
-      video.volume = 1.0;
+      // Honour an operator-set level if there is one; otherwise full, as before.
+      video.volume = (mediaVolume != null) ? mediaVolume : 1.0;
       video.pause();
       const p = video.play();
       if (p && typeof p.then === 'function') {
@@ -1462,9 +1463,21 @@
       socket.on('device:command', (data) => {
         console.log('Command:', data.type);
         if (data.type === 'refresh') restartPlayer('operator refresh');
-        if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); }
+        if (data.type === 'launch') { document.getElementById('screenOffOverlay')?.remove(); setDisplayPower(true); }
         if (data.type === 'screen_off') toggleScreenOff();
-        if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); }
+        if (data.type === 'screen_on') { document.getElementById('screenOffOverlay')?.remove(); setDisplayPower(true); }
+        // A browser tab cannot reboot its host, so the web player has always ignored this and the
+        // dashboard button did nothing on it. A BrightSign can, through the host script.
+        if (data.type === 'reboot') {
+          if (BS && BS.reboot()) console.log('[bs] reboot requested via host');
+          else console.log('reboot: not supported on this player');
+        }
+        // Media volume, 0-100 from the dashboard. Applies to whatever is playing now and is
+        // remembered for items mounted later.
+        if (data.type === 'set_volume') {
+          const pct = Number(data.payload?.value ?? data.value);
+          if (isFinite(pct)) setMediaVolume(Math.max(0, Math.min(100, pct)) / 100);
+        }
       });
 
       // #129: real-time mute. Apply immediately if the toggled item is the one playing now;
@@ -3467,9 +3480,43 @@
       document.getElementById('statusOverlay').style.display = 'none';
     }
 
+    // Real display power, where the platform has it. The overlay only paints the screen black:
+    // the panel stays lit, drawing power and at risk of burn-in. On BrightSign we can tell the
+    // display itself to sleep over CEC. Best effort — some displays ignore broadcast CEC — so the
+    // overlay is applied regardless and something visible always happens.
+    function setDisplayPower(on) {
+      if (!BS) return false;
+      try { return BS.displayPower(on); } catch (e) { return false; }
+    }
+
+    // Volume that survives the next item. Media elements are created per item, so remembering the
+    // level is what makes a volume command stick rather than lasting until the playlist advances.
+    let mediaVolume = null;
+    function setMediaVolume(v) {
+      mediaVolume = v;
+      // Wall followers stay silent by design; don't override that.
+      try { if (typeof isWallFollower === 'function' && isWallFollower()) return; } catch (e) { /* not a wall */ }
+      document.querySelectorAll('video, audio').forEach((el) => {
+        try { el.volume = v; el.muted = v === 0; } catch (e) { /* element torn down mid-call */ }
+      });
+    }
+
+    // Media elements are created per item across several code paths — fullscreen, zones, the
+    // preloader — so setting volume once only lasts until the playlist advances. Catching 'play'
+    // in the CAPTURE phase applies it to every element that ever starts, from one place. Media
+    // events do not bubble, which is why capture is required rather than a plain listener.
+    document.addEventListener('play', (e) => {
+      if (mediaVolume == null) return;
+      const el = e.target;
+      if (!el || (el.tagName !== 'VIDEO' && el.tagName !== 'AUDIO')) return;
+      try { if (typeof isWallFollower === 'function' && isWallFollower()) return; } catch (err) { /* not a wall */ }
+      try { el.volume = mediaVolume; el.muted = mediaVolume === 0; } catch (err) { /* gone */ }
+    }, true);
+
     function toggleScreenOff() {
       let overlay = document.getElementById('screenOffOverlay');
-      if (overlay) { overlay.remove(); return; }
+      if (overlay) { overlay.remove(); setDisplayPower(true); return; }
+      setDisplayPower(false);
       overlay = document.createElement('div');
       overlay.id = 'screenOffOverlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:#000;z-index:9999;cursor:pointer';

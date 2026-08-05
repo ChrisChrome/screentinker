@@ -147,6 +147,29 @@ because the BrightSigns would look perfectly synchronised while the odd panel dr
 
 A player paired before this port is still recognised, by its BrightSign user agent.
 
+## Command parity
+
+The web player handles four of the ~20 fleet commands — `launch`, `refresh`, `screen_on`,
+`screen_off` — because a browser tab genuinely cannot do more. A BrightSign can, through the host
+and the platform APIs:
+
+| command | web player | BrightSign |
+|---|---|---|
+| `screen_on` / `screen_off` | black overlay; panel stays lit | **CEC** Image View On / Standby — the display actually sleeps |
+| `reboot` | ignored | **real reboot** via `RebootSystem` in the host |
+| `set_volume` | — | applied to current and future media |
+| `refresh` | `location.reload()` | widget rebuilt by the host (reload is unreliable here) |
+
+`displayPower()` is best effort and returns false when CEC is unavailable, so the overlay is
+applied either way and something visible always happens — some displays ignore broadcast CEC and
+need direct addressing. Volume is re-applied on every `play` event in the capture phase, because
+media elements are created per item across several code paths and setting it once would otherwise
+last only until the playlist advanced.
+
+Still Android-only, and correctly inert here: the Tier-2 device-owner commands (`kiosk_lock`,
+`install_apk`, `shell`, `block_uninstall`, …) and `set_brightness` / `set_screen_timeout`, which
+have no BrightSign equivalent — a signage player has no per-window brightness or screen timeout.
+
 ## What is NOT done yet
 
 Stated plainly so nobody reads this as finished:

@@ -25,6 +25,8 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'brightsign', 'st-b
 function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = {} } = {}) {
   const posted = [];
   const registryStore = new Map(Object.entries(seed));
+  const cec = { sent: [] };
+  const cecConnectors = [];
 
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
@@ -34,6 +36,8 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     Promise,
     Object,
+    Array,
+    Uint8Array,
     Date,
     RegExp,
     parseInt,
@@ -72,6 +76,13 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
           };
         };
       }
+      if (name === '@brightsign/cec') {
+        return function (connector) {
+          cecConnectors.push(connector);
+          return { send: (bytes) => { cec.sent.push(Array.from(bytes)); return Promise.resolve(); },
+                   addEventListener: () => {} };
+        };
+      }
       if (name === '@brightsign/deviceinfo') {
         return function () {
           return { model: 'XT1145', osVersion: '9.1.92.2', serialNumber: 'SN-TEST-1' };
@@ -86,7 +97,7 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
   const api = sandbox.ScreenTinkerBS;
   // onReady always fires, so this resolves off-platform too.
   const ready = new Promise((resolve) => api.onReady(resolve));
-  return { api, sandbox, posted, registryStore, ready };
+  return { api, sandbox, posted, registryStore, ready, cec, cecConnectors };
 }
 
 test('in a plain browser it loads without throwing and reports not-BrightSign', () => {
@@ -244,4 +255,28 @@ test('clearIdentity forgets the token too, or the reset leaks a credential', asy
   api.clearIdentity();
   assert.equal(api.deviceId(), null);
   assert.equal(api.deviceToken(), null, 'a stale token must not outlive the identity it belongs to');
+});
+
+test('displayPower sends the CEC power codes, not just a black overlay', async () => {
+  // The overlay only paints the screen black — the panel stays lit, drawing power and at risk of
+  // burn-in. This is the difference between a signage player and a browser tab.
+  const { api, ready, cec } = load({ mods: true });
+  await ready;
+  assert.equal(api.displayPower(true), true);
+  assert.deepEqual(cec.sent.at(-1), [0x4f, 0x0d], 'Image View On');
+  assert.equal(api.displayPower(false), true);
+  assert.deepEqual(cec.sent.at(-1), [0x4f, 0x36], 'Standby');
+});
+
+test('displayPower reports false with no CEC, so the caller still draws the overlay', async () => {
+  const { api, ready } = load();   // plain browser
+  await ready;
+  assert.equal(api.displayPower(false), false);
+});
+
+test('output 2 addresses HDMI-2 — a dual-output player must sleep the screen it paints', async () => {
+  const { api, ready, cecConnectors } = load({ mods: true, search: '?screen=2' });
+  await ready;
+  api.displayPower(true);
+  assert.deepEqual(cecConnectors, ['HDMI-2']);
 });

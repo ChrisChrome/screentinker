@@ -36,6 +36,7 @@
   var RegistryClass = tryRequire('@brightsign/registry');
   var DeviceInfoClass = tryRequire('@brightsign/deviceinfo');
   var VideoOutputClass = tryRequire('@brightsign/videooutput');
+  var CecClass = tryRequire('@brightsign/cec');
 
   var port = null;
   if (MessagePortClass) {
@@ -168,6 +169,21 @@
       if (r && typeof r.catch === 'function') r.catch(function () {});
       return true;
     } catch (e) { return false; }
+  }
+
+  var cec = null;
+  var cecTried = false;
+
+  function getCec() {
+    if (cecTried) return cec;
+    cecTried = true;
+    if (!CecClass) return null;
+    try {
+      // Connector names are HDMI-1..HDMI-4. Screen 2 lives on the second connector, so a
+      // dual-output player powers the display it actually paints rather than always output 1.
+      cec = new CecClass('HDMI-' + screenNumber());
+    } catch (e) { cec = null; }
+    return cec;
   }
 
   var deviceInfo = null;
@@ -306,6 +322,31 @@
       if (typeof fn !== 'function') return;
       if (ready) { try { fn(); } catch (e) { /* ignore */ } return; }
       readyWaiters.push(fn);
+    },
+
+    /*
+     * Real display power over CEC, which is the difference between a signage player and a browser
+     * tab: the web player can only paint the screen black, leaving the panel lit, drawing power
+     * and burning in. This actually tells the display to sleep.
+     *
+     *   on  = Image View On (0x0D)
+     *   off = Standby       (0x36)
+     *
+     * 0x4f is a broadcast header. Returns false when CEC is unavailable so the caller still
+     * applies the black overlay and something visible happens either way. Some displays ignore
+     * broadcast and need direct addressing — hence "best effort", not "guaranteed".
+     */
+    displayPower: function (on) {
+      var c = getCec();
+      if (!c || typeof c.send !== 'function') return false;
+      try {
+        var packet = new Uint8Array(2);
+        packet[0] = 0x4f;
+        packet[1] = on ? 0x0d : 0x36;
+        var r = c.send(Array.prototype.slice.call(packet));
+        if (r && typeof r.catch === 'function') r.catch(function () {});
+        return true;
+      } catch (e) { return false; }
     },
 
     setVideoMode: function (mode) {
