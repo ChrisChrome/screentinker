@@ -75,6 +75,33 @@ the script loaded and then could not find its own `index.html`.
 them. A stale copy on a card is precisely the version skew that would leave a panel unable to
 restart itself.
 
+## autorun.zip — one file instead of four
+
+`scripts/build-autorun-zip.sh` packages the host, the fallback page and the config into a single
+`autorun.zip`, attached to every GitHub release:
+
+```bash
+scripts/build-autorun-zip.sh --server https://your-server
+```
+
+Drop it on the root of a player's storage and power-cycle. `autozip.brs` unpacks it in place,
+renames it `autorun.zip.done` so it never re-extracts, and reboots into the player.
+
+Two rules the format imposes, both of which fail silently if broken:
+
+- **The archive must expand to files at its ROOT**, with no wrapper directory — a player extracts
+  to the storage root, so a nested folder puts `autorun.brs` somewhere the player never looks and
+  the card appears to do nothing. The build script zips from *inside* the staging directory and
+  then asserts the layout rather than trusting it.
+- **`autorun.brs` must NOT sit next to `autorun.zip`** on the storage root; its presence stops the
+  zip being processed at all. It belongs inside the archive.
+
+The rename is what makes it idempotent. Without it the player extracts, reboots, extracts, reboots
+— a loop that looks exactly like a hardware fault. An extraction *failure* deliberately does not
+rename, so a truncated copy is retried after someone replaces it rather than skipped forever.
+
+Requires BrightSignOS 7.0.60+ (`roUnzip`).
+
 ## Provisioning
 
 Config resolves `screentinker.json` on the card **>** registry **>** built-in default. The JSON

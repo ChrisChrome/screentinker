@@ -79,6 +79,12 @@ jobs:
           cp tizen/ScreenTinker.wgt ScreenTinker.wgt
           ls -la ScreenTinker.wgt
 
+      - name: Build BrightSign autorun.zip (single-file player installer)
+        run: |
+          chmod +x scripts/build-autorun-zip.sh
+          ./scripts/build-autorun-zip.sh -o autorun.zip
+          ls -la autorun.zip
+
       - name: Build source tarball (bundles the .wgt; the signed apk is added by scripts/finalize-release.sh)
         run: |
           OUT="screentinker-${{ steps.ver.outputs.version }}.tar.gz"
@@ -87,7 +93,7 @@ jobs:
             --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db.*' \
             --exclude='server/uploads' --exclude='server/certs' --exclude='server/test' \
             --exclude='*.apk' \
-            server frontend scripts docs VERSION README.md LICENSE .env.example ScreenTinker.wgt
+            server frontend scripts docs VERSION README.md LICENSE .env.example ScreenTinker.wgt brightsign
           echo "TARBALL=$OUT" >> "$GITHUB_ENV"
           ls -la "$OUT"
 
@@ -111,6 +117,10 @@ jobs:
             echo "  Sign it with your own Samsung certificate (Tizen Studio + a profile that includes"
             echo "  your TV's DUID) to install, or - easiest - point a Tizen TV browser / URL Launcher"
             echo "  at \`https://<your-instance>/player\` (no signing needed)."
+              echo "- \`autorun.zip\` - BrightSign player installer. Drop it on the root of a player's"
+              echo "  storage (microSD, USB, or internal flash) and power-cycle: it unpacks itself and"
+              echo "  reboots into the player. Edit \`screentinker.json\` inside the archive first to"
+              echo "  point it at your own server."
             if [ "${{ steps.ver.outputs.prerelease }}" = "true" ]; then
               echo "- Docker image: \`ghcr.io/screentinker/screentinker:${{ steps.ver.outputs.version }}\` (pre-release - \`:latest\` is NOT moved)."
             else
