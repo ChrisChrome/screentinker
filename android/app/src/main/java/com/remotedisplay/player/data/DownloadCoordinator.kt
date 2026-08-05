@@ -64,17 +64,52 @@ class DownloadCoordinator(
         }
     }
 
+    /**
+     * Run attempts back-to-back for as long as each one is putting bytes on disk.
+     *
+     * A site whose link only carries part of an asset per call needs many attempts to finish one
+     * file. Handing each attempt back to the 60s playlist sweep would stretch a 200MB video over
+     * hours of mostly-idle waiting, and running to the exponential backoff would stretch it to
+     * never — which is the failure this whole change is about. Progress is the signal: keep going
+     * while bytes are landing, stop the moment one attempt achieves nothing.
+     *
+     * inFlight is held across the whole chain, so this is still exactly one writer per `.part` and
+     * a concurrent sweep still finds the item busy rather than starting a duplicate.
+     */
     private fun runDownload(contentId: String, filename: String) {
         try {
-            val file = cache.downloadContent(serverUrl(), contentId, filename)
-            if (file != null) {
-                attempts.remove(contentId); nextAttemptAt.remove(contentId)
-                // Ack only reaches a live socket; if it dropped, the reconnect's re-register clears
-                // the ack set and the next sweep re-acks the now-cached file.
-                if (socketAlive()) onAck(contentId, "ready")
-            } else {
-                onFailure(contentId) // includes a reconnect-truncated .part (ContentCache returned null)
+            var link = 0
+            while (link < MAX_RESUME_CHAIN) {
+                link++
+                val result = cache.fetch(serverUrl(), contentId, filename)
+                when (result) {
+                    is ContentCache.Result.Done -> {
+                        attempts.remove(contentId); nextAttemptAt.remove(contentId)
+                        // Ack only reaches a live socket; if it dropped, the reconnect's re-register
+                        // clears the ack set and the next sweep re-acks the now-cached file.
+                        if (socketAlive()) onAck(contentId, "ready")
+                        return
+                    }
+                    is ContentCache.Result.Partial -> {
+                        if (!result.progressed) {
+                            // Bytes are held but this attempt added none: the link is down rather
+                            // than slow, so back off properly instead of spinning on it.
+                            onFailure(contentId)
+                            return
+                        }
+                        DebugLog.v("DownloadCoordinator", "resume $contentId: ${result.bytesOnDisk}/${result.totalBytes} after attempt $link")
+                        // Deliberately NOT acked as failed. A download that is advancing is not a
+                        // failure, and telling the CMS otherwise is what put items in the dashboard
+                        // showing "failed" while they were in fact still arriving.
+                    }
+                    is ContentCache.Result.Failed -> { onFailure(contentId); return }
+                }
             }
+            // Still going when the chain ran out. Not a failure — hand it back to the next sweep
+            // with a short, FIXED delay rather than the exponential one, so a large asset over a
+            // slow link keeps advancing instead of decaying into the 5-minute cap.
+            nextAttemptAt[contentId] = now() + RESUME_HANDBACK_MS
+            DebugLog.v("DownloadCoordinator", "resume chain exhausted for $contentId — continuing on the next sweep")
         } catch (e: Throwable) {
             Log.w("DownloadCoordinator", "download $contentId failed: ${e.message}")
             onFailure(contentId)
@@ -125,5 +160,13 @@ class DownloadCoordinator(
         const val MAX_CONCURRENT = 3
         const val BACKOFF_BASE_MS = 15_000L
         const val BACKOFF_MAX_MS = 5 * 60_000L
+        /**
+         * Consecutive resuming attempts before the item goes back on the sweep. Bounded so one
+         * enormous asset on a slow link cannot hold an executor slot indefinitely and starve the
+         * other two items in a playlist — with a 5-minute attempt cap this is still up to an hour
+         * of continuous transfer per dispatch.
+         */
+        const val MAX_RESUME_CHAIN = 12
+        const val RESUME_HANDBACK_MS = 5_000L
     }
 }

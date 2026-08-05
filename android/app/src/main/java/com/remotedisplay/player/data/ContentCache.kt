@@ -12,9 +12,28 @@ import java.util.concurrent.TimeUnit
  * Root-2 caching fixes vs the "stuck downloading / frozen" bug:
  *  - a hard OVERALL [callTimeout] so a slow-drip/stalled download on a HEALTHY socket can't hang
  *    forever (the old client only had a per-read timeout, which a trickle never trips),
- *  - download to a `.part` temp + integrity-check (Content-Length) via [CacheValidation] + atomic
- *    rename, so a truncated/interrupted body is NEVER promoted to the cache and played as if whole,
+ *  - download to a `.part` temp + integrity-check via [CacheValidation] + atomic rename, so a
+ *    truncated/interrupted body is NEVER promoted to the cache and played as if whole,
  *  - exact-prefix cache lookup that also excludes in-flight `.part` files.
+ *
+ * RESUME. Those fixes made a bad download safe; they did not make it possible. Every attempt began
+ * at byte 0 and the `.part` was deleted on failure, so on a link that cannot carry a whole asset in
+ * one unbroken call — a one-bar 5G site, the case this was reported from — the file NEVER lands.
+ * The player then has nothing cached, and a screen with nothing cached shows the waiting state:
+ * reported as "the screens go black instead of playing from cache", when the real failure was that
+ * the cache could never be filled in the first place. Five minutes of transfer, discarded; back
+ * off; five more minutes, discarded; forever.
+ *
+ * So an interrupted download now KEEPS its `.part` and the next attempt asks for the rest with a
+ * Range header. Progress accumulates across attempts and across reboots instead of being thrown
+ * away, which is the whole difference between "eventually plays" and "never plays".
+ *
+ * Two ways a resume could corrupt the cache, both closed:
+ *  - the asset changed under us — `If-Range` with the stored validator makes the server answer 200
+ *    with the whole body instead of a tail, and we restart from zero.
+ *  - the `.part` is longer than the asset — the server answers 416 and we discard it.
+ * The completeness check is unchanged in spirit but now counts TOTAL bytes on disk against the
+ * total the server declared in Content-Range, not bytes received this attempt.
  *
  * The primary constructor takes the cache dir + client directly so the real download logic is
  * unit-testable (see ContentDownloadTest) against a local server without an Android Context; the
@@ -29,12 +48,27 @@ class ContentCache internal constructor(
         defaultClient()
     )
 
+    /**
+     * What one download attempt achieved. The distinction that matters is [Partial] vs [Failed]:
+     * an attempt that moved bytes onto disk is PROGRESS, and backing that off exponentially the way
+     * a hard failure is backed off is what turns a slow site into a dead one.
+     */
+    sealed class Result {
+        data class Done(val file: File) : Result()
+        /** Bytes are on disk and the next attempt resumes from there. */
+        data class Partial(val bytesOnDisk: Long, val totalBytes: Long, val progressed: Boolean) : Result()
+        /** Nothing usable happened: refused, unreachable, or a stale partial we had to discard. */
+        object Failed : Result()
+    }
+
     fun getCachedFile(contentId: String): File? {
         // Match "<id>.<ext>" exactly: the trailing dot stops an id that PREFIXES another id from
-        // cross-matching, and `.part` temps (partial/in-flight downloads) are never returned.
-        val files = cacheDir.listFiles { _, name -> name.startsWith("$contentId.") && !name.endsWith(PART_SUFFIX) }
+        // cross-matching. `contains` rather than `endsWith` for the temp check because the resume
+        // validator sidecar is "<id>.<ext>.part.tag" — it does not END with ".part", and returning
+        // THAT as the cached asset would hand the player a short ETag file to play.
+        val files = cacheDir.listFiles { _, name -> name.startsWith("$contentId.") && !name.contains(PART_SUFFIX) }
         val hit = files?.firstOrNull()?.takeIf { it.exists() && it.length() > 0 }
-        com.remotedisplay.player.util.DebugLog.v("ContentCache", "getCachedFile($contentId): dir=${cacheDir.absolutePath} listFiles=${files?.size} -> ${hit?.name ?: "MISS"}")
+        com.remotedisplay.player.util.DebugLog.v("ContentCache", "getCachedFile($contentId): dir=${cacheDir.absolutePath} listFiles=${files?.size ?: -1} hit=${hit?.name}")
         return hit
     }
 
@@ -42,61 +76,138 @@ class ContentCache internal constructor(
         return getCachedFile(contentId) != null
     }
 
-    fun downloadContent(serverUrl: String, contentId: String, filename: String): File? {
+    /**
+     * Fetch (or continue fetching) [contentId]. Safe to call repeatedly: each call transfers what
+     * the link allows and leaves the rest for the next one.
+     */
+    fun fetch(serverUrl: String, contentId: String, filename: String): Result {
         val ext = filename.substringAfterLast('.', "mp4")
-        val finalFile = File(cacheDir, "${contentId}.${ext}")
-        val partFile = File(cacheDir, "${contentId}.${ext}${PART_SUFFIX}")
+        val finalFile = File(cacheDir, "$contentId.$ext")
+        val partFile = File(cacheDir, "$contentId.$ext$PART_SUFFIX")
+        val tagFile = File(cacheDir, "$contentId.$ext$PART_SUFFIX$TAG_SUFFIX")
+
+        // Only resume when we also hold the validator that was current when those bytes were
+        // fetched. Without it there is no way to know the asset is still the same one, and a silent
+        // splice of two files is worse than re-downloading.
+        val validator = readValidator(tagFile)
+        val resumeFrom = if (validator != null && partFile.exists()) partFile.length() else 0L
+        if (resumeFrom == 0L) { partFile.delete(); tagFile.delete() }
+
         try {
-            val url = "${serverUrl}/api/content/${contentId}/file"
-            val request = Request.Builder().url(url).build()
+            val builder = Request.Builder().url("$serverUrl/api/content/$contentId/file")
+            if (resumeFrom > 0) {
+                builder.header("Range", "bytes=$resumeFrom-")
+                builder.header("If-Range", validator!!)
+            }
+
             // .use closes the Response (and its body) on every path — also fixes the prior
             // error-path body/connection leak.
-            client.newCall(request).execute().use { response ->
+            client.newCall(builder.build()).execute().use { response ->
+                // Our partial is at or past the end of the asset: it belongs to something else, or
+                // to a truncated earlier life of this file. Discard and start clean next time.
+                if (response.code == 416) {
+                    Log.w("ContentCache", "Server refused resume at $resumeFrom for $filename (416) — discarding stale partial")
+                    partFile.delete(); tagFile.delete()
+                    return Result.Failed
+                }
                 if (!response.isSuccessful) {
                     Log.e("ContentCache", "Download failed: ${response.code}")
-                    return null
+                    // The partial is kept: a 5xx or a captive-portal interception says nothing about
+                    // the bytes we already hold.
+                    return if (resumeFrom > 0) Result.Partial(resumeFrom, -1L, false) else Result.Failed
                 }
-                // We issue a plain (no-Range) GET, so a 206 Partial Content means a proxy/CDN
-                // returned a PARTIAL body whose Content-Length matches that partial — which would
-                // pass the byte-count integrity check and promote a truncated file. Require a full 200.
+                val body = response.body ?: return Result.Failed
+
+                val appendAt: Long
+                val total: Long
                 if (response.code == 206) {
-                    Log.e("ContentCache", "Refusing 206 Partial Content for $filename — not a complete file")
-                    return null
-                }
-                partFile.delete() // clear any earlier partial before writing
-                val body = response.body ?: return null
-                val expected = body.contentLength() // -1 when unknown (chunked)
-                var written = 0L
-                body.byteStream().use { input ->
-                    FileOutputStream(partFile).use { output -> written = input.copyTo(output) }
-                }
-                // Root-2: a truncated body must NOT be promoted to the cache and played as whole.
-                if (!CacheValidation.isComplete(written, expected)) {
-                    Log.e("ContentCache", "Incomplete download ($written/$expected bytes) for $filename — discarding partial")
+                    // Content-Length on a 206 is the length of the CHUNK, so the only trustworthy
+                    // source for the full size is the total in Content-Range.
+                    val range = parseContentRange(response.header("Content-Range"))
+                    if (range == null || range.first != resumeFrom || range.second <= 0L) {
+                        // A 206 we cannot verify, or one starting somewhere we did not ask for.
+                        // Appending it blind would corrupt the file at exactly the byte count that
+                        // makes it look complete.
+                        Log.e("ContentCache", "Unusable 206 for $filename (Content-Range=${response.header("Content-Range")}, wanted $resumeFrom) — restarting")
+                        partFile.delete(); tagFile.delete()
+                        return Result.Failed
+                    }
+                    appendAt = resumeFrom
+                    total = range.second
+                    if (!tagFile.exists()) writeValidator(tagFile, response.header("ETag") ?: response.header("Last-Modified"))
+                } else {
+                    // 200. Either we sent no Range, or If-Range told the server the asset changed
+                    // and it sent the whole thing instead of a tail. Both mean: start from zero.
+                    if (resumeFrom > 0) Log.i("ContentCache", "Asset changed under a resume for $filename — restarting from 0")
+                    appendAt = 0L
                     partFile.delete()
-                    return null
+                    total = body.contentLength()   // -1 when unknown (chunked)
+                    writeValidator(tagFile, response.header("ETag") ?: response.header("Last-Modified"))
                 }
+
+                var onDisk = appendAt
+                try {
+                    body.byteStream().use { input ->
+                        FileOutputStream(partFile, appendAt > 0).use { output ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                output.write(buf, 0, n)
+                                onDisk += n
+                            }
+                            output.flush()
+                            // Durable, so a power cut on a signage panel costs the last buffer
+                            // rather than the whole partial. These are big files on bad links; the
+                            // sync is cheap next to re-fetching 200MB.
+                            try { output.fd.sync() } catch (_: Exception) {}
+                        }
+                    }
+                } catch (e: Exception) {
+                    // The break we now RECOVER from instead of restarting after. Includes the read
+                    // timeout (a stalled stream) and the call timeout (a slow drip that ran out of
+                    // its attempt budget) — on a bad link these are the normal case, not the
+                    // exception, and everything written so far stays.
+                    Log.i("ContentCache", "Download interrupted for $filename at ${partFile.length()} bytes (${e.message})")
+                    return partialOrDiscard(partFile, tagFile, partFile.length(), total, resumeFrom)
+                }
+
+                // Total bytes on disk against the declared total — NOT bytes received this attempt,
+                // which on a resume is only the tail.
+                if (!CacheValidation.isComplete(onDisk, total)) {
+                    Log.i("ContentCache", "Incomplete after this attempt ($onDisk/$total) for $filename")
+                    return partialOrDiscard(partFile, tagFile, onDisk, total, resumeFrom)
+                }
+
                 finalFile.delete()
                 if (!partFile.renameTo(finalFile)) {
                     Log.e("ContentCache", "Rename failed for $filename")
-                    partFile.delete()
-                    return null
+                    partFile.delete(); tagFile.delete()
+                    return Result.Failed
                 }
-                Log.i("ContentCache", "Downloaded: $filename -> ${finalFile.absolutePath} ($written bytes)")
-                return finalFile
+                tagFile.delete()
+                Log.i("ContentCache", "Downloaded: $filename -> ${finalFile.absolutePath} ($onDisk bytes)")
+                return Result.Done(finalFile)
             }
         } catch (e: Exception) {
-            // Includes callTimeout / readTimeout (a stalled download on a healthy socket) and any
-            // mid-stream break — never leave a partial at the real path.
+            // Connect-time failures (no route, DNS, TLS) — nothing was transferred, so whatever is
+            // already on disk is still valid to resume from. This also catches a throw from closing
+            // the response after a partial body, which is why `progressed` is measured against the
+            // bytes on disk rather than assumed false: an attempt that advanced must not be
+            // reported as a stall just because the connection objected on the way out.
             Log.e("ContentCache", "Download error: ${e.message}")
-            partFile.delete()
-            return null
+            val kept = partFile.length()
+            return if (kept > 0) partialOrDiscard(partFile, tagFile, kept, -1L, resumeFrom) else Result.Failed
         }
     }
 
+    /** Complete-or-nothing wrapper: returns the cached file only when the asset is whole. */
+    fun downloadContent(serverUrl: String, contentId: String, filename: String): File? =
+        (fetch(serverUrl, contentId, filename) as? Result.Done)?.file
+
     fun deleteContent(contentId: String) {
         // Exact-prefix (with the dot) so we don't delete a different id's file — and this also
-        // sweeps the "<id>.<ext>.part" temp.
+        // sweeps the "<id>.<ext>.part" temp and its ".part.tag" validator.
         cacheDir.listFiles { _, name -> name.startsWith("$contentId.") }?.forEach { it.delete() }
         Log.i("ContentCache", "Deleted cached content: $contentId")
     }
@@ -109,14 +220,55 @@ class ContentCache internal constructor(
         return cacheDir.listFiles()?.sumOf { it.length() } ?: 0L
     }
 
+    /**
+     * Report an unfinished attempt — keeping the bytes only if the NEXT attempt can build on them.
+     *
+     * Without a validator there is no safe resume, so the partial is dead weight: the next attempt
+     * would restart from zero, re-fetch the same prefix, and land in exactly the same place. Worse,
+     * counting that as progress would make the coordinator chain attempts against a link that is
+     * getting nowhere. Discard it and report no progress, so it backs off like the failure it is.
+     */
+    private fun partialOrDiscard(partFile: File, tagFile: File, onDisk: Long, total: Long, resumeFrom: Long): Result {
+        if (!tagFile.exists()) {
+            partFile.delete()
+            return Result.Partial(0L, total, false)
+        }
+        return Result.Partial(onDisk, total, onDisk > resumeFrom)
+    }
+
+    private fun readValidator(tagFile: File): String? =
+        try { if (tagFile.exists()) tagFile.readText().trim().ifEmpty { null } else null } catch (_: Exception) { null }
+
+    private fun writeValidator(tagFile: File, value: String?) {
+        // No validator (a server that sends neither ETag nor Last-Modified) means no safe resume:
+        // leave the sidecar absent and the next attempt starts over rather than splicing blind.
+        try { if (value.isNullOrBlank()) tagFile.delete() else tagFile.writeText(value) } catch (_: Exception) {}
+    }
+
     companion object {
         private const val PART_SUFFIX = ".part"
+        private const val TAG_SUFFIX = ".tag"
+
+        /**
+         * "bytes <start>-<end>/<total>" -> (start, total). Null for anything else, including the
+         * "*" total a server may send, which gives us nothing to validate completeness against.
+         */
+        internal fun parseContentRange(header: String?): Pair<Long, Long>? {
+            val m = Regex("""^\s*bytes\s+(\d+)-(\d+)/(\d+)\s*$""").find(header ?: return null) ?: return null
+            val start = m.groupValues[1].toLongOrNull() ?: return null
+            val total = m.groupValues[3].toLongOrNull() ?: return null
+            return start to total
+        }
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)   // Root-2: a stalled stream (no bytes 30s) aborts (was 5min)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .callTimeout(5, TimeUnit.MINUTES)    // Root-2: hard OVERALL cap so a slow-drip can't hang forever
+            // Root-2 gave this a hard OVERALL cap so a slow drip could not hang forever. With resume
+            // it caps ONE ATTEMPT rather than the whole asset: a link that only manages 20MB per
+            // call now keeps those 20MB and continues, where before the cap was the reason a large
+            // file could never finish.
+            .callTimeout(5, TimeUnit.MINUTES)
             .build()
     }
 }
