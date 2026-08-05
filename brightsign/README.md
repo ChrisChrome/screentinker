@@ -90,11 +90,9 @@ A player paired before this port is still recognised, by its BrightSign user age
 Stated plainly so nobody reads this as finished:
 
 - **`offline.html` is not written.** The host references it as the fallback page.
-- **The player does not yet load `st-bridge.js` or honour `?platform=brightsign`.** The bridge and
-  the resolver exist and are tested; wiring them into `index.html` (identity, restart-instead-of-
-  reload, sync backend) is the next commit.
 - **No server-side plumbing**: no `sync_backend` column, no dashboard control, nothing sends
-  `set-sync-backend` down. The resolver is ready for it.
+  `set-sync-backend` down, and nothing consumes the `bs_model` / `bs_serial` / `bs_screen` fields
+  the player now reports. The resolver is ready for all of it.
 - **The `brightsign` backend is a resolved decision, not yet an implementation.** The API is now
   known (it was not in the MCP doc set — `part-6-appendices/api-reference.md` is a stub — but
   `docs.brightsign.biz/developers/syncmanager` and the `brightsign/dev-cookbook`
