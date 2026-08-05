@@ -94,5 +94,42 @@ class SystemControl(private val context: Context) {
         } catch (e: Throwable) { Log.w(TAG, "setScreenOffTimeout: ${e.message}"); false }
     }
 
+    /**
+     * Wake the panel. The other half of screen_off, which had none.
+     *
+     * screen_off has always worked — device owner / admin FORCE_LOCK, or the accessibility lock —
+     * but screen_on was a logged no-op on the belief that a non-rooted panel has no privileged
+     * wake path. The retired attempt was `input keyevent 224`, which exec denies to an app UID; a
+     * wake LOCK is a different mechanism and needs only WAKE_LOCK, a normal permission we already
+     * hold. So the conclusion ("no wake path") was drawn from one failed approach.
+     *
+     * That asymmetry is worse than it sounds on a signage fleet: an operator turns a panel off for
+     * the night and cannot turn it back on remotely, so someone drives to the site. Losing the
+     * screen is the expensive direction to fail in.
+     *
+     * ACQUIRE_CAUSES_WAKEUP + SCREEN_BRIGHT is deprecated (API 17) and still the only app-level
+     * wake there is; on a device that ignores it we return false rather than pretending. Held
+     * briefly and released — an indefinite wake lock would pin the panel on and defeat every
+     * screen-off command that follows.
+     */
+    fun wakeScreen(holdMs: Long = 3000L): Boolean = try {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        @Suppress("DEPRECATION")
+        val lock = pm.newWakeLock(
+            android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                android.os.PowerManager.ON_AFTER_RELEASE,
+            "screentinker:wake"
+        )
+        // Time out on its own as well as being released below: if the release is ever missed, a
+        // self-expiring lock still lets the panel sleep instead of burning in.
+        lock.acquire(holdMs)
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try { if (lock.isHeld) lock.release() } catch (_: Throwable) { }
+        }, holdMs)
+        Log.i(TAG, "wakeScreen: wake lock acquired for ${holdMs}ms")
+        true
+    } catch (e: Throwable) { Log.w(TAG, "wakeScreen: ${e.message}"); false }
+
     companion object { private const val TAG = "SystemControl" }
 }

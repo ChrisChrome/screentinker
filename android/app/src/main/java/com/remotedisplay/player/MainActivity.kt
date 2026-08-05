@@ -779,9 +779,35 @@ class MainActivity : AppCompatActivity() {
                             ?: Log.w("MainActivity", "screen_off/lock_now: no owner/admin/accessibility — unsupported")
                     }
                 }
-                // No reliable privileged wake on a non-rooted panel (the old keyevent 224 was denied);
-                // retired to a logged no-op.
-                "screen_on" -> Log.w("MainActivity", "screen_on: no privileged wake path on a non-rooted panel — no-op")
+                // Was a logged no-op: the retired `input keyevent 224` is denied to an app UID, and
+                // that one failure was read as "no wake path exists". A wake LOCK is a different
+                // mechanism needing only WAKE_LOCK, which we already hold — so screen_off worked
+                // and screen_on did not, and an operator who slept a panel overnight had to drive
+                // out to wake it. Losing the screen is the expensive direction to fail in.
+                "screen_on" -> {
+                    val woke = systemControl.wakeScreen()
+                    // The wake lock lights the panel; on a locked device the keyguard is still in
+                    // front of the player, so ask for it to be dismissed too. Both are best-effort
+                    // and independent — a device that ignores one may honour the other.
+                    runOnUiThread {
+                        try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                                setShowWhenLocked(true)
+                                setTurnScreenOn(true)
+                                (getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager)
+                                    ?.requestDismissKeyguard(this, null)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                window.addFlags(
+                                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                                        WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                                )
+                            }
+                        } catch (e: Throwable) { Log.w("MainActivity", "screen_on keyguard: ${e.message}") }
+                    }
+                    Log.i("MainActivity", "screen_on: wake=$woke")
+                }
                 // #161 Tier-2 (all no-op off-owner via STPolicy): kiosk lock-task, time/tz, status bar,
                 // uninstall block. Device owner enters lock-task silently; others get screen-pinning.
                 "kiosk_lock" -> setKioskMode(true)
