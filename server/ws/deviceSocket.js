@@ -151,21 +151,27 @@ function applyHardwareIdentity(deviceId, data) {
  * version change to notice. A stale set here means the dashboard hides a control the panel now
  * has, or offers one it just lost — the exact failure this whole mechanism exists to prevent.
  *
- * ⚠️ An absent field must leave the column ALONE. A player that does not declare (every device in
- * the field today, and any older build after an upgrade) has to keep falling back to its platform
- * baseline; writing NULL would be the same outcome but writing '[]' would strip its entire UI.
- * Those two are one typo apart, which is why the guard is explicit rather than a COALESCE.
+ * ⚠️ An absent declaration must leave the column ALONE. A player that does not declare (every
+ * device in the field today, and any older build after an upgrade) has to keep falling back to its
+ * platform baseline. Writing NULL would give the same outcome, but writing '[]' would strip its
+ * entire UI — and those two are one typo apart, which is why parseDeclared's null return is
+ * checked explicitly rather than folded into a COALESCE.
+ *
+ * An EMPTY declaration is the opposite case and is a real statement — a BrightSign widget with no
+ * host bridge, say — so it is stored as '[]' and honoured rather than silently upgraded.
  */
 function applyCapabilities(deviceId, data) {
+  // Top level is where all four players put it; device_info is accepted too so a client that
+  // nests it inside its identity block is not silently ignored.
   const raw = data && (data.capabilities ?? (data.device_info && data.device_info.capabilities));
-  if (raw === undefined || raw === null) return;      // never declared — baseline stands
-  if (!Array.isArray(raw)) return;                    // malformed — keep whatever we had
 
-  // Store only names this server understands, so an unknown capability from a newer player cannot
-  // grow the column unboundedly. parseDeclared does the same filtering on read; doing it on write
-  // as well keeps the stored value honest about what the server will actually act on.
-  const known = raw.filter((c) => capsLib.CAP_SET.has(c));
-  db.prepare('UPDATE devices SET capabilities = ? WHERE id = ?').run(JSON.stringify(known), deviceId);
+  // parseDeclared drops names this server does not understand, so a newer player cannot grow the
+  // column unboundedly, and returns null for both "absent" and "malformed" — neither of which is
+  // a statement about the device, so both leave the baseline in charge.
+  const declared = capsLib.parseDeclared(raw);
+  if (declared === null) return;
+
+  db.prepare('UPDATE devices SET capabilities = ? WHERE id = ?').run(JSON.stringify(declared), deviceId);
 }
 
 function generateDeviceToken() {

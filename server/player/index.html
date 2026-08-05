@@ -1634,6 +1634,93 @@
       if (had) pipReport('info', 'pip cleared' + (pipId ? ' ' + pipId : ''));
     }
 
+    /*
+     * What THIS instance can actually do, decided at registration time.
+     *
+     * The dashboard used to offer every control to every display, so buttons that could not
+     * possibly work were shown and did nothing — a browser tab cannot reboot its host. The server
+     * falls back to a per-platform baseline when a player declares nothing, so this list only has
+     * to be RIGHT, not complete.
+     *
+     * It is computed rather than constant because the same index.html is BOTH the browser player
+     * and the BrightSign player: identical code, wildly different powers depending on whether a
+     * host bridge answered. Declaring a static set here would either lie for the browser or
+     * under-sell BrightSign.
+     *
+     * Everything conditional is probed, never assumed. A capability we cannot verify is left out:
+     * an absent control is a smaller failure than one that reports success and changes nothing.
+     */
+    function declaredCapabilities() {
+      const caps = [
+        // Render paths that exist in this file unconditionally.
+        'playback.video', 'playback.image', 'playback.widget', 'playback.youtube',
+        'playback.zones', 'playback.pip',
+        // #129 per-item mute plus the operator volume added alongside it.
+        'audio.mute', 'audio.volume',
+        // CSS transform in a browser; the host rotates the output on BrightSign. Both real.
+        'display.rotation',
+        'remote.input',
+        'remote.stream',
+        // restartPlayer() always resolves to something: the host rebuilds the widget, or the page
+        // reloads. It is the one lifecycle action a browser tab can genuinely perform.
+        'system.restart_player',
+        'sync.clock',
+      ];
+
+      // Transitions are a progressive enhancement — the bundle failing to load means hard cuts,
+      // not a broken player — so this reflects whether the runtime actually loaded.
+      //
+      // Deliberately the player's OWN predicate rather than a second guess at the global names.
+      // An earlier draft here tested window.STTransitions, which does not exist: the capability
+      // would simply never have been declared, hiding the transitions UI for every display, and
+      // nothing would have failed loudly enough to notice.
+      try {
+        if (typeof transitionRuntimeReady === 'function' && transitionRuntimeReady()) {
+          caps.push('playback.transitions');
+        }
+      } catch (e) { /* bundle absent: hard cuts, and we do not claim the capability */ }
+
+      // Offline caching is the service worker. Reported on support rather than on an active
+      // controller: the first load registers it and has no controller yet, and a display that
+      // re-registers on every boot would otherwise flap this capability on and off.
+      try {
+        if ('serviceWorker' in navigator) caps.push('offline.cache');
+      } catch (e) { /* locked-down browser */ }
+
+      // Screenshots need somewhere to draw. Same-origin content and a 2d context are the real
+      // requirements; a host bridge is a second, better path (it captures the framebuffer
+      // including the hardware video plane, which a canvas cannot read at all).
+      try {
+        const probe = document.createElement('canvas');
+        probe.width = 2; probe.height = 2;
+        if (probe.getContext('2d') && typeof probe.toDataURL === 'function') {
+          caps.push('remote.screenshot');
+        }
+      } catch (e) { /* no canvas => no screenshots, and we do not claim them */ }
+
+      // --- everything below exists ONLY behind a live host bridge ---
+      // hasHost() is specifically NOT isBrightSign(): the UA check alone is true for a widget
+      // built without node integration, which can reach none of this. Claiming reboot on one of
+      // those is exactly the dead button this whole exercise removes.
+      let host = false;
+      try { host = !!(BS && BS.hasHost()); } catch (e) { host = false; }
+
+      if (host) {
+        caps.push('system.reboot');        // RebootSystem() in autorun.brs
+        caps.push('display.power');        // media teardown + CEC; blanking works even where CEC does not
+        caps.push('display.resolution');   // roVideoMode via the bridge
+        caps.push('system.self_update');   // the autorun.zip package path
+      }
+
+      // Native frame-accurate sync needs the SyncManager module to have actually resolved, which
+      // is a firmware-version question (BOS 8.2.10+), not a platform one.
+      try {
+        if (window.ScreenTinkerBSSync && window.ScreenTinkerBSSync.available()) caps.push('sync.native');
+      } catch (e) { /* not on BrightSign */ }
+
+      return caps;
+    }
+
     function register() {
       const data = {};
       // #163: always send device identity when we have it, regardless of paired
@@ -1681,6 +1768,9 @@
           data.sync_backend = BS.syncBackend();
         } catch (e) { /* identity extras are additive — never block registration */ }
       }
+      // What this instance can actually do. The server persists it and the dashboard hides the
+      // controls it does not contain, so a display never shows a button that cannot work.
+      data.capabilities = declaredCapabilities();
       data.contract_version = 'v4';
       // Device identity. `fingerprint` is per-INSTALL and is what the server matches on.
       // `hw_fingerprint` is the old hardware-only value, sent alongside so a panel whose storage

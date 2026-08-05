@@ -514,6 +514,12 @@ const migrations = [
      ('z-pp-1', 'tpl-p-pip',    'Background',    0, 0, 100, 100, 0, 0),
      ('z-pp-2', 'tpl-p-pip',    'PiP Window',    58, 4, 38, 20, 1, 1)`,
 
+  // What each player declares it can do (JSON array), so the dashboard can hide controls a
+  // display cannot honour. NULL means "never declared" and falls back to a per-platform baseline
+  // in server/lib/player-capabilities.js — distinct from '[]', which is a player genuinely saying
+  // it can do nothing and must be respected.
+  'ALTER TABLE devices ADD COLUMN capabilities TEXT',
+
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.
