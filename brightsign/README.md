@@ -190,6 +190,69 @@ Still Android-only, and correctly inert here: the Tier-2 device-owner commands (
 `install_apk`, `shell`, `block_uninstall`, …) and `set_brightness` / `set_screen_timeout`, which
 have no BrightSign equivalent — a signage player has no per-window brightness or screen timeout.
 
+## Offline playback
+
+Content bytes are cached by the service worker (`server/player/sw.js`) into a dedicated
+`rd-content-v1` cache, so a player that loses its server keeps playing its playlist.
+
+This used to be left to the browser's HTTP cache — the server sends
+`Cache-Control: public, max-age=2592000, immutable`. That is fine on a desktop and is **not a
+documented-persistent store here**: BrightSign guarantees survival across reloads, app restarts and
+reboots for **IndexedDB, localStorage and SQLite**, and their own answer for offline video is to
+cache the bytes explicitly. A panel could come back from a power cut with its playlist intact (that
+lives in `localStorage`) and no media to play.
+
+The reason content was skipped originally is real, and `server/lib/player-cache-policy.js` is what
+makes intercepting it safe. Video elements issue **range requests** when they seek, and naive
+caching breaks playback in two ways that are worse than not caching at all:
+
+- storing a `206` as if it were the whole file — every later full request gets a fragment, and it
+  stays broken until eviction
+- answering a range request with a `200` — some media stacks treat the mismatch as fatal and the
+  video never starts
+
+So only complete `200`s are ever stored, and a range request is served by slicing the stored body
+into a correct `206`. The content cache is deliberately **not** dropped when the shell is
+re-versioned, or every deploy would re-download the whole playlist over a link that may be exactly
+what is broken.
+
+## Self-update
+
+The player can replace its own host package. This is the most dangerous thing it does: a truncated
+or half-applied `autorun.brs` is a dark panel and a site visit, because there is no app underneath.
+
+The safety is the **ordering**, and every step earns its place:
+
+1. Download to `autorun.zip.part` — never straight to `autorun.zip`. A file still downloading must
+   never be a candidate for extraction.
+2. Verify **sha256 and size** before promoting. A captive portal answering with a login page
+   produces a perfectly well-formed small file; the size floor catches that, the hash catches the
+   rest. sha256 specifically, because that is what BrightScript's `roMessageDigest` can compute —
+   a checksum the player cannot verify is an unverifiable package.
+3. Promote: delete the `.done` marker **first**, then rename `.part` → `autorun.zip`, then reboot.
+   Marker first is not stylistic — leaving it makes the next boot skip the new archive and the
+   update silently never happens.
+4. A failed extract renames the archive to `.bad` rather than retrying. A zip that cannot be
+   unpacked will not unpack on the tenth attempt, and retrying every boot is a loop that looks
+   exactly like a hardware fault.
+
+**The decision is the server's**, in `server/lib/brightsign-update.js` — unit-tested, and the same
+place the prerelease rule lives. The host only executes what it is told; re-implementing the version
+comparison in BrightScript would put the prerelease trap somewhere it cannot be tested.
+
+**The version is baked into `autorun.brs`**, stamped at build time by both
+`scripts/build-autorun-zip.sh` and `server/lib/brightsign-package.js`, anchored on the
+`ST_PACKAGE_VERSION` marker. A version record that can disagree with the code actually running is
+the OTA-loop condition by the back door: apply, still report the old version, get offered the same
+package forever.
+
+**The manifest and the download come from one buffer**, hashed once. Advertising a version whose
+checksum does not match the bytes served is the same loop from the front door.
+
+Config: `self_update` (default **on** — a fleet that cannot be updated remotely needs a van) and
+`allow_prerelease` (default off, mirroring the Android beta channel; an opted-in player also
+*holds* a prerelease of its own core rather than being pulled back to the release).
+
 ## What is NOT done yet
 
 Stated plainly so nobody reads this as finished:

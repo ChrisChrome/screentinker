@@ -46,6 +46,13 @@ Function LoadConfig() As Object
         sync_backend: "auto"      ' auto | screentinker | brightsign
         output_mode: "single"     ' single | dual | clone
         inspector: false
+        ' Self-update of the host package. Defaults ON: a fleet that cannot be updated remotely is
+        ' a fleet that needs a van. The DECISION is still the server's, and it refuses anything it
+        ' cannot verify, so "on" does not mean "will apply whatever it is handed".
+        self_update: true
+        ' Mirrors the Android beta channel. Off by default; an opted-in player also HOLDS a
+        ' prerelease of its own core instead of being pulled back to the release.
+        allow_prerelease: false
     }
 
     ' 1) registry
@@ -54,6 +61,8 @@ Function LoadConfig() As Object
     if reg.Exists("device_id") then cfg.device_id = reg.Read("device_id")
     if reg.Exists("sync_backend") then cfg.sync_backend = reg.Read("sync_backend")
     if reg.Exists("output_mode") then cfg.output_mode = reg.Read("output_mode")
+    if reg.Exists("self_update") then cfg.self_update = (reg.Read("self_update") = "1")
+    if reg.Exists("allow_prerelease") then cfg.allow_prerelease = (reg.Read("allow_prerelease") = "1")
 
     ' 2) a JSON file on the card wins — that is how a batch gets imaged without touching each box
     ba = CreateObject("roByteArray")
@@ -65,6 +74,8 @@ Function LoadConfig() As Object
             if json.sync_backend <> invalid then cfg.sync_backend = json.sync_backend
             if json.output_mode <> invalid then cfg.output_mode = json.output_mode
             if json.inspector <> invalid then cfg.inspector = json.inspector
+            if json.self_update <> invalid then cfg.self_update = json.self_update
+            if json.allow_prerelease <> invalid then cfg.allow_prerelease = json.allow_prerelease
         end if
     end if
 
@@ -140,6 +151,199 @@ Function FullScreenRect() As Object
     return CreateObject("roRectangle", 0, 0, vm.GetResX(), vm.GetResY())
 End Function
 
+'=== self-update ============================================================================
+'
+' The package (autorun.zip) can replace THIS SCRIPT. That makes it the most dangerous thing the
+' player does: a truncated or half-applied autorun.brs is a dark panel and a site visit, because
+' there is no app underneath to fall back to.
+'
+' The ordering below is the safety, and it is deliberate at every step:
+'
+'   1. Download to autorun.zip.part — never straight to autorun.zip. A file that is still
+'      downloading, or that stopped halfway, must never be a candidate for extraction.
+'   2. Verify sha256 AND size before promoting. A captive portal that answers with a login page
+'      produces a perfectly well-formed small file; the size floor catches it, the hash catches
+'      everything else.
+'   3. Only then promote: delete the .done marker, rename .part -> autorun.zip, reboot.
+'      The marker MUST go first — leaving it would make ApplyPendingPackage skip the new archive
+'      on the next boot and the update would silently never happen.
+'   4. Extraction failure renames the archive to .bad rather than retrying forever. A zip that
+'      cannot be unpacked will not unpack on the tenth attempt either, and retrying it on every
+'      boot is a loop that looks exactly like a hardware fault.
+'
+' THE VERSION IS BAKED IN, not stored in a side file. A version record that can disagree with the
+' code actually running is the OTA-loop condition in another guise: the player applies an update,
+' reports the old version, is offered it again, forever. Stamped at build time by both
+' scripts/build-autorun-zip.sh and server/lib/brightsign-package.js.
+
+Function PackageVersion() As String
+    return "0.0.0-dev"   ' ST_PACKAGE_VERSION (stamped at build time — do not edit by hand)
+End Function
+
+Function DoesFileExist(filePath$ As String) As Boolean
+    files = MatchFiles(filePath$, filePath$)
+    return files.Count() > 0
+End Function
+
+' Unpack a package that is sitting on storage waiting to be applied. Runs BEFORE the widget so a
+' pending update lands before the player starts, not halfway through a playlist.
+'
+' Note this duplicates autozip.brs on purpose. autozip.brs handles the FIRST install, where a bare
+' card holds nothing but autorun.zip and the OS processes it. Once autorun.brs exists at the
+' storage root the OS no longer auto-processes the archive — so from then on the host has to do it
+' itself, or self-update would work exactly once.
+Sub ApplyPendingPackage(root As String)
+    zipPath$ = root + "/autorun.zip"
+    donePath$ = root + "/autorun.zip.done"
+    badPath$ = root + "/autorun.zip.bad"
+
+    if not DoesFileExist(zipPath$) then return
+    if DoesFileExist(donePath$) then return   ' already unpacked; extracting again is the boot loop
+
+    print "[st-update] unpacking pending package"
+
+    unzip = CreateObject("roUnzip", zipPath$)
+    if unzip = invalid then
+        print "[st-update] ERROR: archive unreadable — parking it as .bad"
+        fs = CreateObject("roFileSystem")
+        if fs <> invalid then fs.Rename(zipPath$, badPath$)
+        return
+    end if
+
+    if unzip.DecompressAllFiles(root + "/") <> 0 then
+        print "[st-update] ERROR: extract failed — parking it as .bad so we do not retry forever"
+        fs = CreateObject("roFileSystem")
+        if fs <> invalid then fs.Rename(zipPath$, badPath$)
+        return
+    end if
+
+    fs = CreateObject("roFileSystem")
+    if fs = invalid then return
+    if not fs.Rename(zipPath$, donePath$) then
+        ' Refusing to reboot without the marker: we would extract and reboot forever.
+        print "[st-update] ERROR: could not mark done — not rebooting"
+        return
+    end if
+
+    print "[st-update] package applied — rebooting into it"
+    sleep(2000)
+    RebootSystem()
+End Sub
+
+' Ask the server what to do, and do exactly that. The DECISION lives on the server
+' (server/lib/brightsign-update.js, which is unit-tested); this only executes it. Re-implementing
+' the version comparison here would put the prerelease trap somewhere it cannot be tested.
+Sub CheckPackageUpdate(cfg As Object, root As String)
+    if cfg.server_url = "" then return
+
+    partPath$ = root + "/autorun.zip.part"
+    reg = CreateObject("roRegistrySection", "screentinker")
+    attempts% = 0
+    if reg.Exists("pkg_attempts") then attempts% = Val(reg.Read("pkg_attempts"))
+
+    url$ = cfg.server_url + "/api/brightsign/package?version=" + PackageVersion()
+    url$ = url$ + "&attempts=" + Stri(attempts%).Trim()
+    if cfg.allow_prerelease then url$ = url$ + "&allow_prerelease=1"
+
+    xfer = CreateObject("roUrlTransfer")
+    if xfer = invalid then return
+    xfer.SetUrl(url$)
+    xfer.EnablePeerVerification(true)
+    body$ = xfer.GetToString()
+    if body$ = "" then return                  ' unreachable: keep running what works
+
+    manifest = ParseJson(body$)
+    if manifest = invalid then return
+    if manifest.action = invalid then return
+    if manifest.action <> "download" then
+        if manifest.reason <> invalid then print "[st-update] no action: "; manifest.reason
+        return
+    end if
+
+    print "[st-update] downloading package "; manifest.version
+
+    ' Any earlier partial is deleted first: resuming into an existing file would concatenate two
+    ' downloads into something that hashes to neither.
+    fs = CreateObject("roFileSystem")
+    if fs <> invalid and DoesFileExist(partPath$) then fs.Delete(partPath$)
+
+    dl = CreateObject("roUrlTransfer")
+    if dl = invalid then return
+    dl.SetUrl(cfg.server_url + manifest.url)
+    dl.EnablePeerVerification(true)
+    if dl.GetToFile(partPath$) <> 200 then
+        print "[st-update] download failed"
+        RecordPackageAttempt(reg, attempts% + 1)
+        if fs <> invalid then fs.Delete(partPath$)
+        return
+    end if
+
+    ' Verify before promoting. This is the gate that stops a truncated file becoming the boot script.
+    if not VerifyPackage(partPath$, manifest.sha256, manifest.size) then
+        print "[st-update] VERIFICATION FAILED — discarding, staying on "; PackageVersion()
+        RecordPackageAttempt(reg, attempts% + 1)
+        if fs <> invalid then fs.Delete(partPath$)
+        return
+    end if
+
+    ' Promote. Marker first — see the ordering note above.
+    if fs = invalid then return
+    if DoesFileExist(root + "/autorun.zip.done") then fs.Delete(root + "/autorun.zip.done")
+    if DoesFileExist(root + "/autorun.zip") then fs.Delete(root + "/autorun.zip")
+    if not fs.Rename(partPath$, root + "/autorun.zip") then
+        print "[st-update] ERROR: could not stage the package — staying put"
+        RecordPackageAttempt(reg, attempts% + 1)
+        return
+    end if
+
+    ' A clean attempt counter, so the next version starts from zero rather than inheriting this
+    ' version's failures and being refused before it is ever tried.
+    RecordPackageAttempt(reg, 0)
+    print "[st-update] staged "; manifest.version; " — rebooting to apply"
+    sleep(2000)
+    RebootSystem()
+End Sub
+
+Sub RecordPackageAttempt(reg As Object, n As Integer)
+    if reg = invalid then return
+    reg.Write("pkg_attempts", Stri(n).Trim())
+    reg.Flush()
+End Sub
+
+' sha256 + size. Both matter: the hash proves the bytes are the ones we were promised, the size
+' floor catches an error page or captive-portal login saved under the package's name.
+Function VerifyPackage(path As String, expected As String, expectedSize As Integer) As Boolean
+    if expected = invalid or expected = "" then return false
+
+    fs = CreateObject("roFileSystem")
+    if fs = invalid then return false
+
+    info = fs.Stat(path)
+    if info = invalid then return false
+    if info.size < 1024 then
+        print "[st-update] package is implausibly small ("; info.size; " bytes)"
+        return false
+    end if
+    if expectedSize > 0 and info.size <> expectedSize then
+        print "[st-update] size mismatch: got "; info.size; " expected "; expectedSize
+        return false
+    end if
+
+    digest = CreateObject("roMessageDigest")
+    if digest = invalid then return false
+    digest.SetAlgorithm("sha256")
+
+    file = fs.OpenInputFile(path)
+    if file = invalid then return false
+    while true
+        chunk = file.Read(65536)
+        if chunk.Count() = 0 then exit while
+        digest.Update(chunk)
+    end while
+
+    return LCase(digest.Final()) = LCase(expected)
+End Function
+
 '=== main ===================================================================================
 
 Sub Main()
@@ -151,6 +355,11 @@ Sub Main()
 
     ' Must happen BEFORE the widget starts: it can reboot.
     EnsurePtpDomain(cfg)
+
+    ' A package staged by a previous run lands here, before anything is on screen. Doing it after
+    ' the widget started would mean rebooting out of a playing playlist, and the panel would blink
+    ' mid-content for a reason nobody watching could explain.
+    ApplyPendingPackage(StorageRoot())
 
     port = CreateObject("roMessagePort")
 
@@ -181,6 +390,15 @@ Sub Main()
     retries = 0
     lastBeat = CreateObject("roTimespan")
     lastBeat.Mark()
+
+    ' Update check runs AFTER the widget is up, deliberately. A slow or unreachable server must
+    ' never delay first frame — content on screen is the job, updating is housekeeping. It also
+    ' runs on a timer rather than only at boot, because a panel that is never power-cycled would
+    ' otherwise never see an update at all.
+    lastPkgCheck = CreateObject("roTimespan")
+    lastPkgCheck.Mark()
+    PKG_CHECK_MS = 6 * 60 * 60 * 1000    ' 6h: this replaces the boot script, so rarely is right
+    if cfg.self_update then CheckPackageUpdate(cfg, StorageRoot())
 
     ' A watchdog on TOP of load-error: a page can load fine and then wedge (dead socket, JS
     ' exception, decoder stall) without the OS ever reporting an error. st-bridge.js posts a
@@ -273,6 +491,13 @@ Sub Main()
             print "[st] watchdog: no heartbeat in "; WATCHDOG_MS; "ms — rebuilding widget"
             widget = RebuildWidget(widget, PlayerUrl(cfg, 1), rect, port, cfg)
             lastBeat.Mark()
+        end if
+
+        ' Periodic package check. Marked BEFORE the call, not after: a check that blocks on a slow
+        ' server would otherwise be retried immediately on the next tick and hammer it.
+        if cfg.self_update and lastPkgCheck.TotalMilliseconds() > PKG_CHECK_MS then
+            lastPkgCheck.Mark()
+            CheckPackageUpdate(cfg, StorageRoot())
         end if
     end while
 End Sub

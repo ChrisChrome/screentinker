@@ -39,6 +39,25 @@ cp brightsign/autorun.brs        "$STAGE/"
 cp brightsign/offline.html       "$STAGE/"
 cp brightsign/screentinker.json  "$STAGE/"
 
+# Stamp the version into the host so the script REPORTS the version it actually is. A package that
+# ships reporting the old version is applied, reports the old version, and is offered again on the
+# next check — forever. server/lib/brightsign-package.js does the identical substitution, anchored
+# on the same ST_PACKAGE_VERSION marker, so a zip built here and one built by the server agree.
+VERSION="$(cat VERSION 2>/dev/null | tr -d '[:space:]')"
+if [ -n "$VERSION" ]; then
+  python3 - "$STAGE/autorun.brs" "$VERSION" <<'PY'
+import re, sys
+path, version = sys.argv[1], sys.argv[2]
+src = open(path).read()
+out = re.sub(r'return "[^"]*"(\s*\'\s*ST_PACKAGE_VERSION)', 'return "%s"\\1' % version, src)
+if out == src:
+    sys.exit("ERROR: ST_PACKAGE_VERSION marker not found in autorun.brs — refusing to ship an "
+             "unstamped package, which would loop on every update check.")
+open(path, 'w').write(out)
+PY
+  echo "  stamped package version $VERSION"
+fi
+
 # Point a batch at a specific server without hand-editing each card.
 if [ -n "$SERVER" ]; then
   python3 - "$STAGE/screentinker.json" "$SERVER" <<'PY'
