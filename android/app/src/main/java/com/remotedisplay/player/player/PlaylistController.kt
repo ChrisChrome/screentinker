@@ -22,6 +22,10 @@ data class PlaylistItem(
     // Changes whenever the widget is edited. Carried into the render URL so an edited widget gets
     // a URL the player has not seen, which is what defeats the deliberate same-URL WebView reuse.
     val widgetRev: Long = 0L,
+    // Bumped by the server when an asset's BYTES change under a stable content id (the dashboard's
+    // "replace file"). The cache is keyed on it: without one, a replaced asset would keep playing
+    // the copy already on disk forever, because nothing about the id or the URL would differ.
+    val contentRev: Long = 0L,
     val widgetType: String? = null,
     val schedules: List<ScheduleEval.Block> = emptyList(),
     // feat/transition-engine: the resolved GL transition this item plays INTO (null = hard cut).
@@ -173,6 +177,7 @@ class PlaylistController(
                     muted = obj.optInt("muted", 0) == 1,
                     widgetId = if (obj.isNull("widget_id")) null else obj.optString("widget_id", "").ifEmpty { null },
                     widgetRev = obj.optLong("widget_rev", 0L),
+                    contentRev = obj.optLong("content_rev", 0L),
                     widgetType = if (obj.isNull("widget_type")) null else obj.optString("widget_type", "").ifEmpty { null },
                     schedules = parseSchedules(obj.optJSONArray("schedules")),
                     transition = Transitions.parse(obj.optJSONObject("transition"))

@@ -66,7 +66,7 @@ class ContentCache internal constructor(
         // cross-matching. `contains` rather than `endsWith` for the temp check because the resume
         // validator sidecar is "<id>.<ext>.part.tag" — it does not END with ".part", and returning
         // THAT as the cached asset would hand the player a short ETag file to play.
-        val files = cacheDir.listFiles { _, name -> name.startsWith("$contentId.") && !name.contains(PART_SUFFIX) }
+        val files = cacheDir.listFiles { _, name -> name.startsWith("$contentId.") && !name.contains(PART_SUFFIX) && !name.endsWith(REV_SUFFIX) }
         val hit = files?.firstOrNull()?.takeIf { it.exists() && it.length() > 0 }
         com.remotedisplay.player.util.DebugLog.v("ContentCache", "getCachedFile($contentId): dir=${cacheDir.absolutePath} listFiles=${files?.size ?: -1} hit=${hit?.name}")
         return hit
@@ -77,10 +77,34 @@ class ContentCache internal constructor(
     }
 
     /**
+     * Cached AND holding the revision the playlist is asking for.
+     *
+     * The dashboard can replace an asset's bytes under a stable content id, which is the one way a
+     * cached copy can be permanently wrong: the id does not change, the filename does not change,
+     * and nothing about a plain existence check can tell. A panel would keep playing last month's
+     * video until somebody deleted and re-added the item. Comparing the revision is what makes
+     * "cached for offline" compatible with "and it still updates".
+     *
+     * A revision of 0 means the server never sent one (an older build): fall back to existence, so
+     * an upgrade does not re-download the entire playlist over the link least able to afford it.
+     */
+    fun isContentCached(contentId: String, rev: Long): Boolean {
+        val file = getCachedFile(contentId) ?: return false
+        if (rev <= 0L) return true
+        return readRev(file) == rev
+    }
+
+    private fun revFile(file: File) = File(file.absolutePath + REV_SUFFIX)
+
+    private fun readRev(file: File): Long =
+        try { revFile(file).takeIf { it.exists() }?.readText()?.trim()?.toLongOrNull() ?: 0L }
+        catch (e: Exception) { 0L }
+
+    /**
      * Fetch (or continue fetching) [contentId]. Safe to call repeatedly: each call transfers what
      * the link allows and leaves the rest for the next one.
      */
-    fun fetch(serverUrl: String, contentId: String, filename: String): Result {
+    fun fetch(serverUrl: String, contentId: String, filename: String, rev: Long = 0L): Result {
         val ext = filename.substringAfterLast('.', "mp4")
         val finalFile = File(cacheDir, "$contentId.$ext")
         val partFile = File(cacheDir, "$contentId.$ext$PART_SUFFIX")
@@ -94,7 +118,11 @@ class ContentCache internal constructor(
         if (resumeFrom == 0L) { partFile.delete(); tagFile.delete() }
 
         try {
-            val builder = Request.Builder().url("$serverUrl/api/content/$contentId/file")
+            // The revision rides in the URL as well as in the sidecar: an intermediary caching
+            // /api/content/<id>/file would otherwise happily serve the superseded bytes to every
+            // panel behind it, and no amount of client-side bookkeeping could tell.
+            val url = "$serverUrl/api/content/$contentId/file" + (if (rev > 0L) "?rev=$rev" else "")
+            val builder = Request.Builder().url(url)
             if (resumeFrom > 0) {
                 builder.header("Range", "bytes=$resumeFrom-")
                 builder.header("If-Range", validator!!)
@@ -186,6 +214,12 @@ class ContentCache internal constructor(
                     return Result.Failed
                 }
                 tagFile.delete()
+                // Record WHICH revision these bytes are, so a later replace is detectable. Written
+                // after the rename: a revision marker next to a file that is not there yet would
+                // claim a cached asset that does not exist.
+                try {
+                    if (rev > 0L) revFile(finalFile).writeText(rev.toString()) else revFile(finalFile).delete()
+                } catch (e: Exception) { /* the file is still usable; worst case it re-downloads */ }
                 Log.i("ContentCache", "Downloaded: $filename -> ${finalFile.absolutePath} ($onDisk bytes)")
                 return Result.Done(finalFile)
             }
@@ -202,8 +236,8 @@ class ContentCache internal constructor(
     }
 
     /** Complete-or-nothing wrapper: returns the cached file only when the asset is whole. */
-    fun downloadContent(serverUrl: String, contentId: String, filename: String): File? =
-        (fetch(serverUrl, contentId, filename) as? Result.Done)?.file
+    fun downloadContent(serverUrl: String, contentId: String, filename: String, rev: Long = 0L): File? =
+        (fetch(serverUrl, contentId, filename, rev) as? Result.Done)?.file
 
     fun deleteContent(contentId: String) {
         // Exact-prefix (with the dot) so we don't delete a different id's file — and this also
@@ -248,6 +282,7 @@ class ContentCache internal constructor(
     companion object {
         private const val PART_SUFFIX = ".part"
         private const val TAG_SUFFIX = ".tag"
+        private const val REV_SUFFIX = ".rev"
 
         /**
          * "bytes <start>-<end>/<total>" -> (start, total). Null for anything else, including the

@@ -82,10 +82,16 @@
     //   system.shell         — no substantiated API on this surface. Claiming them would put back
     //                          exactly the dead buttons this change removes.
     //   sync.native          — no cross-player frame sync (that is BrightSign's SyncManager).
-    //   offline.cache        — app.js caches the PAYLOAD so a reboot during an outage replays the
-    //                          last playlist, but the media bytes are still fetched from the
-    //                          network. Content does not survive an outage, so claiming offline
-    //                          capability would overstate it.
+    //   (offline.cache is deliberately absent from this list — it is a RUNTIME check below.)
+
+    // offline.cache is a RUNTIME fact, not a platform one. app.js has always cached the payload,
+    // but the media bytes were fetched from the network every time — so a panel survived an outage
+    // knowing exactly what it could not show. media-cache.js changes that, WHERE the platform
+    // actually gives us persistent storage. It does not on every build, and a panel that cannot
+    // write to wgt-private must not claim an offline capability it does not have.
+    try {
+      if (window.MediaCache && (window.__stMediaCache || window.MediaCache.create())) caps.push('offline.cache');
+    } catch (e) { /* no storage: the claim stays absent, which is the honest answer */ }
 
     return caps;
   }

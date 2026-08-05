@@ -1,9 +1,12 @@
+// v21: chunked resumable content prefetch + revision-keyed media URLs — index.html gained
+// mediaUrl()/requestOfflineCache() and this worker gained the message handler, so an old shell
+// cache would pair a new worker with a player that never posts it a playlist.
 // v20: rc3 changed the fetch strategy AND the shipped player assets. The activate handler deletes
 // every cache whose name does not match, so leaving this at v19 kept the previous shell cache alive
 // — a player then ran a new index.html against a stale st-bridge.js and threw on every heartbeat.
 // Bump whenever a shipped /player asset changes shape; content lives in its own cache, so this
 // costs a small re-download and never re-fetches the playlist.
-const CACHE_NAME = 'rd-player-v20';
+const CACHE_NAME = 'rd-player-v21';
 // Content lives in its own cache so the shell can be re-versioned (the activate handler deletes
 // every cache that is not CACHE_NAME) WITHOUT throwing away megabytes of media that are still
 // perfectly valid. Rolling the shell used to mean a player re-downloaded its entire playlist.
@@ -107,6 +110,159 @@ self.addEventListener('fetch', (event) => {
   // Everything else (API calls, sockets, etc.): don't intercept.
   // Returning without event.respondWith lets the browser handle it natively.
 });
+
+/*
+ * PREFETCH — the half that makes the cache fill on a link that cannot carry a whole asset.
+ *
+ * handleContent below stores an asset when a single fetch() of it happens to succeed. On a good
+ * link that is everything. On a marginal one (the one-bar 5G site this came from) a 200MB fetch
+ * never completes, every retry starts from nothing, and the cache stays empty — so the panel has
+ * nothing to fall back on the moment the uplink drops. The Android player had the identical bug and
+ * was fixed by resuming; a service worker has no file handle to append to, so progress accumulates
+ * as separate cache entries and is assembled once every piece is present.
+ *
+ * Driven by the player rather than by playback: it posts its current media URLs after each playlist
+ * update, and this works through them ONE AT A TIME. Deliberately not started from the fetch
+ * handler — that would put the accumulator in competition with the playing video for the same
+ * scarce bandwidth, which is worse than either alone.
+ */
+const prefetching = new Set();
+let prefetchChain = Promise.resolve();
+
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data || data.type !== 'st-cache-playlist' || !Array.isArray(data.urls)) return;
+  for (const url of data.urls) {
+    if (typeof url !== 'string' || !POLICY || !POLICY.isCacheableContent(url, 'GET')) continue;
+    if (prefetching.has(url)) continue;   // single-flight: a 60s playlist sweep must not restart it
+    prefetching.add(url);
+    // Serialised. Three concurrent chunk streams on a link that cannot finish one is how you get
+    // three unfinished downloads instead of one finished one.
+    prefetchChain = prefetchChain
+      .then(() => ensureCached(url))
+      .catch(() => {})
+      .then(() => { prefetching.delete(url); });
+  }
+});
+
+/*
+ * Fetch [url] into the content cache, one chunk at a time, resuming across calls.
+ *
+ * Returns when the asset is whole OR when a chunk fails — the caller does not retry, because the
+ * player will ask again on its next playlist sweep and whatever landed is still on disk. That is
+ * the entire point: attempts accumulate instead of restarting.
+ */
+async function ensureCached(url) {
+  const cache = await caches.open(CONTENT_CACHE);
+  if (await cache.match(url, { ignoreVary: true })) { await sweepOldRevisions(cache, url); return; }
+
+  const metaKey = POLICY.chunkKey(url, 'meta');
+  let meta = null;
+  const metaHit = await cache.match(metaKey);
+  if (metaHit) { try { meta = await metaHit.json(); } catch (e) { meta = null; } }
+
+  // Learn the size and validator from the first ranged request, or trust what a previous call
+  // already learned. A server that answers 200 here has no range support: fall back to storing it
+  // whole, which is the pre-existing behaviour and is correct, just not resumable.
+  if (!meta) {
+    const probe = await fetch(new Request(url, { headers: { Range: 'bytes=0-' + (POLICY.CHUNK_BYTES - 1) } }));
+    if (probe.status === 200) {
+      if (POLICY.isStorable(probe)) await storeContent(cache, new Request(url), probe);
+      return;
+    }
+    const cr = POLICY.parseContentRange(probe.headers.get('Content-Range'));
+    if (probe.status !== 206 || !cr || !(cr.total > 0)) return;
+    meta = { total: cr.total, validator: POLICY.validatorOf(probe.headers), type: probe.headers.get('Content-Type') || '' };
+    if (!meta.validator) {
+      // Nothing to detect a changed asset with, so a resume would be a guess. Store this one whole
+      // if it happens to fit in a chunk; otherwise leave it to the fetch path.
+      if (cr.total <= POLICY.CHUNK_BYTES) {
+        await cache.put(new Request(url), new Response(await probe.blob(), {
+          status: 200, headers: { 'Content-Type': meta.type, 'Content-Length': String(cr.total) }
+        }));
+        await sweepOldRevisions(cache, url);
+      }
+      return;
+    }
+    await cache.put(metaKey, new Response(JSON.stringify(meta), { headers: { 'Content-Type': 'application/json' } }));
+    await cache.put(POLICY.chunkKey(url, 0), new Response(await probe.blob()));
+  }
+
+  const ranges = POLICY.chunkRanges(meta.total, POLICY.CHUNK_BYTES);
+  for (const r of ranges) {
+    const key = POLICY.chunkKey(url, r.start);
+    if (await cache.match(key)) continue;                    // already have it — this is the resume
+
+    let response;
+    try {
+      response = await fetch(new Request(url, {
+        headers: { Range: 'bytes=' + r.start + '-' + r.end, 'If-Range': meta.validator }
+      }));
+    } catch (e) {
+      return;   // link died. Everything stored so far stays; the next sweep continues from here.
+    }
+
+    const verdict = POLICY.resumeVerdict(
+      response.status, response.headers.get('Content-Range'),
+      r.start, meta.total, meta.validator, POLICY.validatorOf(response.headers)
+    );
+    if (verdict !== 'continue') {
+      // 'restart' means the asset changed under us (If-Range declined) and 'discard' means we
+      // cannot trust what came back. Either way the accumulated chunks describe a file that no
+      // longer exists, and appending to them is the corruption this check exists to prevent.
+      await dropChunks(cache, url);
+      return;
+    }
+    await cache.put(key, new Response(await response.blob()));
+  }
+
+  // Every piece present: assemble once, atomically as far as the player is concerned — the full
+  // entry appears only when it is genuinely whole, so a cache hit can never be a fragment.
+  const parts = [];
+  for (const r of ranges) {
+    const hit = await cache.match(POLICY.chunkKey(url, r.start));
+    if (!hit) return;                                        // evicted mid-assembly; try again later
+    parts.push(await hit.blob());
+  }
+  const whole = new Blob(parts, { type: meta.type || 'application/octet-stream' });
+  if (whole.size !== meta.total) { await dropChunks(cache, url); return; }
+  await cache.put(new Request(url), new Response(whole, {
+    status: 200,
+    headers: { 'Content-Type': meta.type || 'application/octet-stream', 'Content-Length': String(meta.total) }
+  }));
+  await dropChunks(cache, url);
+  await sweepOldRevisions(cache, url);
+}
+
+async function dropChunks(cache, url) {
+  for (const key of await cache.keys()) {
+    if (POLICY.isInternalKey(key.url) && POLICY.assetKey(key.url) === POLICY.assetKey(url) &&
+        key.url.indexOf(revOf(url)) !== -1) {
+      await cache.delete(key);
+    }
+  }
+}
+
+/*
+ * Delete entries for the SAME asset at a DIFFERENT revision.
+ *
+ * Replacing an asset changes the revision in its URL, which is what makes the new bytes a cache
+ * miss everywhere — but it also means the superseded copy would sit there until the quota evicted
+ * it. On a panel with a 1GB widget quota, a handful of replaced videos is the entire budget.
+ */
+async function sweepOldRevisions(cache, url) {
+  const asset = POLICY.assetKey(url);
+  const rev = revOf(url);
+  for (const key of await cache.keys()) {
+    if (POLICY.assetKey(key.url) !== asset) continue;
+    if (revOf(key.url) === rev) continue;
+    await cache.delete(key);
+  }
+}
+
+function revOf(url) {
+  try { return new URL(url, self.location.href).searchParams.get('rev') || ''; } catch (e) { return ''; }
+}
 
 async function handleContent(request) {
   const range = request.headers.get('range');

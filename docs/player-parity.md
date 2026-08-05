@@ -75,7 +75,7 @@ privilege model exists on those platforms — so the column is collapsed.
 |---|---|---|---|---|
 | `sync.clock` | ✅ | ✅ | ✅ | ✅ |
 | `sync.native` | ❌ no native protocol | ❌ | ❌ | ⚠️ SyncManager, BOS 8.2.10+; multicast so all members must share one L2 network |
-| `offline.cache` | ✅ content downloaded to disk | ✅ service worker | ⚠️ **playlist payload only** — `st_payload_cache` replays the last renderable payload, but there is no service worker, so media still needs the network | ✅ service worker + 1GB storage quota |
+| `offline.cache` | ✅ content downloaded to disk, **resumable** (Range + If-Range), revision-keyed | ✅ service worker, **resumable chunked prefetch**, revision-keyed | ✅ **media cached to `wgt-private`** (`js/media-cache.js`), resumable, revision-keyed — declared at runtime, since a build with no writable private storage must not claim it | ✅ inherits the web player's service worker |
 
 ---
 
@@ -86,9 +86,11 @@ Ordered by how visible the failure is to an operator.
 1. **Tizen `audio.volume` — dead control.** `set_volume` has no handler in `tizen/js/app.js`; the
    only volume path is the on-device `KEYCODE_VOLUME_*` keys. The dashboard slider silently does
    nothing. Either implement the handler or let the capability hide the control.
-2. **Tizen `offline.cache` is partial.** The playlist survives a reboot; the media does not. A
-   Tizen panel that loses its uplink keeps its schedule and cannot play it. This is the largest
-   functional gap in the table.
+2. ~~**Tizen `offline.cache` is partial.**~~ **Closed.** `tizen/js/media-cache.js` caches the
+   media itself to `wgt-private` — resumable, so a panel on a bad link accumulates an asset
+   across attempts instead of restarting from zero, and revision-keyed, so a replaced asset is
+   still a miss. The capability is declared at runtime rather than assumed: a build that cannot
+   write to private storage keeps quiet about it.
 3. **BrightSign `remote.screenshot` needs primary storage.** Reachable today only via the canvas
    fallback, which cannot read the video plane, so screenshots show everything except the video.
    Resolves itself when a card or SSD is fitted.
@@ -114,5 +116,6 @@ these are wrong for the existing fleet until each player ships its declaration:
 - **`tizen` claims `audio.volume`** — no handler exists (gap 1 above). Should be removed.
 - **`tizen` omits `remote.screenshot` and `remote.stream`** — both are implemented
   (`captureAndSend`, `startStreaming`). Should be added.
-- **`tizen` claims `offline.cache`** — true only for the playlist payload, not media. Either keep
-  it with the partial meaning documented, or split the capability.
+- **`tizen` declares `offline.cache` itself now** — the server baseline still omits it, which is
+  correct: a fielded panel that has not been updated genuinely cannot hold media, and the
+  baseline describes what an un-updated one can do.

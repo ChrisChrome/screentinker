@@ -261,8 +261,15 @@ PlaylistPlayer.prototype.durationMs = function (item) {
 
 PlaylistPlayer.prototype.contentUrl = function (item) {
   if (item.remote_url) return item.remote_url;
-  if (item.content_id) return this.getBase() + '/api/content/' + item.content_id + '/file';
-  return null;
+  if (!item.content_id) return null;
+  // A cached copy is preferred whenever we hold the revision this item asks for. That is what keeps
+  // the screen alive through an outage — and the revision check is what stops it keeping the screen
+  // alive with the WRONG asset after somebody replaced it in the dashboard.
+  var local = window.MediaCache && window.__stMediaCache
+    && window.__stMediaCache.localUrl(item.content_id, item.content_rev);
+  if (local) return local;
+  return this.getBase() + '/api/content/' + item.content_id + '/file'
+    + (item.content_rev ? '?rev=' + encodeURIComponent(item.content_rev) : '');
 };
 
 PlaylistPlayer.prototype.advance = function () {
@@ -1064,8 +1071,15 @@ ZoneRenderer.prototype.durationMs = function (item) {
 
 ZoneRenderer.prototype.contentUrl = function (item) {
   if (item.remote_url) return item.remote_url;
-  if (item.content_id) return this.getBase() + '/api/content/' + item.content_id + '/file';
-  return null;
+  if (!item.content_id) return null;
+  // A cached copy is preferred whenever we hold the revision this item asks for. That is what keeps
+  // the screen alive through an outage — and the revision check is what stops it keeping the screen
+  // alive with the WRONG asset after somebody replaced it in the dashboard.
+  var local = window.MediaCache && window.__stMediaCache
+    && window.__stMediaCache.localUrl(item.content_id, item.content_rev);
+  if (local) return local;
+  return this.getBase() + '/api/content/' + item.content_id + '/file'
+    + (item.content_rev ? '?rev=' + encodeURIComponent(item.content_rev) : '');
 };
 
 ZoneRenderer.prototype.showItem = function (zone, list, index) {

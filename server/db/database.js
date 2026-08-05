@@ -92,6 +92,11 @@ const migrations = [
   // pre-v4 clients that send no identity block). No logic is built on these yet.
   'ALTER TABLE devices ADD COLUMN client_type TEXT',
   'ALTER TABLE devices ADD COLUMN client_version TEXT',
+  // Content revision. SQLite cannot ADD COLUMN with a non-constant default, so this lands as 0 and
+  // is backfilled from created_at below — a row that has never been replaced is at its birth
+  // revision, which is exactly right.
+  'ALTER TABLE content ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0',
+  'UPDATE content SET updated_at = created_at WHERE updated_at = 0',
   'ALTER TABLE devices ADD COLUMN platform TEXT',
   'ALTER TABLE devices ADD COLUMN contract_version TEXT',
   // Exit-signal contract v1 — manner-of-death annotation on Offline (additive; NEVER alters offline

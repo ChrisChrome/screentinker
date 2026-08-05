@@ -530,8 +530,29 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
     console.warn('Thumbnail generation failed:', e.message);
   }
 
-  db.prepare(`UPDATE content SET filepath = ?, mime_type = ?, file_size = ?, thumbnail_path = ?, width = ?, height = ? WHERE id = ?`)
+  // Bump the revision: this is the ONLY operation in the product that changes an asset's bytes
+  // without changing its id, so it is the only thing that can make a player's cached copy wrong.
+  // Players key their media cache on the revision, so this is what evicts it.
+  //
+  // strftime seconds can collide with the previous value if a replace lands inside the same second
+  // as the upload (a small file, a scripted replace) — and a revision that does not change is a
+  // cache that never updates. MAX(now, previous + 1) guarantees it moves.
+  db.prepare(`UPDATE content
+                 SET filepath = ?, mime_type = ?, file_size = ?, thumbnail_path = ?, width = ?, height = ?,
+                     updated_at = MAX(CAST(strftime('%s','now') AS INTEGER), COALESCE(NULLIF(updated_at, 0), created_at) + 1)
+               WHERE id = ?`)
     .run(filepath, mime, req.file.size, thumbnailPath, width, height, req.params.id);
+
+  // ...and tell the panels, which the old code did not. Without this the new bytes reached a screen
+  // only when something else happened to trigger a playlist refresh — an operator replacing a video
+  // watched the dashboard update and the screen keep playing the old one.
+  const affected = db.prepare(`
+    SELECT DISTINCT d.id as device_id FROM devices d
+    JOIN playlists p ON d.playlist_id = p.id
+    JOIN playlist_items pi ON pi.playlist_id = p.id
+    WHERE pi.content_id = ?
+  `).all(req.params.id).map((r) => r.device_id);
+  pushContentUpdates(req, affected);
 
   res.json(db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id));
 });

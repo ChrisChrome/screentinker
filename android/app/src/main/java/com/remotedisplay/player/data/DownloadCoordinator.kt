@@ -49,16 +49,16 @@ class DownloadCoordinator(
      * sweep — the 60s refresh and every post-reconnect re-register included. Idempotent and
      * non-blocking: it enqueues at most ONE download per contentId and returns immediately.
      */
-    fun ensure(contentId: String, filename: String) {
+    fun ensure(contentId: String, filename: String, rev: Long = 0L) {
         if (contentId.isEmpty()) return
-        if (cache.isContentCached(contentId)) { DebugLog.v("DownloadCoordinator", "ensure($contentId): SEED-A cached -> ack ready"); onAck(contentId, "ready"); return } // already have it — re-ack (SEED-A)
+        if (cache.isContentCached(contentId, rev)) { DebugLog.v("DownloadCoordinator", "ensure($contentId): SEED-A cached -> ack ready"); onAck(contentId, "ready"); return } // already have it — re-ack (SEED-A)
         // Socket down => the WATCHDOG owns recovery; don't hammer downloads over a dead connection.
         if (!socketAlive()) { DebugLog.v("DownloadCoordinator", "ensure($contentId): socket not alive -> skip"); return }
         if (now() < (nextAttemptAt[contentId] ?: 0L)) { DebugLog.v("DownloadCoordinator", "ensure($contentId): in backoff until ${nextAttemptAt[contentId]} -> skip"); return }       // in failure backoff — don't storm
         if (!inFlight.add(contentId)) { DebugLog.v("DownloadCoordinator", "ensure($contentId): already inFlight -> skip"); return }                        // single-flight: already downloading
         DebugLog.v("DownloadCoordinator", "ensure($contentId): dispatching download '$filename'")
         try {
-            executor.execute { runDownload(contentId, filename) }
+            executor.execute { runDownload(contentId, filename, rev) }
         } catch (e: Throwable) {
             inFlight.remove(contentId)                              // executor rejected (shut down) — don't leak the guard
         }
@@ -76,12 +76,12 @@ class DownloadCoordinator(
      * inFlight is held across the whole chain, so this is still exactly one writer per `.part` and
      * a concurrent sweep still finds the item busy rather than starting a duplicate.
      */
-    private fun runDownload(contentId: String, filename: String) {
+    private fun runDownload(contentId: String, filename: String, rev: Long) {
         try {
             var link = 0
             while (link < MAX_RESUME_CHAIN) {
                 link++
-                val result = cache.fetch(serverUrl(), contentId, filename)
+                val result = cache.fetch(serverUrl(), contentId, filename, rev)
                 when (result) {
                     is ContentCache.Result.Done -> {
                         attempts.remove(contentId); nextAttemptAt.remove(contentId)

@@ -237,7 +237,7 @@ class MainActivity : AppCompatActivity() {
         // a widget, a remote stream, or a fully-downloaded local file. A not-yet/failed download is
         // skipped (kept in the background) instead of blanking the screen on a loading state.
         playlistController.setContentReadyCheck { item ->
-            item.isWidget || item.isRemote || contentCache.isContentCached(item.contentId)
+            item.isWidget || item.isRemote || contentCache.isContentCached(item.contentId, item.contentRev)
         }
 
         // feat/transition-engine: full-screen GLES2 overlay that plays image/video wipes. Inserted just
@@ -668,6 +668,10 @@ class MainActivity : AppCompatActivity() {
                     val contentId = if (item.isNull("content_id")) "" else item.optString("content_id", "")
                     if (contentId.isEmpty()) continue
                     val filename = item.optString("filename", "content")
+            // Bumped when the bytes behind this id change. A cached copy at a different revision is
+            // a MISS: the id, the filename and the URL are all identical after a replace, so this
+            // is the only thing that can tell a panel its copy is out of date.
+            val contentRev = item.optLong("content_rev", 0L)
                     // org.json's optString(key, null) returns the STRING "null" when the value is JSON
                     // null (not the fallback) — so a local item with "remote_url": null was being
                     // misclassified as a remote stream, ack'd "ready", and NEVER downloaded, stranding
@@ -687,7 +691,7 @@ class MainActivity : AppCompatActivity() {
                     // defers when the socket is down (watchdog owns recovery), respects backoff, and
                     // downloads at most once. It acks ready/failed itself (deduped via onAck).
                     if (contentChanged) downloadCoordinator.resetBackoff(contentId) // #170: retry now, don't wait out a stale backoff
-                    downloadCoordinator.ensure(contentId, filename)
+                    downloadCoordinator.ensure(contentId, filename, contentRev)
                 }
 
                 // Start/resume playback immediately — do NOT wait on downloads (they're async now).
@@ -962,7 +966,7 @@ class MainActivity : AppCompatActivity() {
         val file = contentCache.getCachedFile(item.contentId)
         if (file == null) {
             Log.i("MainActivity", "Content not ready at play time (${item.filename}) — keeping screen, advancing (bg download continues)")
-            downloadCoordinator.ensure(item.contentId, item.filename) // ensure it's being fetched (single-flight)
+            downloadCoordinator.ensure(item.contentId, item.filename, item.contentRev) // ensure it's being fetched (single-flight)
             handler.post { playlistController.next() }
             return
         }

@@ -107,7 +107,12 @@ CREATE TABLE IF NOT EXISTS content (
     width           INTEGER,
     height          INTEGER,
     remote_url      TEXT,
-    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    -- Bumped whenever the BYTES change (PUT /:id/replace). Players cache media by id, and an id
+    -- whose bytes changed underneath them is the one way a cached asset can be stale forever: the
+    -- URL is identical, so every offline cache we have would keep serving the old file. This is
+    -- what makes the URL differ exactly when the content differs.
+    updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
 CREATE TABLE IF NOT EXISTS assignments (

@@ -807,6 +807,24 @@
     // A2: cache the last RENDERABLE payload so a reboot / WS-outage with no connectivity replays it
     // instead of showing the idle card. Only non-suspended payloads are cached.
     try { set(LS.payload, JSON.stringify(payload)); } catch (e) {}
+    // ...and cache the CONTENT the payload points at, which is the half that was missing. A playlist
+    // that survives an outage and media that does not just means the panel knows precisely what it
+    // cannot show. Deferred off the render path: the sweep is synchronous and this call arrives
+    // while the stage is being repainted.
+    try {{
+      if (!window.__stMediaCache && window.MediaCache) window.__stMediaCache = window.MediaCache.create();
+      var mc = window.__stMediaCache;
+      if (mc && serverUrl) {{
+        var mcItems = payload.assignments || [];
+        var mcBase = serverUrl.replace(/\/+$/, '');
+        setTimeout(function () {{
+          mc.sync(mcItems, function (it) {{
+            return mcBase + '/api/content/' + it.content_id + '/file'
+              + (it.content_rev ? '?rev=' + encodeURIComponent(it.content_rev) : '');
+          }});
+        }}, 2000);
+      }}
+    }} catch (e) {{ /* caching must never break the payload path */ }}
     // If we have content + we're paired, make sure we're on the stage.
     if (elPairing.classList.contains('hidden') === false) show(elStage);
     else if (elStage.classList.contains('hidden')) show(elStage);

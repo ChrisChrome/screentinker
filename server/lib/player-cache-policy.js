@@ -138,11 +138,128 @@
     return (usedBytes + incomingBytes) > (quotaBytes * headroom);
   }
 
+  /*
+   * ---------------------------------------------------------------------------------------------
+   * RESUMABLE TRANSFER
+   *
+   * Storing a complete 200 is only safe once you can GET a complete 200. A single fetch() of a
+   * 200MB asset over a one-bar link does not finish, and every retry starts again from nothing —
+   * which is how a site ends up with an empty cache and a screen showing the waiting state. The
+   * Android player hit exactly this and was fixed by resuming; these helpers are the same idea for
+   * the browser-based players, where there is no file handle to append to and progress has to be
+   * accumulated as separate cache entries instead.
+   * ---------------------------------------------------------------------------------------------
+   */
+
+  // 4MB. Small enough that a marginal link finishes one inside a stall timeout, large enough that a
+  // 200MB asset is 50 requests rather than 1600 — per-request overhead on a slow uplink is not free.
+  var CHUNK_BYTES = 4 * 1024 * 1024;
+
+  /*
+   * The byte ranges an asset of [total] bytes decomposes into. Inclusive ends, because that is what
+   * both the Range header and Content-Range use, and converting between the two conventions is
+   * where off-by-one corruption comes from.
+   */
+  function chunkRanges(total, chunkSize) {
+    var size = chunkSize > 0 ? chunkSize : CHUNK_BYTES;
+    var out = [];
+    if (!(total > 0)) return out;
+    for (var start = 0; start < total; start += size) {
+      out.push({ start: start, end: Math.min(start + size, total) - 1 });
+    }
+    return out;
+  }
+
+  /*
+   * "bytes <start>-<end>/<total>" -> {start, end, total}. Null for anything we cannot verify a
+   * total from, including the "*" form: without the total there is nothing to decide completeness
+   * against, and guessing produces a cache entry that is confidently short.
+   */
+  function parseContentRange(header) {
+    if (!header || typeof header !== 'string') return null;
+    var m = /^\s*bytes\s+(\d+)-(\d+)\/(\d+)\s*$/.exec(header);
+    if (!m) return null;
+    return { start: Number(m[1]), end: Number(m[2]), total: Number(m[3]) };
+  }
+
+  /*
+   * The validator to send back as If-Range on the next chunk.
+   *
+   * Without one, a resume splices the tail of a NEW asset onto the head of an old one and produces
+   * a file of exactly the right length that is nonetheless corrupt — it would pass every
+   * completeness check and be played. ETag first (it changes on any byte change); Last-Modified is
+   * the weaker fallback, and no validator at all means the transfer is not resumable.
+   */
+  function validatorOf(headers) {
+    if (!headers || typeof headers.get !== 'function') return null;
+    return headers.get('ETag') || headers.get('Last-Modified') || null;
+  }
+
+  /*
+   * Is a stored partial still usable, given what the server just said?
+   *
+   * A 206 at the offset we asked for, with a matching validator and the same total, continues. A
+   * 200 means the server declined the range (changed asset, or no range support) and the transfer
+   * restarts. Anything else is discarded rather than reasoned about.
+   */
+  function resumeVerdict(status, contentRange, expectStart, expectTotal, validatorSent, validatorNow) {
+    if (status === 200) return 'restart';
+    if (status === 416) return 'discard';
+    if (status !== 206) return 'discard';
+    var cr = parseContentRange(contentRange);
+    if (!cr) return 'discard';
+    if (cr.start !== expectStart) return 'discard';
+    if (expectTotal > 0 && cr.total !== expectTotal) return 'discard';
+    // A server that honours If-Range should not answer 206 with a different validator, but the
+    // check costs nothing and the failure it prevents is a silent splice.
+    if (validatorSent && validatorNow && validatorSent !== validatorNow) return 'discard';
+    return 'continue';
+  }
+
+  /*
+   * The asset a URL refers to, ignoring the revision.
+   *
+   * Cache entries are keyed with the revision in the query string so that replacing an asset is a
+   * MISS everywhere rather than a copy nobody can invalidate. The flip side is that the superseded
+   * entries would sit there until the quota evicted them — on a 1GB panel quota, a few replaced
+   * videos is the whole budget. This is what lets a store sweep its own predecessors.
+   */
+  function assetKey(url) {
+    try {
+      var u = typeof url === 'string' ? new URL(url, 'http://x') : url;
+      return u.origin + u.pathname;
+    } catch (e) {
+      return String(url).split('?')[0];
+    }
+  }
+
+  /*
+   * Is [url] a chunk/bookkeeping entry rather than a playable asset? Those must never be returned
+   * to a media element, and must never be mistaken for "the asset is cached".
+   */
+  function isInternalKey(url) {
+    return String(url).indexOf(INTERNAL_MARK) !== -1;
+  }
+
+  var INTERNAL_MARK = '__st_part';
+
+  function chunkKey(url, start) {
+    return url + (url.indexOf('?') === -1 ? '?' : '&') + INTERNAL_MARK + '=' + start;
+  }
+
   return {
     isCacheableContent: isCacheableContent,
     parseRange: parseRange,
     partialHeaders: partialHeaders,
     isStorable: isStorable,
-    needsEviction: needsEviction
+    needsEviction: needsEviction,
+    CHUNK_BYTES: CHUNK_BYTES,
+    chunkRanges: chunkRanges,
+    parseContentRange: parseContentRange,
+    validatorOf: validatorOf,
+    resumeVerdict: resumeVerdict,
+    assetKey: assetKey,
+    isInternalKey: isInternalKey,
+    chunkKey: chunkKey
   };
 });

@@ -304,6 +304,46 @@ function refreshWidgetRevs(assignments) {
   }
 }
 
+/*
+ * The same problem for uploaded media, with a worse failure mode.
+ *
+ * PUT /api/content/:id/replace swaps the BYTES behind a stable content id, and every player caches
+ * media by that id. The URL does not change, so a cached copy is not merely stale until the next
+ * refresh — it is stale forever, on every panel that already holds it, with no way for the player
+ * to find out. That is the price of caching for offline: an asset that can never be updated.
+ *
+ * Stamping the revision at send time gives the players a value that changes exactly when the bytes
+ * change. They put it in the request URL, so a replaced asset is a cache MISS everywhere at once,
+ * and an asset nobody touched is not.
+ *
+ * COALESCE because a database migrated from before the column existed backfills it once, but rows
+ * inserted between the ALTER and that backfill carry 0 — resolving those to created_at keeps the
+ * revision stable and truthful rather than collapsing every new upload onto the same "0".
+ */
+const contentFactsOf = db.prepare(`
+  SELECT COALESCE(NULLIF(updated_at, 0), created_at) AS rev, filepath, mime_type, file_size
+    FROM content WHERE id = ?
+`);
+function refreshContentRevs(assignments) {
+  if (!Array.isArray(assignments)) return;
+  for (const a of assignments) {
+    if (!a || !a.content_id) continue;
+    try {
+      const row = contentFactsOf.get(a.content_id);
+      if (!row) continue;                       // deleted mid-flight; the purge sweeps the snapshot
+      a.content_rev = row.rev ?? a.content_rev ?? 0;
+      // A replace writes a NEW randomly-named file and unlinks the old one, so the filepath in a
+      // published snapshot points at a file that no longer exists. The web player builds its media
+      // URL from exactly that field: replacing an asset 404'd every web and BrightSign panel until
+      // somebody thought to republish the playlist. Refreshing it here is the same fix as the
+      // widget rev above — the snapshot is a snapshot of the ARRANGEMENT, not of the bytes.
+      if (row.filepath) a.filepath = row.filepath;
+      if (row.mime_type) a.mime_type = row.mime_type;
+      if (row.file_size != null) a.file_size = row.file_size;
+    } catch (_) { /* keep published */ }
+  }
+}
+
 function buildPlaylistPayload(deviceId) {
   const device = db.prepare('SELECT playlist_id, layout_id, orientation, wall_id, timezone, reported_timezone FROM devices WHERE id = ?').get(deviceId);
 
@@ -313,6 +353,7 @@ function buildPlaylistPayload(deviceId) {
     if (playlist?.published_snapshot) {
       try { assignments = JSON.parse(playlist.published_snapshot); } catch (e) { assignments = []; }
       refreshWidgetRevs(assignments);
+      refreshContentRevs(assignments);
     }
   }
 

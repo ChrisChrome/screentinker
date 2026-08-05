@@ -291,6 +291,45 @@ class ContentDownloadTest {
         assertNull("and nothing incomplete is ever served as cached", cache.getCachedFile("noval"))
     }
 
+
+    // ---- the UPDATE half: caching for offline must not make a screen permanently wrong ----
+    @Test fun `an asset replaced under a stable id is a cache MISS at the new revision`() {
+        // The trap that offline caching creates. PUT /api/content/:id/replace changes the bytes and
+        // nothing else — same id, same filename, same URL path — so a plain "do I have this file?"
+        // check says yes forever and the panel keeps playing last month's video.
+        val v1 = ByteArray(50) { 'a'.code.toByte() }
+        val url = serveFlaky({ v1 }, bytesPerCall = 500, etagOf = { "\"v1\"" })
+
+        assertTrue(cache.fetch(url, "swap", "clip.bin", rev = 100L) is ContentCache.Result.Done)
+        assertTrue("cached at the revision we asked for", cache.isContentCached("swap", 100L))
+        assertTrue("...and NOT at a newer one", !cache.isContentCached("swap", 200L))
+    }
+
+    @Test fun `a player with no revision from the server still uses whatever it has`() {
+        // Older servers send no content_rev. Treating that as a permanent miss would re-download the
+        // entire playlist on every sweep, over the link least able to afford it.
+        val url = serveOnce { it.writeHttp(4, "abcd".toByteArray()) }
+        assertNotNull(cache.downloadContent(url, "norev", "clip.bin"))
+        assertTrue(cache.isContentCached("norev", 0L))
+    }
+
+    @Test fun `the revision marker is never served as the cached asset`() {
+        // "<id>.<ext>.rev" starts with the id, so a prefix match would hand the player a few bytes
+        // of ASCII digits to decode as a video.
+        java.io.File(dir, "marker.bin.rev").writeText("12345")
+        assertNull(cache.getCachedFile("marker"))
+    }
+
+    @Test fun `the request carries the revision, so an intermediary cannot serve the old bytes`() {
+        seen.clear()
+        val url = serveFlaky({ ByteArray(20) }, bytesPerCall = 500, etagOf = { "\"v1\"" })
+        cache.fetch(url, "cdn", "clip.bin", rev = 777L)
+        // The request line is not captured by the header sniffer, so assert via the effect: a
+        // revisioned fetch completes and records that revision.
+        assertTrue(cache.isContentCached("cdn", 777L))
+        assertTrue(!cache.isContentCached("cdn", 778L))
+    }
+
     // ---- prefix cross-match guard: an id that prefixes another must not match ----
     @Test fun `getCachedFile does not cross-match an id that is a prefix of another`() {
         serveOnce { it.writeHttp(3, "abc".toByteArray()) }.let { url ->

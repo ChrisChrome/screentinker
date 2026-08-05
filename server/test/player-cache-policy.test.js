@@ -147,3 +147,88 @@ test('an unknown quota never triggers eviction — absence of a number is not a 
   assert.equal(P.needsEviction(999, 999, 0), false);
   assert.equal(P.needsEviction(999, 999, undefined), false);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Resumable transfer. The arithmetic below is what stops a resumed download from being corrupt,
+// and it is shared by the service worker and the Tizen media cache — neither of which can be
+// tested without a device, which is exactly why the decisions live here.
+// ---------------------------------------------------------------------------------------------
+
+test('chunkRanges covers every byte exactly once, with an inclusive final range', () => {
+  const r = P.chunkRanges(10, 4);
+  assert.deepEqual(r, [{ start: 0, end: 3 }, { start: 4, end: 7 }, { start: 8, end: 9 }]);
+  // The gap-or-overlap check: a one-byte error here corrupts the middle of a video in a way that
+  // only shows up on playback, long after the download "succeeded".
+  const big = P.chunkRanges(1000, 256);
+  let cursor = 0;
+  for (const c of big) { assert.equal(c.start, cursor); cursor = c.end + 1; }
+  assert.equal(cursor, 1000);
+});
+
+test('chunkRanges on an exact multiple does not emit a trailing empty range', () => {
+  assert.deepEqual(P.chunkRanges(8, 4), [{ start: 0, end: 3 }, { start: 4, end: 7 }]);
+});
+
+test('chunkRanges of an unknown or empty size is no chunks, not one bad one', () => {
+  assert.deepEqual(P.chunkRanges(0, 4), []);
+  assert.deepEqual(P.chunkRanges(-1, 4), []);
+});
+
+test('parseContentRange refuses anything without a verifiable total', () => {
+  assert.deepEqual(P.parseContentRange('bytes 4-7/10'), { start: 4, end: 7, total: 10 });
+  assert.equal(P.parseContentRange('bytes 4-7/*'), null, 'no total = nothing to check against');
+  assert.equal(P.parseContentRange('items 0-1/2'), null);
+  assert.equal(P.parseContentRange(null), null);
+});
+
+test('resumeVerdict continues only on a verified 206 at the offset we asked for', () => {
+  assert.equal(P.resumeVerdict(206, 'bytes 4-7/10', 4, 10, '"v1"', '"v1"'), 'continue');
+});
+
+test('resumeVerdict RESTARTS on a 200 — the server declined our range', () => {
+  // If-Range with a stale validator produces exactly this, and it is the mechanism that stops a
+  // changed asset being spliced. Treating it as a chunk to append is the corruption.
+  assert.equal(P.resumeVerdict(200, null, 4, 10, '"v1"', '"v2"'), 'restart');
+});
+
+test('resumeVerdict discards a 206 that starts anywhere other than where we asked', () => {
+  assert.equal(P.resumeVerdict(206, 'bytes 0-7/10', 4, 10, '"v1"', '"v1"'), 'discard');
+});
+
+test('resumeVerdict discards a 206 whose total disagrees with what we are assembling', () => {
+  // Same offset, different asset length: appending would leave a file that is complete by our
+  // count and wrong by every other measure.
+  assert.equal(P.resumeVerdict(206, 'bytes 4-7/99', 4, 10, '"v1"', '"v1"'), 'discard');
+});
+
+test('resumeVerdict discards a 206 whose validator changed underneath us', () => {
+  assert.equal(P.resumeVerdict(206, 'bytes 4-7/10', 4, 10, '"v1"', '"v2"'), 'discard');
+});
+
+test('resumeVerdict discards 416 and every unexpected status', () => {
+  assert.equal(P.resumeVerdict(416, null, 4, 10, '"v1"', null), 'discard');
+  assert.equal(P.resumeVerdict(500, null, 4, 10, '"v1"', null), 'discard');
+  assert.equal(P.resumeVerdict(0, null, 4, 10, '"v1"', null), 'discard');
+});
+
+test('validatorOf prefers ETag and reports nothing when there is nothing to trust', () => {
+  const h = (o) => ({ get: (k) => o[k.toLowerCase()] || null });
+  assert.equal(P.validatorOf(h({ etag: '"v1"', 'last-modified': 'Mon' })), '"v1"');
+  assert.equal(P.validatorOf(h({ 'last-modified': 'Mon' })), 'Mon');
+  assert.equal(P.validatorOf(h({})), null, 'no validator means the transfer is not resumable');
+});
+
+test('assetKey ignores the revision so a store can sweep its own predecessors', () => {
+  const a = 'http://s/uploads/content/clip.mp4?rev=100';
+  const b = 'http://s/uploads/content/clip.mp4?rev=200';
+  assert.equal(P.assetKey(a), P.assetKey(b));
+  assert.notEqual(P.assetKey(a), P.assetKey('http://s/uploads/content/other.mp4?rev=100'));
+});
+
+test('chunk keys are recognisable as internal, so one can never be served as the asset', () => {
+  const k = P.chunkKey('http://s/uploads/content/clip.mp4?rev=100', 4194304);
+  assert.ok(P.isInternalKey(k));
+  assert.ok(!P.isInternalKey('http://s/uploads/content/clip.mp4?rev=100'));
+  // ...and the revision survives into the chunk key, or two revisions would share chunks.
+  assert.match(k, /rev=100/);
+});

@@ -27,6 +27,12 @@
          hardware plane. Without this privilege the API throws SecurityError and the player falls
          back to per-element media volume, which cannot touch that plane. -->
     <tizen:privilege name="http://tizen.org/privilege/tv.audio"/>
+    <!-- Offline media cache (js/media-cache.js). Content is written to wgt-private, which is the
+         store Tizen documents as surviving reboots and app updates — without these the player can
+         hold a playlist through an outage but none of the media it points at, which from the floor
+         is the same as holding nothing. -->
+    <tizen:privilege name="http://tizen.org/privilege/filesystem.read"/>
+    <tizen:privilege name="http://tizen.org/privilege/filesystem.write"/>
     <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
 
     <!-- #125: Samsung B2B fleet control (reboot / panel power via b2bcontrol /

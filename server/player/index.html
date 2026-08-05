@@ -403,6 +403,45 @@
     // Cache the layout alongside the playlist so a cold start renders the correct
     // zone layout on the FIRST pass, instead of rendering fullscreen and only
     // switching to zones once the server payload arrives.
+    /*
+     * Where an item's bytes live.
+     *
+     * The revision is in the URL on purpose. Media is cached for offline playback keyed by URL, and
+     * PUT /api/content/:id/replace changes an asset's BYTES without changing its id — so without a
+     * revision a replaced asset would keep playing the old copy on every panel that already held
+     * it, with no way for the player to find out. The revision changes exactly when the bytes do,
+     * which makes a replace a cache miss and an untouched asset a hit.
+     */
+    function mediaUrl(it) {
+      if (!it) return '';
+      if (it.remote_url) return it.remote_url;
+      const base = `${config.serverUrl}/uploads/content/${it.filepath}`;
+      return it.content_rev ? `${base}?rev=${encodeURIComponent(it.content_rev)}` : base;
+    }
+
+    /*
+     * Ask the service worker to hold this playlist's media for offline use.
+     *
+     * The worker stores whatever a playback fetch happens to complete, which on a healthy link is
+     * everything and on a marginal one is nothing: a large asset never finishes in one go, so the
+     * panel is left with an empty cache exactly where it needs a full one. Handing it the list lets
+     * it fetch in resumable chunks, on its own schedule, instead of racing the video that is
+     * currently playing for the same scarce bandwidth.
+     *
+     * Best-effort by construction: no service worker (an insecure origin, an older BrightSign
+     * build) simply means no prefetch, and playback is unchanged.
+     */
+    function requestOfflineCache(items) {
+      try {
+        const sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+        if (!sw) return;
+        const urls = (items || [])
+          .filter((it) => it && it.filepath && !it.remote_url)
+          .map((it) => mediaUrl(it));
+        if (urls.length) sw.postMessage({ type: 'st-cache-playlist', urls });
+      } catch (e) { /* never let caching break playback */ }
+    }
+
     const LAYOUT_CACHE_KEY = 'rd_layout_cache' + SCREEN_SUFFIX;
     function saveLayoutCache(l) {
       try { localStorage.setItem(LAYOUT_CACHE_KEY, JSON.stringify(l || null)); } catch {}
@@ -2063,7 +2102,7 @@
       if (!item) return;
       const isVid = item.mime_type && item.mime_type.indexOf('video/') === 0 && item.mime_type !== 'video/youtube';
       if (!isVid) { groupPreloadIdx = idx; groupPreloadEl = null; return; }   // mark handled, nothing to warm
-      const url = item.remote_url || (config.serverUrl + '/uploads/content/' + item.filepath);
+      const url = mediaUrl(item);
       try {
         if (groupPreloadEl) { try { groupPreloadEl.remove(); } catch (e) {} }
         const v = document.createElement('video');
@@ -2365,6 +2404,7 @@
       playlist = newItems;
       imgPreloadCache = {}; // playlist changed — drop stale one-ahead preloads (feat/player-image-preload)
       savePlaylistCache(playlist);
+      requestOfflineCache(playlist);
       // #157: a fresh structural update supersedes any pending deferred rotation; the branches
       // below re-arm it only if the current item was removed while live in solo playback.
       deferredRotation = false;
@@ -2875,7 +2915,7 @@
     // feat/player-image-preload: warm the NEXT scheduled image (decoded) during the current dwell,
     // and swap decode-gated so a slow panel never shows a blank/half-painted frame mid-decode.
     function imgSrcFor(it) {
-      return it.remote_url || `${config.serverUrl}/uploads/content/${it.filepath}`;
+      return mediaUrl(it);
     }
     // A remote image gets a proxy fallback (/media/proxy/:contentId) so it can be textured for a
     // transition when its origin sends no CORS header. Local /uploads content is already CORS-enabled,
@@ -3101,7 +3141,7 @@
     // + the wipe), and a playlist push mid-window must not let a stale clip tear down the newer content that
     // already took over.
     function renderVideoBuffered(item) {
-      const src = item.remote_url || `${config.serverUrl}/uploads/content/${item.filepath}`;
+      const src = mediaUrl(item);
       const from = currentTexturableFrame();            // capture the outgoing frame NOW, before any teardown
       const t = item.transition;
       const mySeq = renderSeq;
@@ -3301,7 +3341,7 @@
       const isImage = item.mime_type?.startsWith('image/');
       const remoteUrl = item.remote_url;
       const serverUrl = config.serverUrl;
-      const src = remoteUrl || `${serverUrl}/uploads/content/${item.filepath}`;
+      const src = mediaUrl(item);
 
       if (layout && layout.zones && layout.zones.length > 1 && !wallConfig) {
         renderZones(container, item);
@@ -3489,7 +3529,7 @@
 
       const isYoutube = a.mime_type === 'video/youtube';
       const isVideo = !isYoutube && a.mime_type?.startsWith('video/');
-      const src = a.remote_url || `${config.serverUrl}/uploads/content/${a.filepath}`;
+      const src = mediaUrl(a);
       const dur = (a.duration_sec || 10) * 1000;
 
       // Render based on what the ASSIGNMENT is (widget_id), not the zone's type:
