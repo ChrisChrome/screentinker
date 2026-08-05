@@ -3632,6 +3632,35 @@
 
     function captureAndSend() {
       if (!socket?.connected) return;
+      
+      // On BrightSign, prefer the HOST's framebuffer capture. An in-page canvas cannot read the
+      // hardware plane, so a composite here is a screenshot with the video missing — the exact
+      // failure the alpha probe detects. The host's DWS capture includes video.
+      //
+      // Falls through to the canvas path on ANY failure (no host, no primary storage, timeout):
+      // a partial screenshot showing images and widgets beats none, and the probe makes the
+      // video's absence explicit rather than silent.
+      if (BS && typeof BS.requestSnapshot === 'function' && BS.hasHost()) {
+        BS.requestSnapshot({ width: 960, height: 540 })
+          .then((dataUrl) => {
+            const base64 = String(dataUrl).split(',')[1];
+            if (base64 && base64.length > 100) {
+              socket.emit('device:screenshot', { device_id: config.deviceId, image_b64: base64 });
+              console.log('[bs] framebuffer screenshot sent:', base64.length, 'chars');
+            } else { captureAndSendCanvas(); }
+          })
+          .catch((err) => {
+            console.warn('[bs] framebuffer capture unavailable (' + err.message + ') — using canvas');
+            captureAndSendCanvas();
+          });
+        return;
+      }
+      
+      captureAndSendCanvas();
+    }
+
+    function captureAndSendCanvas() {
+      if (!socket?.connected) return;
       // Also drives the 1fps remote stream (startStreaming). The composite is just a handful
       // of drawImage calls over already-decoded media, so one full-quality path serves both
       // the on-demand screenshot and the 1fps stream — no separate low-quality stream path.

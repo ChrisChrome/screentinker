@@ -40,6 +40,8 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
     location: { search, reload() { sandbox.__reloaded = true; } },
     setInterval: () => 1,
     setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (t) => clearTimeout(t),
+    Error,
     Promise,
     Object,
     Array,
@@ -58,6 +60,8 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
     __registry: registryStore,
     localStorage: { getItem: () => null, setItem() {} },
   };
+  sandbox.__inbound = [];
+  sandbox.__deliver = (msg) => sandbox.__inbound.forEach((fn) => fn(msg));
   sandbox.window = sandbox;
 
   if (mods) {
@@ -66,7 +70,9 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
         return function () {
           return {
             PostBSMessage: (o) => posted.push(o),
-            addEventListener: () => {},
+            // Keep the handler so a test can deliver an inbound message, which is how the host
+            // answers a snapshot request.
+            addEventListener: (evt, fn) => { if (evt === 'bsmessage') sandbox.__inbound.push(fn); },
           };
         };
       }
@@ -357,4 +363,34 @@ test('refreshTelemetry never throws when the platform offers neither source', as
   const { api, ready } = load();   // plain browser: no modules, no storage manager
   await ready;
   assert.doesNotThrow(() => api.refreshTelemetry());
+});
+
+test('requestSnapshot asks the host and resolves with the captured image', async () => {
+  // An in-page canvas cannot read the hardware plane, so the only capture that includes video is
+  // the host's — via the player's own DWS against the real framebuffer.
+  const { api, ready, posted, sandbox } = load({ mods: true });
+  await ready;
+  const p = api.requestSnapshot({ width: 320, height: 180 });
+  const req = posted.find((m) => m.type === 'snapshot');
+  assert.ok(req, 'the host must actually be asked');
+  assert.equal(req.width, 320);
+  sandbox.__deliver({ type: 'snapshot-result', ok: true, image: 'data:image/jpeg;base64,AAAA' });
+  assert.equal(await p, 'data:image/jpeg;base64,AAAA');
+});
+
+test("THE STORAGE CASE: a player with no disk rejects with the player's own words", async () => {
+  // The DWS writes the full capture to disk before returning a thumbnail, so a unit with no card
+  // or SSD answers "No primary storage found." Passing that through verbatim is what lets the
+  // dashboard explain the failure instead of showing an empty frame.
+  const { api, ready, sandbox } = load({ mods: true });
+  await ready;
+  const p = api.requestSnapshot();
+  sandbox.__deliver({ type: 'snapshot-result', ok: false, error: 'No primary storage found.' });
+  await assert.rejects(p, /No primary storage found/);
+});
+
+test('with no host it rejects immediately rather than hanging the caller', async () => {
+  const { api, ready } = load();   // plain browser
+  await ready;
+  await assert.rejects(api.requestSnapshot(), /no host bridge/);
 });

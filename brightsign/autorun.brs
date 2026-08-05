@@ -146,6 +146,70 @@ Sub EnsurePtpDomain(cfg As Object)
     end if
 End Sub
 
+' Capture what is ACTUALLY on screen, using the player's own Diagnostic Web Server.
+'
+' The page cannot do this itself. With hwz enabled, video decodes onto a hardware plane the DOM
+' cannot see: drawImage(video) on a canvas returns a fully transparent image and throws nothing,
+' so an in-page screenshot silently produces a blank frame. The DWS captures the real framebuffer,
+' video included.
+'
+' It has to happen HERE rather than in the page for two reasons: the DWS is http on localhost and
+' the player is served over https, so the page would be blocked as mixed content; and BrightScript
+' is subject to neither CORS nor mixed-content rules. The credentials are the documented default —
+' user "admin", password = the unit serial — which this script can read directly.
+'
+' ⚠️ Requires PRIMARY STORAGE. With no card or SSD fitted the endpoint answers
+' "No primary storage found", because it writes the full-size capture to disk before returning the
+' thumbnail. Reported back as-is rather than swallowed, so the dashboard can say why.
+Sub TakeSnapshot(widget As Object, req As Object)
+    di = CreateObject("roDeviceInfo")
+    serial$ = di.GetDeviceUniqueId()
+
+    w% = 640
+    h% = 360
+    if req <> invalid and req.width <> invalid then w% = req.width
+    if req <> invalid and req.height <> invalid then h% = req.height
+
+    body$ = "{""width"":" + Stri(w%).Trim() + ",""height"":" + Stri(h%).Trim() + "}"
+
+    ut = CreateObject("roUrlTransfer")
+    if ut = invalid then
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "no roUrlTransfer" })
+        return
+    end if
+
+    ut.SetUrl("http://localhost/api/v1/snapshot/")
+    ut.SetUserAndPassword("admin", serial$)
+    ut.AddHeader("Content-Type", "application/json")
+
+    resp$ = ut.PostFromStringWithRetry(body$, 1)
+    if resp$ = invalid or resp$ = "" then
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "no response from the local DWS" })
+        return
+    end if
+
+    json = ParseJson(resp$)
+    if json = invalid or json.data = invalid then
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "unparseable DWS response" })
+        return
+    end if
+
+    if json.data.error <> invalid then
+        ' e.g. "No primary storage found." — pass the player's own words through; inventing a
+        ' friendlier message here would hide the one fact that explains the failure.
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: json.data.error.message })
+        return
+    end if
+
+    r = json.data.result
+    if r = invalid or r.remotesnapshotthumbnail = invalid then
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "DWS returned no thumbnail" })
+        return
+    end if
+
+    widget.PostJSMessage({ type: "snapshot-result", ok: true, image: r.remotesnapshotthumbnail })
+End Sub
+
 Function FullScreenRect() As Object
     vm = CreateObject("roVideoMode")
     return CreateObject("roRectangle", 0, 0, vm.GetResX(), vm.GetResY())
@@ -465,6 +529,9 @@ Sub Main()
                         SaveRegistry("server_url", m.server_url)
                         cfg.server_url = m.server_url
                     end if
+
+                else if m.type = "snapshot" then
+                    TakeSnapshot(widget, m)
 
                 else if m.type = "set-video-mode" then
                     vm = CreateObject("roVideoMode")

@@ -146,3 +146,49 @@ test('THE CAPTIVE PORTAL: a tiny file is refused even if the hash is somehow sat
   assert.equal(U.isPackageSafeToApply('aaa', 'aaa', 800, 1024), false);
   assert.equal(U.isPackageSafeToApply('aaa', 'aaa', 2048, 1024), true);
 });
+
+test('THE STUCK TESTER: an opted-in player moves forward rc1 -> rc3', () => {
+  // The hold rule exists so a test build is not dragged BACK to its release. Applied to another
+  // PRERELEASE of the same core it froze testers on whichever build they were first handed, which
+  // is the opposite of what opting in is for — and would have stopped our own XT245 ever receiving
+  // the next candidate.
+  const d = U.decidePackageUpdate({
+    currentVersion: '1.9.29-rc1',
+    manifestVersion: '1.9.29-rc3',
+    manifestSha256: 'abc',
+    allowPrerelease: true,
+  });
+  assert.equal(d.action, 'download', d.reason);
+});
+
+test('but it still holds against the RELEASE of its own core — the original scar', () => {
+  const d = U.decidePackageUpdate({
+    currentVersion: '1.9.29-rc1',
+    manifestVersion: '1.9.29',
+    manifestSha256: 'abc',
+    allowPrerelease: true,
+  });
+  assert.equal(d.action, 'skip');
+  assert.match(d.reason, /holding prerelease/);
+});
+
+test('and a newer CORE still lands, so opting in never means never updating', () => {
+  const d = U.decidePackageUpdate({
+    currentVersion: '1.9.29-rc1',
+    manifestVersion: '1.9.30',
+    manifestSha256: 'abc',
+    allowPrerelease: true,
+  });
+  assert.equal(d.action, 'download');
+});
+
+test('a player NOT opted in is still refused a prerelease', () => {
+  const d = U.decidePackageUpdate({
+    currentVersion: '1.9.28',
+    manifestVersion: '1.9.29-rc3',
+    manifestSha256: 'abc',
+    allowPrerelease: false,
+  });
+  assert.equal(d.action, 'skip');
+  assert.match(d.reason, /requires opt-in/);
+});

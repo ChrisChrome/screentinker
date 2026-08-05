@@ -63,7 +63,14 @@ function compareVersions(a, b) {
  */
 function isPrereleaseOf(version, release) {
   const core = (v) => String(v || '').split('-')[0];
-  return String(version || '').includes('-') && core(version) === core(release);
+  // `release` must be an actual RELEASE, not another prerelease of the same core. Without that
+  // last clause a player on rc1 also "holds" against rc3, so an opted-in tester could never move
+  // forward through rc1 -> rc2 -> rc3 — the opposite of what opting in is for. The rule exists to
+  // stop a test build being dragged BACK to its release, not to freeze a tester on the first one
+  // they were handed.
+  return String(version || '').includes('-')
+    && !String(release || '').includes('-')
+    && core(version) === core(release);
 }
 
 /**

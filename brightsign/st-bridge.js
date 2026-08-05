@@ -365,6 +365,42 @@
       return post({ type: 'set-video-mode', mode: mode });
     },
 
+    /*
+     * Ask the HOST to capture what is actually on screen, and resolve with a data URL.
+     *
+     * This exists because an in-page capture cannot work here: with hwz enabled the video decodes
+     * onto a hardware plane the DOM cannot read, so drawImage() returns a transparent frame and
+     * throws nothing — a screenshot that reports success and shows a dead screen. The host uses
+     * the player's own DWS, which captures the real framebuffer including video.
+     *
+     * Rejects rather than hanging: without a host, or if the player has no primary storage (the
+     * DWS writes the full capture to disk before returning a thumbnail), the caller gets a reason
+     * it can show instead of a spinner that never resolves.
+     */
+    requestSnapshot: function (opts) {
+      var o = opts || {};
+      return new Promise(function (resolve, reject) {
+        if (!port) { reject(new Error('no host bridge')); return; }
+
+        var settled = false;
+        var timer = global.setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          reject(new Error('host did not answer in time'));
+        }, o.timeoutMs || 15000);
+
+        listeners.push(function handler(msg) {
+          if (settled || !msg || msg.type !== 'snapshot-result') return;
+          settled = true;
+          try { global.clearTimeout(timer); } catch (e) { /* ignore */ }
+          if (msg.ok && msg.image) resolve(msg.image);
+          else reject(new Error(msg.error || 'snapshot failed'));
+        });
+
+        post({ type: 'snapshot', width: o.width || 640, height: o.height || 360 });
+      });
+    },
+
     onHostMessage: function (fn) { if (typeof fn === 'function') listeners.push(fn); },
 
     /*
