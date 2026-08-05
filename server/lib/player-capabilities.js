@@ -72,7 +72,11 @@ const BASELINE = {
     'display.rotation',
     'remote.input',
     'system.restart_player',
-    'sync.clock', 'offline.cache',
+    'sync.clock',
+    // NOT offline.cache: Tizen caches only the playlist JSON (st_payload_cache in localStorage).
+    // There is no service worker and no media cache, so the bytes still come from the network and
+    // content does NOT survive an outage. My first baseline claimed it — caught by the platform
+    // audit, and exactly the kind of optimistic claim this model exists to stop.
   ],
   brightsign: [
     'playback.video', 'playback.image', 'playback.widget', 'playback.youtube',

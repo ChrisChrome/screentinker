@@ -89,3 +89,11 @@ test('BrightSign claims display power and reboot; Tizen claims neither', () => {
   assert.equal(caps.supports(tizen, 'display.power'), false);
   assert.equal(caps.supports(tizen, 'system.reboot'), false);
 });
+
+test('Tizen does NOT claim offline caching — it caches the playlist, not the media', () => {
+  // st_payload_cache holds the playlist JSON in localStorage; there is no service worker and no
+  // media cache, so an outage leaves the panel with a playlist it cannot play. The first version
+  // of this baseline claimed offline.cache, which is precisely the lie the model exists to stop.
+  assert.equal(caps.supports({ platform: 'Tizen 6.5' }, 'offline.cache'), false);
+  assert.ok(caps.supports({ client_type: 'apk' }, 'offline.cache'), 'Android really does cache media');
+});
