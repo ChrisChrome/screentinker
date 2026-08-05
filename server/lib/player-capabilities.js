@@ -68,8 +68,15 @@ const BASELINE = {
   tizen: [
     'playback.video', 'playback.image', 'playback.widget', 'playback.youtube',
     'playback.zones', 'playback.transitions', 'playback.pip',
-    'audio.mute', 'audio.volume',
+    // audio.mute only. A FIELDED Tizen panel has no set_volume handler at all — the command falls
+    // through to "unknown command", so the dashboard slider does nothing. Updated panels declare
+    // audio.volume for themselves once they ship a handler; the baseline describes what an
+    // un-updated one can actually do, which is the whole reason it exists.
+    'audio.mute',
     'display.rotation',
+    // Both really are implemented in the shipped player (captureAndSend / startStreaming), so
+    // omitting them would have hidden working controls on every legacy Tizen panel.
+    'remote.screenshot', 'remote.stream',
     'remote.input',
     'system.restart_player',
     'sync.clock',

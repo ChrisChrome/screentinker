@@ -97,3 +97,15 @@ test('Tizen does NOT claim offline caching — it caches the playlist, not the m
   assert.equal(caps.supports({ platform: 'Tizen 6.5' }, 'offline.cache'), false);
   assert.ok(caps.supports({ client_type: 'apk' }, 'offline.cache'), 'Android really does cache media');
 });
+
+test('the baseline describes a FIELDED player, not the one we are about to ship', () => {
+  // Tizen's shipped build has no set_volume handler — the command falls through to "unknown
+  // command" — so a legacy panel must not claim audio.volume even though updated panels will
+  // declare it themselves. It DOES implement capture and streaming, so those must be claimed or
+  // working controls disappear from every legacy Tizen display.
+  const tizen = { platform: 'Tizen 6.5' };
+  assert.equal(caps.supports(tizen, 'audio.volume'), false, 'the slider is dead on a fielded panel');
+  assert.ok(caps.supports(tizen, 'audio.mute'), 'mute does work');
+  assert.ok(caps.supports(tizen, 'remote.screenshot'), 'captureAndSend exists in the shipped player');
+  assert.ok(caps.supports(tizen, 'remote.stream'), 'startStreaming exists in the shipped player');
+});
