@@ -12,7 +12,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2b: workspace-aware access. Mirrors the pattern from devices.js.
 const { accessContext } = require('../lib/tenancy');
 // #73: the upload ingest (processing + insert) is now shared with the agency router.
-const { ingestUploadedFile } = require('../lib/content-ingest');
+const { ingestUploadedFile, deriveMediaMetadata } = require('../lib/content-ingest');
 const { finalizeUpload, INLINE_SAFE_EXTS } = require('../lib/upload-sniff');
 
 // Multer captures file.originalname directly from the multipart filename header,
@@ -511,24 +511,18 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
   let filepath, mime;
   try { ({ filepath, mime } = finalizeUpload(req.file)); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  let width = null, height = null, thumbnailPath = null;
 
-  // Generate new thumbnail for images (SVG skipped — see lib/content-ingest.js)
-  try {
-    if (mime === 'image/svg+xml') {
-      thumbnailPath = filepath;
-    } else if (mime.startsWith('image/')) {
-      const sharp = require('sharp');
-      const metadata = await sharp(req.file.path).metadata();
-      width = metadata.width;
-      height = metadata.height;
-      thumbnailPath = `thumb_${filepath}`;
-      await sharp(req.file.path).resize(config.thumbnailWidth).jpeg({ quality: 70 })
-        .toFile(path.join(config.contentDir, thumbnailPath));
-    }
-  } catch (e) {
-    console.warn('Thumbnail generation failed:', e.message);
-  }
+  // Re-derive EVERYTHING the bytes decide, through the SAME function the upload path uses.
+  // This route used to carry a shorter copy that handled images only, and got three things
+  // wrong that an upload gets right:
+  //   - a replaced VIDEO lost its duration (the row kept the OLD clip's length, so #237's
+  //     "default an item to the clip's own length" then handed out the wrong number), its
+  //     dimensions, and its thumbnail;
+  //   - a replaced IMAGE was measured with raw sharp metadata instead of imageDisplayDims and
+  //     thumbnailed without .rotate(), re-introducing the EXIF-orientation bug (#170) that
+  //     ingest fixes — a portrait photo came back landscape with blue bars;
+  //   - both left width/height NULL for video, which is what the orientation-aware paths read.
+  const { width, height, durationSec, thumbnailPath } = await deriveMediaMetadata(req.file.path, filepath, mime);
 
   // Bump the revision: this is the ONLY operation in the product that changes an asset's bytes
   // without changing its id, so it is the only thing that can make a player's cached copy wrong.
@@ -537,11 +531,15 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
   // strftime seconds can collide with the previous value if a replace lands inside the same second
   // as the upload (a small file, a scripted replace) — and a revision that does not change is a
   // cache that never updates. MAX(now, previous + 1) guarantees it moves.
+  // duration_sec comes from the NEW bytes. COALESCE-to-NULL rather than keeping the old value:
+  // a replace that turns a video into an image genuinely has no duration, and a stale one would
+  // silently become the default for every later playlist add (lib/item-duration.js).
   db.prepare(`UPDATE content
                  SET filepath = ?, mime_type = ?, file_size = ?, thumbnail_path = ?, width = ?, height = ?,
+                     duration_sec = ?,
                      updated_at = MAX(CAST(strftime('%s','now') AS INTEGER), COALESCE(NULLIF(updated_at, 0), created_at) + 1)
                WHERE id = ?`)
-    .run(filepath, mime, req.file.size, thumbnailPath, width, height, req.params.id);
+    .run(filepath, mime, req.file.size, thumbnailPath, width, height, durationSec, req.params.id);
 
   // ...and tell the panels, which the old code did not. Without this the new bytes reached a screen
   // only when something else happened to trigger a playlist refresh — an operator replacing a video

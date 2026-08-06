@@ -581,8 +581,9 @@ async function renderWallEditor(container, wallId) {
                   <span class="wall-panel-liveness"${b.title ? ` title="${esc(b.title)}"` : ''}>${esc(b.label)}</span>${meta ? ` · ${meta}` : ''}
                 </div>
               </div>
+              ${(!Array.isArray(d.capabilities) || d.capabilities.includes('remote.screenshot')) ? `
               <button class="btn btn-sm wall-panel-shot" data-device-id="${esc(s.device_id)}" style="padding:2px 8px;font-size:11px"
-                      title="Ask this panel for a screenshot — safe on a live wall, it doesn't change what's playing">Screenshot</button>
+                      title="Ask this panel for a screenshot — safe on a live wall, it doesn't change what's playing">Screenshot</button>` : ''}
               <a class="btn btn-sm" href="#/device/${esc(s.device_id)}" style="padding:2px 8px;font-size:11px"
                  title="Device info, incident log and remote controls">Open</a>
             </div>`;
@@ -593,6 +594,9 @@ async function renderWallEditor(container, wallId) {
         will desync the wall — use the wall playlist above instead.
       </p>`;
 
+    // The button is only rendered for a panel that declares (or baselines to) remote.screenshot —
+    // a BrightSign has no screenshot capability at all, so the old unconditional button popped a
+    // toast promising an image that was never coming.
     host.querySelectorAll('.wall-panel-shot').forEach(btn => {
       btn.addEventListener('click', () => {
         requestScreenshot(btn.dataset.deviceId);

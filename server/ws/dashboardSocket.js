@@ -72,25 +72,55 @@ module.exports = function setupDashboardSocket(io) {
     for (const wsId of wsIds) socket.join(workspaceRoom(wsId));
     console.log(`Dashboard client connected: ${socket.id} (user: ${socket.userId}, rooms: ${wsIds.length})`);
 
-    socket.on('dashboard:request-screenshot', (data) => {
+    /*
+     * The capability gate for the remote-view handlers.
+     *
+     * dashboard:device-command below has always checked this; these four did not, and the
+     * reasoning that justifies it there applies here word for word — this socket is reachable
+     * directly, and a dashboard tab left open still renders the controls the panel had when the
+     * page was drawn. Measured: a display declaring `[]` still received screenshot-request,
+     * remote-touch, remote-key and remote-start, silently, and the operator got a toast saying
+     * the screenshot was on its way.
+     *
+     * The ack is OPTIONAL by design: the current dashboard senders (frontend/js/socket.js) pass
+     * no callback, and a newer one that does gets told which capability is missing instead of
+     * watching a spinner. Refusing loudly is the whole point of the mechanism.
+     */
+    // Silent by design, unlike the command path: the fleet view asks EVERY visible card for a
+    // screenshot every 30s, so a log line per refusal would be hundreds every half-minute on a
+    // real fleet. The ack carries the reason to anyone who asked for one.
+    function capabilityRefused(device_id, cap, ack) {
+      const devRow = db.prepare('SELECT * FROM devices WHERE id = ?').get(device_id);
+      if (playerCapabilities.supports(devRow, cap)) return false;
+      if (typeof ack === 'function') ack({ delivered: false, reason: 'unsupported', capability: cap });
+      return true;
+    }
+
+    socket.on('dashboard:request-screenshot', (data, ack) => {
       const { device_id } = data;
       if (!canActOnDevice(socket, device_id, 'read')) return;
+      if (capabilityRefused(device_id, 'remote.screenshot', ack)) return;
       const conn = heartbeat.getConnection(device_id);
       if (conn) deviceNs.to(device_id).emit('device:screenshot-request', {});
+      if (typeof ack === 'function') ack({ delivered: !!conn, reason: conn ? undefined : 'offline' });
     });
 
-    socket.on('dashboard:remote-touch', (data) => {
+    socket.on('dashboard:remote-touch', (data, ack) => {
       const { device_id, x, y, x2, y2, duration, action } = data;
       if (!canActOnDevice(socket, device_id, 'write')) return;
+      if (capabilityRefused(device_id, 'remote.input', ack)) return;
       // #159: a swipe/drag carries an end point + duration (for scrolling); tap is just x/y.
       deviceNs.to(device_id).emit('device:remote-touch', { x, y, x2, y2, duration, action });
+      if (typeof ack === 'function') ack({ delivered: true });
     });
 
-    socket.on('dashboard:remote-key', (data) => {
+    socket.on('dashboard:remote-key', (data, ack) => {
       const { device_id, keycode } = data;
       if (!canActOnDevice(socket, device_id, 'write')) return;
+      if (capabilityRefused(device_id, 'remote.input', ack)) return;
       console.log(`Remote key: ${keycode} -> ${device_id}`);
       deviceNs.to(device_id).emit('device:remote-key', { keycode });
+      if (typeof ack === 'function') ack({ delivered: true });
     });
 
     // Track which devices THIS dashboard socket has a live remote (screenshot-stream) session on, so
@@ -98,9 +128,10 @@ module.exports = function setupDashboardSocket(io) {
     // capturing every second and can starve a weak panel's decoder (the black-screen we hit).
     socket.remoteSessions = new Set();
 
-    socket.on('dashboard:remote-start', (data) => {
+    socket.on('dashboard:remote-start', (data, ack) => {
       const { device_id } = data;
       if (!canActOnDevice(socket, device_id, 'write')) return;
+      if (capabilityRefused(device_id, 'remote.stream', ack)) return;
       const room = deviceNs.adapter.rooms.get(device_id);
       console.log(`Remote start for ${device_id}, room has ${room?.size || 0} socket(s)`);
       socket.remoteSessions.add(device_id);
@@ -108,6 +139,9 @@ module.exports = function setupDashboardSocket(io) {
       console.log(`Remote session started for device ${device_id}`);
     });
 
+    // Deliberately NOT capability-gated, for the same reason set_debug isn't: stopping is the
+    // thing you need most when a panel's declaration has changed underneath a live stream, and
+    // refusing it would strand that panel capturing forever.
     socket.on('dashboard:remote-stop', (data) => {
       const { device_id } = data;
       if (!canActOnDevice(socket, device_id, 'write')) return;

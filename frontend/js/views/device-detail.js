@@ -282,7 +282,10 @@ async function loadDevice(deviceId, activeTab = null) {
                   <line x1="8" y1="21" x2="16" y2="21"/>
                   <line x1="12" y1="17" x2="12" y2="21"/>
                 </svg>
-                <span>${t('device.no_screenshot')}</span>
+                <!-- The default copy tells the operator to click a button that is only rendered
+                     for a panel that can capture. On one that cannot, pointing at a control that
+                     is not on the page reads as a broken dashboard. -->
+                <span>${can('remote.screenshot') ? t('device.no_screenshot') : t('device.no_screenshot_unsupported')}</span>
               </div>`
           }
         </div>
@@ -683,11 +686,12 @@ async function loadDevice(deviceId, activeTab = null) {
               <button class="btn btn-primary btn-sm" onclick="window._sendKey('KEYCODE_DPAD_CENTER')">${t('device.remote.ok')}</button>
               <hr style="border-color:var(--border);margin:8px 0">
               <button class="btn btn-secondary btn-sm" onclick="window._sendCmd('settings')">${t('device.remote.settings')}</button>
+              ${can('display.power') ? `
               <hr style="border-color:var(--border);margin:8px 0">
               <div style="display:flex;gap:4px">
                 <button class="btn btn-secondary btn-sm" style="flex:1" onclick="window._sendCmd('screen_off')">${t('device.remote.scrn_off')}</button>
                 <button class="btn btn-secondary btn-sm" style="flex:1" onclick="window._sendCmd('screen_on')">${t('device.remote.scrn_on')}</button>
-              </div>
+              </div>` : ''}
             </div>` : ''}
             ${device.tier === 2 ? `
             <span style="font-size:10px;color:var(--success);line-height:1.2;display:block;margin-top:8px">${t('device.remote.system_view_owner')}</span>
