@@ -4,6 +4,7 @@ import { showToast } from '../components/toast.js';
 import { esc, livenessBadge, hydrateAuthImages } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import { showDeviceOwnerQRModal } from '../components/device-owner-qr-modal.js';
+import { frameDeviceOutput, displayAspectRatio } from '../lib/device-frame.js';
 
 // The player distinguishes three cases for the Wi-Fi name, because "--" was hiding a real
 // answer: Android 8.1+ refuses to reveal the SSID to an app without location permission, and a
@@ -13,6 +14,14 @@ function ssidLabel(ssid) {
   if (ssid === 'permission') return esc(t('device.info.wifi_needs_location'));
   if (!ssid) return '--';
   return esc(ssid);
+}
+
+// #238: turn the Now Playing screenshot the way the wall mount turns the panel. The placeholder
+// ("no screenshot yet") is deliberately left alone — it is dashboard chrome, not device output.
+function frameNowPlaying() {
+  const stage = document.getElementById('screenshotStage');
+  const img = document.getElementById('currentScreenshot');
+  if (stage && img && img.tagName === 'IMG') frameDeviceOutput(stage, img, currentDevice?.orientation);
 }
 
 let currentDevice = null;
@@ -144,6 +153,10 @@ export function render(container, deviceId) {
         img.style.cssText = 'width:100%;height:100%;object-fit:contain';
         screenshotEl.replaceWith(img);
       }
+      // #238: a screenshot is the RAW framebuffer, so a portrait panel's arrives sideways — the
+      // player rotated the content into it and only the wall mount turns it back. Re-frame on every
+      // arrival, not just at render: the branch above swaps the element out from under us.
+      frameNowPlaying();
     }
     // Update remote canvas
     const canvas = document.getElementById('remoteCanvas');
@@ -260,7 +273,7 @@ async function loadDevice(deviceId, activeTab = null) {
 
       <!-- Now Playing Tab -->
       <div class="tab-content active" id="tab-nowplaying">
-        <div class="screenshot-container">
+        <div class="screenshot-container" id="screenshotStage">
           ${device.screenshot
             ? `<img id="currentScreenshot" src="/api/devices/${device.id}/screenshot?t=${Date.now()}&token=${localStorage.getItem('token')}" alt="Current screen">`
             : `<div class="no-screenshot" id="currentScreenshot">
@@ -626,6 +639,11 @@ async function loadDevice(deviceId, activeTab = null) {
         <div class="remote-container">
           ${can('remote.stream') ? `
           <div class="remote-screen" id="remoteScreen">
+            <!-- Deliberately NOT rotated with the rest of the previews (#238). This is a control
+                 surface: taps and swipes are sent as fractions of THIS canvas, which is the raw
+                 framebuffer the device replays them into, and it also shows the Android system UI —
+                 which really is landscape on a portrait-hung panel. Turning the picture without
+                 inverting the touch mapping would send every tap to the wrong place. -->
             <canvas id="remoteCanvas" width="960" height="540" style="background:#000;width:100%"></canvas>
             <div class="no-screenshot" id="remoteOverlay" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">
               <div style="text-align:center">
@@ -796,6 +814,7 @@ async function loadDevice(deviceId, activeTab = null) {
     // offline→online transitions derived from the status log).
     renderIncidents(device.deviceEvents || [], device.statusLog || []);
 
+    frameNowPlaying();
     setupTabs();
     setupActions(device);
     setupRemote(device);
@@ -905,8 +924,13 @@ function setupTabs() {
 // same-origin (dashboard CSP frame-src 'self' allows it). Shows the device's CURRENT
 // playlist in the device's OWN layout/orientation (server payload). wall members
 // preview full-frame (server forces wall_config:null in v1).
+//
+// #238: the iframe is the panel's FRAMEBUFFER, not its face. It used to be given the as-displayed
+// 9/16 shape directly, so on a portrait device the player rotated content a second time inside a
+// box that was already the finished picture and the preview came out sideways — while the panel
+// itself was right, which is the worst possible split for someone trying to verify their work.
+// The stage is the face; the frame is landscape underneath it and the mount turns it back.
 function showDevicePreview(device) {
-  const portrait = (device.orientation || '').includes('portrait');
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:10000;padding:16px';
   overlay.innerHTML = `
@@ -916,10 +940,13 @@ function showDevicePreview(device) {
         <button class="btn btn-secondary btn-sm" id="dpvClose">${t('widget.close')}</button>
       </div>
       <div style="padding:16px;display:flex;align-items:center;justify-content:center;background:#000">
-        <iframe style="height:78vh;max-width:92vw;aspect-ratio:${portrait ? '9 / 16' : '16 / 9'};border:0;background:#000" src="/player?preview=1&device=${encodeURIComponent(device.id)}&t=${Date.now()}"></iframe>
+        <div id="dpvStage" style="height:78vh;max-width:92vw;aspect-ratio:${displayAspectRatio(device.orientation)};background:#000">
+          <iframe style="border:0;background:#000" src="/player?preview=1&device=${encodeURIComponent(device.id)}&t=${Date.now()}"></iframe>
+        </div>
       </div>
     </div>`;
   document.body.appendChild(overlay);
+  frameDeviceOutput(overlay.querySelector('#dpvStage'), overlay.querySelector('#dpvStage iframe'), device.orientation);
   const close = () => overlay.remove();
   overlay.querySelector('#dpvClose').onclick = close;
   overlay.onclick = (e) => { if (e.target === overlay) close(); };

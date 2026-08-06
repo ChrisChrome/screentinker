@@ -5,6 +5,7 @@ import { esc, livenessBadge } from '../utils.js';
 import { t, tn } from '../i18n.js';
 import * as gettingStarted from '../components/getting-started.js';
 import { showDeviceOwnerQRModal } from '../components/device-owner-qr-modal.js';
+import { frameDeviceOutput } from '../lib/device-frame.js';
 
 const DESTRUCTIVE_COMMANDS = ['reboot', 'shutdown'];
 // Command types only — labels resolved through t('dashboard.cmd.<type>')
@@ -78,6 +79,22 @@ function renderProgressFor(deviceId) {
   });
 }
 
+// #238: a screenshot is the panel's raw framebuffer, so a device set to 90/270 sends a landscape
+// image with the content lying on its side — the wall mount is what turns it upright, and the card
+// had no stand-in for the mount. Every portrait screen in the fleet therefore looked wrong at a
+// glance on the one screen people scan to check the fleet is fine.
+//
+// Re-run after any render that replaces card markup; the orientation rides on the card so the
+// socket handler can re-frame a single card without re-reading the device list.
+function frameCard(stage) {
+  const img = stage && stage.querySelector('img');
+  if (img) frameDeviceOutput(stage, img, stage.dataset.orientation);
+}
+
+function frameCardScreenshots(root) {
+  (root || document).querySelectorAll('.device-card-preview[data-orientation]').forEach(frameCard);
+}
+
 function renderDeviceCard(device) {
   const token = localStorage.getItem('token');
   const screenshotUrl = device.screenshot_path
@@ -90,7 +107,7 @@ function renderDeviceCard(device) {
       <label class="device-card-select" title="${t('dashboard.select_for_wall')}" onclick="event.stopPropagation()">
         <input type="checkbox" class="device-select-cb" data-device-id="${device.id}"${checked ? ' checked' : ''}>
       </label>
-      <div class="device-card-preview" id="preview-${device.id}">
+      <div class="device-card-preview" id="preview-${device.id}" data-orientation="${esc(device.orientation || 'landscape')}">
         ${screenshotUrl
           ? `<img src="${screenshotUrl}" alt="Screenshot" loading="lazy">`
           : `<div class="no-preview">
@@ -417,6 +434,7 @@ export function render(container) {
         const statusHtml = preview.querySelector('.device-card-status')?.outerHTML || '';
         preview.innerHTML = `<img src="${imgSrc}" alt="Screenshot" loading="lazy">${statusHtml}`;
       }
+      frameCard(preview);   // the branch above can swap the img element out from under us
     });
   };
 
@@ -659,6 +677,7 @@ async function loadDashboard() {
     }
 
     main.innerHTML = html;
+    frameCardScreenshots();
     attachGroupHandlers(groupsWithDevices, dashboardDevices);
 
     // Drop any selections for devices that have since been absorbed into a

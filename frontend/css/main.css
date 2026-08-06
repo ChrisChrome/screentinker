@@ -398,6 +398,23 @@ body {
   transform: translateY(-2px);
 }
 
+/* #238: a rotated display shown as its viewer sees it. The stage is the panel's face; the frame is
+   its framebuffer, turned back by the mount (js/lib/device-frame.js sizes and rotates it from the
+   players' shared rule). The frame is centred on its offset parent, so a stage without
+   `position: relative` would centre it on the page — hence both halves live here together. */
+.display-stage {
+  position: relative;
+  overflow: hidden;
+}
+
+.display-frame {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
 .device-card-preview {
   aspect-ratio: 16/9;
   background: var(--bg-primary);
