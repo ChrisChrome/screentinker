@@ -24,12 +24,16 @@ process.env.NODE_ENV = 'test';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-test('the worker is registered with an explicit root scope', () => {
-  // Without {scope:'/'} the registration silently narrows to /player/ and the page at /player is
-  // left uncontrolled.
+test('the worker is registered from the root, so its DEFAULT scope covers the player', () => {
+  // Asking for a wider-than-default scope works only if Service-Worker-Allowed reaches the browser.
+  // Cloudflare withheld it from a cached response across a deploy and registration failed outright
+  // — no worker at all, which is worse than the narrow scope it replaced. Served from /, the
+  // default scope is already the whole origin and no header has to survive the trip.
   const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
-  assert.match(html, /navigator\.serviceWorker\.register\('\/player\/sw\.js',\s*\{\s*scope:\s*'\/'\s*\}/,
-    "register() must ask for a scope wider than the worker's own directory");
+  assert.match(html, /navigator\.serviceWorker\.register\('\/sw\.js'\)/,
+    'register the worker from the root rather than relying on a header');
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(server, /app\.get\('\/sw\.js'/, 'and the server must serve it there');
 });
 
 test('the server permits that scope, or the registration is rejected outright', async () => {

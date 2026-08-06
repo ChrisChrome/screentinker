@@ -4103,7 +4103,12 @@
       // with. Registration succeeded there and then controlled nothing: no shell cache, no content
       // cache, no offline playback, and no error to notice. The server sends
       // Service-Worker-Allowed so this wider scope is permitted.
-      navigator.serviceWorker.register('/player/sw.js', { scope: '/' }).then(reg => {
+      // Registered from the ROOT, where the default scope already covers the whole origin. The
+      // previous form asked for a wider-than-default scope and relied on a Service-Worker-Allowed
+      // header reaching the browser — which Cloudflare withheld from a cached response across a
+      // deploy, so registration failed and the player ran with no worker at all. A rejected
+      // registration is worse than a narrow one, and nothing about it is visible from here.
+      navigator.serviceWorker.register('/sw.js').then(reg => {
         console.log('Service Worker registered');
         // When a new SW activates, reload so the fresh code takes effect immediately
         reg.addEventListener('updatefound', () => {

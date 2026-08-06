@@ -298,6 +298,28 @@ app.get('/player/schedule-eval.js', (req, res) => {
 // tests via require — one source, so the range arithmetic the player depends on cannot drift from
 // the arithmetic that is actually tested. A service worker cannot require(), which is why this is
 // a served file rather than a bundled one.
+/*
+ * The service worker, at the ROOT.
+ *
+ * A worker's scope defaults to its own directory, so /player/sw.js can only control /player/ and
+ * below — not /player itself, which is the URL the dashboard shows. The fix for that was to ask for
+ * a wider scope and permit it with a Service-Worker-Allowed header, and it works... until something
+ * in front of the origin does not pass the header on. Cloudflare served a CACHED response for that
+ * path across a deploy, headers and all, and the registration failed outright: worse than the
+ * narrow scope it replaced, because a rejected registration means no worker at all.
+ *
+ * Served from / instead, the default scope IS the whole origin and no header is required. That
+ * removes the dependency on a custom response header surviving every CDN, proxy and cache between
+ * us and a display — including the ones self-hosters run and we will never see.
+ *
+ * /player/sw.js keeps working for players still asking for it.
+ */
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Service-Worker-Allowed', '/');   // belt: harmless, and correct where it survives
+  res.sendFile(path.join(__dirname, 'player', 'sw.js'));
+});
+
 app.get('/player/cache-policy.js', (req, res) => {
   res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(__dirname, 'lib', 'player-cache-policy.js'));
