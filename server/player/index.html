@@ -1119,6 +1119,7 @@
     // straight to the UNMODIFIED renderer. No socket, no pairing.
     async function renderPreviewFromUrl(url) {
       PREVIEW_MODE = true;
+      installPreviewControlChannel();            // #239: only a preview instance can ever be steered
       config.serverUrl = window.location.origin; // same-origin -> /uploads + /api/widgets resolve
       const setup = document.getElementById('setupScreen');
       if (setup) setup.style.display = 'none';
@@ -1134,6 +1135,7 @@
         }
         renderPreviewBanner();
         handlePlaylistUpdate(payload);
+        postPreviewState();   // #239: first count, in case the payload landed before the first item did
       } catch (e) {
         console.error('preview fetch failed', e);
         showPreviewError(0);
@@ -1164,6 +1166,76 @@
       div.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#e5e7eb;background:#111827;font:18px sans-serif;z-index:3000;text-align:center;padding:24px';
       div.textContent = msg;
       document.body.appendChild(div);
+    }
+
+    // ==================== #239 Preview transport control ====================
+    // Where a next/previous press lands. Kept as a pure function (no DOM, no globals) because the
+    // failure it prevents is arithmetic: a negative modulo or an out-of-range index mounts
+    // `undefined` and blanks the frame, and that is only catchable by testing the maths directly.
+    //
+    // `allows` is the per-item schedule gate. Scanning in the DIRECTION OF TRAVEL matters: skipping
+    // a dayparted item by falling forward would make "previous" walk forwards, which reads as the
+    // button being broken. Returns -1 when nothing is playable (empty list, or every item outside
+    // its window) so the caller can idle instead of mounting nothing.
+    function previewStepIndex(current, delta, length, allows) {
+      const n = Math.trunc(length);
+      if (!Number.isFinite(n) || n <= 0) return -1;
+      const dir = delta < 0 ? -1 : 1;
+      // A player that has not started yet (currentIndex === -1) or a corrupt index still has to
+      // produce a valid landing spot rather than propagate NaN into playlist[].
+      const from = Number.isFinite(current) ? ((Math.trunc(current) % n) + n) % n : 0;
+      for (let i = 1; i <= n; i++) {
+        const idx = (((from + dir * i) % n) + n) % n;
+        if (!allows || allows(idx)) return idx;
+      }
+      return -1;
+    }
+
+    // Jump the preview by one item. PREVIEW_MODE is the hard gate: a live player never installs the
+    // message listener below AND would refuse here anyway, so a page that frames the player can
+    // never steer content on a real screen.
+    function previewNavigate(delta) {
+      if (!PREVIEW_MODE) return;
+      const idx = previewStepIndex(currentIndex, delta, playlist.length, (i) => scheduleAllows(playlist[i]));
+      if (idx === -1) return;
+      clearTimeout(scheduleRetryTimer);   // we are leaving the idle screen by hand
+      currentIndex = idx;
+      isPlaying = true;
+      playCurrentItem();                  // re-renders, which clears the pending advance timer
+    }
+
+    // Tell the dashboard which item is on screen so it can show "3 of 7". targetOrigin is our own
+    // origin, so a third-party page that iframes the player learns nothing about the workspace's
+    // content from this channel.
+    function postPreviewState() {
+      if (!PREVIEW_MODE || window.parent === window) return;
+      const item = playlist[currentIndex];
+      // A multi-zone playlist plays every zone at once on independent timers — there is no single
+      // "current item" to step through, so say so and let the dashboard hide the controls rather
+      // than offer a button that does nothing visible.
+      const zoned = !!(layout && layout.zones && layout.zones.length > 1);
+      try {
+        window.parent.postMessage({
+          source: 'screentinker-player',
+          type: 'preview:state',
+          index: currentIndex,
+          total: playlist.length,
+          zoned,
+          name: (item && (item.filename || item.widget_name || item.title)) || null,
+        }, window.location.origin);
+      } catch (e) { /* parent went away mid-preview */ }
+    }
+
+    function installPreviewControlChannel() {
+      window.addEventListener('message', (ev) => {
+        if (!PREVIEW_MODE) return;                          // belt and braces: see previewNavigate
+        if (ev.origin !== window.location.origin) return;   // only our own dashboard may drive us
+        const d = ev.data;
+        if (!d || d.source !== 'screentinker-preview') return;
+        if (d.action === 'next') previewNavigate(1);
+        else if (d.action === 'prev') previewNavigate(-1);
+        else if (d.action === 'sync') postPreviewState();   // parent (re)attached and wants the count
+      });
     }
 
     // #104: the always-visible honest note for webpage widgets. No auto-detection —
@@ -2616,6 +2688,10 @@
       }
 
       renderContent(item);
+
+      // #239: the dashboard's "3 of 7" follows the player's own advance, not just operator presses,
+      // so it stays honest when an item ends on its own duration.
+      if (PREVIEW_MODE) postPreviewState();
 
       // Push an immediate sync so followers don't have to wait up to 1s for
       // the next periodic tick before snapping to the new item.
