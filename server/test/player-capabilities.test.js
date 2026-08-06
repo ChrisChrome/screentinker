@@ -17,8 +17,9 @@ const caps = require('../lib/player-capabilities');
 test('a legacy display with NO declaration keeps its platform baseline', () => {
   // The several-hundred-device case: they will not update before the next dashboard deploy.
   const android = { client_type: 'apk', android_version: '12' };
-  assert.ok(caps.supports(android, 'system.reboot'));
+  assert.ok(caps.supports(android, 'system.restart_player'));
   assert.ok(caps.supports(android, 'playback.video'));
+  assert.ok(caps.supports(android, 'offline.cache'));
 });
 
 test('THE DISTINCTION: an EMPTY declaration is honoured, not treated as missing', () => {
@@ -80,13 +81,30 @@ test('every baseline entry is a real capability name', () => {
   }
 });
 
-test('BrightSign claims display power and reboot; Tizen claims neither', () => {
-  // The concrete parity facts this whole model exists to express.
+test('an UNDECLARED BrightSign is a browser tab, because the host bridge is unreleased', () => {
+  /*
+   * This test used to assert the opposite — that a BrightSign claims display power and reboot —
+   * and it was wrong in the way that matters: the page reaches all of them only behind
+   * BS.hasHost(), which needs an roHtmlWidget the on-device BrightScript created with node
+   * integration. No released package shipped that, the one real XT245 we have runs BSN
+   * Supervisor's widget where hasHost() is false, and any unit that DOES have a bridge declares
+   * for itself and never reads this baseline.
+   */
   const bs = { platform: 'brightsign' };
+  assert.equal(caps.supports(bs, 'system.reboot'), false, 'RebootSystem() needs a host that is not there');
+  assert.equal(caps.supports(bs, 'display.power'), false, 'CEC needs the same host');
+  assert.equal(caps.supports(bs, 'system.restart_player'), false,
+    'a page-initiated reload does not reliably bring an roHtmlWidget back — this one darkened a panel');
+  assert.ok(caps.supports(bs, 'playback.video'), 'it is still a player');
+
+  // A BrightSign that DOES declare gets everything its bridge really provides.
+  const withHost = { platform: 'brightsign', capabilities: JSON.stringify(['system.reboot', 'display.power']) };
+  assert.ok(caps.supports(withHost, 'system.reboot'));
+
+  // Tizen has a real blanking path on every build (showScreenOff/clearScreenOff, no signing
+  // needed) but no reboot without a partner-signed B2B surface it cannot assume.
   const tizen = { platform: 'Tizen 6.5' };
-  assert.ok(caps.supports(bs, 'display.power'));
-  assert.ok(caps.supports(bs, 'system.reboot'));
-  assert.equal(caps.supports(tizen, 'display.power'), false);
+  assert.ok(caps.supports(tizen, 'display.power'), 'both halves work on a fielded .wgt');
   assert.equal(caps.supports(tizen, 'system.reboot'), false);
 });
 
@@ -105,6 +123,11 @@ test('the baseline describes a FIELDED player, not the one we are about to ship'
   // working controls disappear from every legacy Tizen display.
   const tizen = { platform: 'Tizen 6.5' };
   assert.equal(caps.supports(tizen, 'audio.volume'), false, 'the slider is dead on a fielded panel');
+  // Same answer on web and BrightSign, for a second and separate reason: those players read
+  // payload.value while the dashboard sends payload.level, so even HEAD's handler never fires.
+  assert.equal(caps.supports({ android_version: 'Web/Chrome' }, 'audio.volume'), false);
+  assert.equal(caps.supports({ platform: 'brightsign' }, 'audio.volume'), false);
+  assert.ok(caps.supports({ client_type: 'apk' }, 'audio.volume'), 'Android reads the payload it is sent');
   assert.ok(caps.supports(tizen, 'audio.mute'), 'mute does work');
   assert.ok(caps.supports(tizen, 'remote.screenshot'), 'captureAndSend exists in the shipped player');
   assert.ok(caps.supports(tizen, 'remote.stream'), 'startStreaming exists in the shipped player');

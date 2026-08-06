@@ -62,8 +62,18 @@ before(async () => {
   });
   S.groupId = g.body.id;
 
-  // Two Android panels (declare nothing -> baseline, i.e. the legacy fleet) and two browser tabs.
-  S.android = [mkDevice({ client_type: 'apk', android_version: '12' }), mkDevice({ client_type: 'apk', android_version: '12' })];
+  // Two Android panels and two browser tabs.
+  //
+  // The panels DECLARE system.reboot (i.e. they are device owners) rather than relying on the
+  // baseline. The parity audit removed system.reboot from the Android baseline — STPolicy.reboot()
+  // needs device owner, so an undeclared panel cannot honour it either — and with all four members
+  // unable to reboot, this test would still pass while proving nothing. The point here is the
+  // MIXED case: some members can, some cannot, and the response must not blur them together.
+  const owner = JSON.stringify(['playback.video', 'system.reboot', 'system.restart_player']);
+  S.android = [
+    mkDevice({ client_type: 'apk', android_version: '12', capabilities: owner }),
+    mkDevice({ client_type: 'apk', android_version: '12', capabilities: owner }),
+  ];
   S.web = [mkDevice({ android_version: 'Web/Chrome' }), mkDevice({ android_version: 'Web/Chrome' })];
   for (const id of [...S.android, ...S.web]) {
     db.prepare('INSERT INTO device_group_members (group_id, device_id) VALUES (?, ?)').run(S.groupId, id);
@@ -73,10 +83,10 @@ after(() => { try { db && db.close(); } catch { /* */ } try { proc.kill('SIGKILL
 
 function mkDevice(cols) {
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO devices (id, name, status, workspace_id, device_token, client_type, android_version, created_at)
-              VALUES (?, ?, 'offline', ?, ?, ?, ?, strftime('%s','now'))`)
+  db.prepare(`INSERT INTO devices (id, name, status, workspace_id, device_token, client_type, android_version, capabilities, created_at)
+              VALUES (?, ?, 'offline', ?, ?, ?, ?, ?, strftime('%s','now'))`)
     .run(id, 'panel-' + id.slice(0, 4), S.wsId, crypto.randomBytes(16).toString('hex'),
-         cols.client_type || null, cols.android_version || null);
+         cols.client_type || null, cols.android_version || null, cols.capabilities || null);
   return id;
 }
 

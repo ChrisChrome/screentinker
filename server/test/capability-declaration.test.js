@@ -167,6 +167,6 @@ test('the device API returns the RESOLVED list, so the dashboard never re-derive
   assert.equal(b.status, 200);
   assert.ok(Array.isArray(b.body.capabilities) && b.body.capabilities.length > 0,
     'an undeclared Android panel must come back with its baseline, not an empty list');
-  assert.ok(b.body.capabilities.includes('system.reboot'),
+  assert.ok(b.body.capabilities.includes('system.restart_player'),
     'and that baseline is what keeps the existing fleet\'s controls on screen');
 });

@@ -24,7 +24,9 @@ test('THE FLEET CASE: an absent declaration is not persisted, so the baseline st
   assert.equal(persistedValue(undefined), null);
   assert.equal(persistedValue(null), null);
   const legacy = { client_type: 'apk' };            // column stays NULL
-  assert.ok(caps.supports(legacy, 'system.reboot'), 'legacy Android keeps its controls');
+  // Was system.reboot until the parity audit: STPolicy.reboot() needs device owner, so the
+  // undeclared fleet never had that one. restart_player is a control it genuinely does have.
+  assert.ok(caps.supports(legacy, 'system.restart_player'), 'legacy Android keeps its controls');
 });
 
 test('an EMPTY declaration IS persisted and is honoured as "nothing"', () => {

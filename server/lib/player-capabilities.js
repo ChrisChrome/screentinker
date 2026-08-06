@@ -56,65 +56,143 @@ const CAP_SET = new Set(CAPABILITIES);
 /*
  * Baselines for displays that declare nothing.
  *
- * Only things that have always worked on that platform. Anything conditional — screenshots that
- * need accessibility, kiosk that needs device owner, native sync that needs one L2 network — is
- * omitted, so a legacy display shows those controls only once it declares them. Better a control
- * that appears late than one that lies today.
+ * THE RULE, and it is the only one that keeps this table honest: a baseline entry describes what
+ * the LAST RELEASED player for that platform does, unconditionally, with no privilege it might not
+ * have been granted. Not what HEAD does — HEAD declares for itself. Not what the platform could do
+ * — a capability nobody shipped is a button nobody can press.
+ *
+ * Every entry below was checked against `git show v1.9.28:<player source>`, the last release before
+ * capability declaration existed at all, because v1.9.29 is the first build in which any player
+ * declares anything. Every display that falls back to a baseline is therefore running v1.9.28 or
+ * older by construction, and that is the build the justifications cite.
  */
 const BASELINE = {
   android: [
     'playback.video', 'playback.image', 'playback.widget', 'playback.youtube',
     'playback.zones', 'playback.transitions', 'playback.pip',
+    // set_volume and set_brightness are #160 Track-A, released in v1.9.10 — long before anything
+    // still in the field. Both are Tier 0: MainActivity applies them with no owner, no admin and
+    // no WRITE_SETTINGS, so they are unconditional on any build a fielded panel could be running.
     'audio.mute', 'audio.volume',
-    'display.rotation', 'display.power', 'display.brightness',
-    'remote.screenshot', 'remote.stream', 'remote.input',
-    'system.reboot', 'system.restart_player', 'system.self_update',
+    'display.rotation', 'display.brightness',
+    // Capture without accessibility falls back to ScreenshotCapture.captureView, which is a real
+    // frame of the player's own view — i.e. of the content. Narrower than the full-screen path,
+    // but the operator gets a picture, not a dead button.
+    'remote.screenshot', 'remote.stream',
+    'remote.input',
+    'system.restart_player', 'system.self_update',
     'sync.clock', 'offline.cache',
+    // NOT display.power. v1.9.28 MainActivity answers screen_on with
+    //   Log.w("screen_on: no privileged wake path on a non-rooted panel — no-op")
+    // so the ON half is dead on 100% of fielded Android panels, and screen_off only works with
+    // owner / device-admin / accessibility. The dashboard renders BOTH buttons off this one
+    // capability. A panel you can sleep and cannot wake is the worst possible version of this
+    // feature, which is exactly why PlayerCapabilities.kt gates its own claim on both halves.
+    //
+    // NOT system.reboot. STPolicy.reboot() requires device owner; off-owner v1.9.28 falls back to
+    // the accessibility power DIALOG, which needs a human standing at the screen — and on the
+    // accessibility-enabled panels that are common in this fleet it paints that dialog OVER the
+    // signage. Device-owner provisioning is not released (#161/PR #168 is still open), so the set
+    // of panels that are both device owner AND pre-1.9.29 is effectively empty.
+    // ⚠️ Consequence, deliberately accepted: services/scheduler.js gates the nightly scheduled
+    // reboot on this capability, so scheduled reboots now no-op for undeclared Android panels
+    // instead of logging "scheduled reboot fired" for a panel that never rebooted. That log line
+    // is the reason the gate is there; the honest answer is to skip, not to claim.
+    //
+    // NOT system.shell / system.kiosk / system.time / system.install_apk / system.brightness /
+    // system.screen_timeout: every one is device-owner or WRITE_SETTINGS conditional.
   ],
   tizen: [
     'playback.video', 'playback.image', 'playback.widget', 'playback.youtube',
     'playback.zones', 'playback.transitions', 'playback.pip',
-    // audio.mute only. A FIELDED Tizen panel has no set_volume handler at all — the command falls
-    // through to "unknown command", so the dashboard slider does nothing. Updated panels declare
-    // audio.volume for themselves once they ship a handler; the baseline describes what an
-    // un-updated one can actually do, which is the whole reason it exists.
+    // audio.mute only. `git show v1.9.28:tizen/js/app.js` has NO set_volume handler — the command
+    // falls through STDeviceControl.run to "unknown command", so the dashboard slider does nothing
+    // on every fielded panel. (HEAD ships applyVolume, but see the note on BASELINE.web: it reads
+    // payload.value while the dashboard sends payload.level, so even HEAD's slider is dead. The
+    // baseline stays out until a released .wgt honours the payload the product actually sends.)
     'audio.mute',
     'display.rotation',
     // Both really are implemented in the shipped player (captureAndSend / startStreaming), so
     // omitting them would have hidden working controls on every legacy Tizen panel.
     'remote.screenshot', 'remote.stream',
     'remote.input',
+    // ADDED after audit. v1.9.28 app.js implements BOTH halves with no partner signing and no
+    // panel API: screen_off -> showScreenOff() paints the blanking overlay, screen_on ->
+    // clearScreenOff() + keepAwake(). Unlike Android above, neither half is privilege-gated, so
+    // the pair is honest. The panel backlight stays lit — the log line says which mechanism ran —
+    // but the screen genuinely goes dark, and HEAD's capabilities.js declares it for that reason.
+    'display.power',
     'system.restart_player',
     'sync.clock',
-    // NOT offline.cache: Tizen caches only the playlist JSON (st_payload_cache in localStorage).
-    // There is no service worker and no media cache, so the bytes still come from the network and
-    // content does NOT survive an outage. My first baseline claimed it — caught by the platform
-    // audit, and exactly the kind of optimistic claim this model exists to stop.
+    // NOT offline.cache: v1.9.28 has no tizen/js/media-cache.js at all (the file is new at HEAD).
+    // The fielded player caches only the playlist JSON (st_payload_cache in localStorage), so an
+    // outage leaves the panel knowing exactly what it cannot show. My first baseline claimed it —
+    // caught by the platform audit, and exactly the kind of optimistic claim this model exists to
+    // stop.
   ],
+  /*
+   * A BrightSign that declares nothing is a BrightSign we cannot prove has a host bridge, and that
+   * is the whole story of this baseline.
+   *
+   * The JS half of the bridge is served BY US (server.js routes /player/st-bridge.js at
+   * brightsign/st-bridge.js), so it is always current — but it is only half. `port` exists only
+   * inside an roHtmlWidget created with nodejs_enabled:true, which is the on-device BrightScript's
+   * decision, and `git ls-tree v1.9.28 brightsign/` shows no st-bridge.js at all: no released
+   * package ever shipped the two halves as a pair. The one real BrightSign we have runs BSN
+   * Supervisor's widget rather than our autorun.brs, and BS.hasHost() is false on it.
+   *
+   * A unit that DOES have a bridge declares for itself and never reads this list — the page
+   * computes hasHost() at registration. So this baseline only ever answers for a row that has not
+   * re-registered, and the right answer for a display we know nothing about is the floor:
+   * everything below is "the web player with no bridge", and nothing above that.
+   */
   brightsign: [
     'playback.video', 'playback.image', 'playback.widget', 'playback.youtube',
     'playback.zones', 'playback.transitions', 'playback.pip',
-    'audio.mute', 'audio.volume',
-    'display.rotation', 'display.power',
+    'audio.mute',
+    // CSS transform. Graphics rotate; with hwz the video sits on a hardware plane that ignores it,
+    // so this is partial — but nothing routes a COMMAND to display.rotation and no control is
+    // gated on it, so the entry describes content rendering rather than offering a button.
+    'display.rotation',
     'remote.input',
-    'system.reboot', 'system.restart_player',
     'sync.clock',
-    // NOT offline.cache. A BrightSign widget EXPOSES navigator.serviceWorker and will not run one:
-    // our XT245 on alpha passes every presence check and then never even fetches sw.js. There is no
-    // other caching mechanism in the widget either — content comes off the network every time — so
-    // a legacy BrightSign that declares nothing has no offline story at all, and claiming one told
-    // the dashboard a panel would survive an outage that will in fact go blank.
+    // NOT offline.cache. This is the documented case, not a hypothetical: the XT245 on alpha has
+    // navigator.serviceWorker, passes every presence check, and then never fetches sw.js because
+    // its widget refuses the registration. It advertised offline caching to the fleet and could
+    // not cache one byte. A widget with no storage_path has no persistent storage at all, and the
+    // baseline cannot know which kind of widget it is talking to.
+    //
+    // NOT system.restart_player. `refresh` reaches restartPlayer(), which without a host does
+    // location.reload() — and a page-initiated reload does not reliably bring an roHtmlWidget
+    // back. That is what darkened a customer's panel on 2026-07-28. st-bridge.js withholds this
+    // for the same reason; a baseline that hands it to every undeclared unit undoes that.
+    //
+    // NOT system.reboot / display.power / display.resolution / system.self_update: all four are
+    // BrightScript calls through a bridge this unit is not known to have.
+    //
+    // NOT audio.volume / remote.screenshot / remote.stream: see BASELINE.web — the volume payload
+    // never lands, and a canvas capture on a hwz player cannot read the video plane, so it returns
+    // a frame with a hole where the content is.
   ],
   // A browser tab. Deliberately the smallest set: it cannot reboot its host, rotate a panel, or
   // capture anything outside its own document.
   web: [
     'playback.video', 'playback.image', 'playback.widget', 'playback.youtube',
     'playback.zones', 'playback.transitions', 'playback.pip',
-    'audio.mute', 'audio.volume',
+    'audio.mute',
     'display.rotation',
     'remote.screenshot', 'remote.stream', 'remote.input',
     'system.restart_player',
     'sync.clock', 'offline.cache',
+    // NOT audio.volume, removed after audit, and for two independent reasons:
+    //   1. `git show v1.9.28:server/player/index.html` has no set_volume handler at all — zero
+    //      occurrences of the string. The fielded browser player ignores the command outright.
+    //   2. Even at HEAD the slider cannot work: index.html reads `data.payload?.value ?? data.value`
+    //      and tizen/js/app.js reads `payload.value ?? payload.volume`, while the dashboard sends
+    //      `{ level: 0..1 }` (frontend/js/views/device-detail.js bindLevel). Only the Android
+    //      handler reads `level`. Fixing that is one line in each player, and
+    //      test/player-parity-baselines.test.js is written as a BICONDITIONAL: the moment a player
+    //      accepts `level`, the test fails and tells you to put the baseline entry back.
   ],
 };
 
@@ -193,6 +271,11 @@ function parseDeclared(raw) {
  *
  * A command mapped to null needs no capability: it is a diagnostic every player understands, and
  * refusing it would remove the tool you use to work out why a panel is misbehaving.
+ *
+ * A command may map to a LIST, meaning any one of them is enough. That is not a convenience: it is
+ * how a capability name that no shipped player declares stays in the vocabulary without taking its
+ * commands down with it. The first name in the list is the canonical one and is what a refusal
+ * reports, so the operator is told what the panel is missing in the vocabulary they see elsewhere.
  */
 const COMMAND_CAPABILITY = {
   // lifecycle
@@ -219,18 +302,49 @@ const COMMAND_CAPABILITY = {
   // device-owner surface (#161 Tier-2)
   kiosk_lock: 'system.kiosk',
   kiosk_unlock: 'system.kiosk',
-  lock_now: 'system.device_owner',
-  power_menu: 'system.device_owner',
-  status_bar: 'system.device_owner',
-  block_uninstall: 'system.device_owner',
-  unblock_uninstall: 'system.device_owner',
+  /*
+   * ⚠️ These five were UNREACHABLE for the entire fleet until this audit, and nothing failed
+   * loudly enough to notice.
+   *
+   * 'system.device_owner' is declared by NO player. It is not in PlayerCapabilities.kt, not in
+   * tizen/js/capabilities.js, not in the web player's declaredCapabilities(), not in st-bridge.js,
+   * and not in any baseline. So `supports()` returned false for every device on every platform,
+   * and every one of these commands was refused — including on the device-owner panels the whole
+   * #161 Tier-2 surface was built for. The dashboard still rendered the buttons, because
+   * device-detail.js gates that block on `device.tier === 2 ||` as well, so an operator on a real
+   * owner panel pressed "Lock now" and got a silent server-side refusal.
+   *
+   * Until a player declares 'system.device_owner' for itself, 'system.kiosk' stands in, and it is
+   * an exact stand-in rather than a loose one: PlayerCapabilities.kt declares system.kiosk under
+   * `if (isOwner)` and nothing else, which is precisely the condition under which STPolicy's
+   * owned() actions — setStatusBarDisabled, setUninstallBlocked, lockNow, reboot — do anything.
+   * No non-Android player declares system.kiosk; Tizen and BrightSign both refuse it explicitly
+   * and in writing, so this cannot leak the commands onto a platform that would swallow them.
+   *
+   * The canonical name stays first so a refusal still says 'system.device_owner'.
+   */
+  lock_now: ['system.device_owner', 'system.kiosk'],
+  power_menu: ['system.device_owner', 'system.kiosk'],
+  status_bar: ['system.device_owner', 'system.kiosk'],
+  block_uninstall: ['system.device_owner', 'system.kiosk'],
+  unblock_uninstall: ['system.device_owner', 'system.kiosk'],
   set_time: 'system.time',
   set_timezone: 'system.time',
   shell: 'system.shell',
   install_apk: 'system.install_apk',
 
-  // remote view
-  enable_system_capture: 'remote.screenshot',
+  /*
+   * Remote view. Ungated, and the reason is a circle: enable_system_capture asks Android to raise
+   * the MediaProjection consent dialog, which is how a panel GAINS full-screen capture. Gating it
+   * on 'remote.screenshot' meant the only panel that needs it — one with neither accessibility nor
+   * a projection grant, which therefore declares no remote.screenshot — was the one panel that
+   * could not be sent it. A bootstrap cannot require the thing it bootstraps.
+   *
+   * ⚠️ The dashboard still has the other half of this bug: device-detail.js renders the "enable
+   * system view" button behind `can('remote.screenshot')`. Fixing that is a frontend change and is
+   * written up in docs/player-parity.md; ungating the command is the half that lives here.
+   */
+  enable_system_capture: null,
 
   // Diagnostics: deliberately unrestricted. set_debug turns on the log stream you need precisely
   // when a panel is behaving in a way its capability declaration did not predict.
@@ -238,13 +352,29 @@ const COMMAND_CAPABILITY = {
 };
 
 /**
- * The capability a command requires, or null when it needs none.
- * Unknown commands also return null — this map gates, it does not authorise: the allow-list of
+ * Every capability that would satisfy `type`, as an array. Empty means the command is ungated.
+ * Unknown commands are ungated too — this map gates, it does not authorise: the allow-list of
  * valid command names lives with the routes, and duplicating it here would mean a new command
  * silently stops working until someone remembers to add it in two places.
+ *
+ * @param {string} type
+ * @returns {string[]}
+ */
+function capabilitiesForCommand(type) {
+  if (!Object.prototype.hasOwnProperty.call(COMMAND_CAPABILITY, type)) return [];
+  const value = COMMAND_CAPABILITY[type];
+  if (value === null || value === undefined) return [];
+  return Array.isArray(value) ? value.slice() : [value];
+}
+
+/**
+ * The CANONICAL capability a command requires, or null when it needs none.
+ * Kept returning a single string because that is what a refusal reports and what the dashboard
+ * puts in front of an operator: "needs system.device_owner" is an answer, an array is a puzzle.
  */
 function capabilityForCommand(type) {
-  return Object.prototype.hasOwnProperty.call(COMMAND_CAPABILITY, type) ? COMMAND_CAPABILITY[type] : null;
+  const list = capabilitiesForCommand(type);
+  return list.length ? list[0] : null;
 }
 
 /**
@@ -252,13 +382,13 @@ function capabilityForCommand(type) {
  * @returns {{ok: true} | {ok: false, capability: string}}
  */
 function commandAllowed(device, type) {
-  const cap = capabilityForCommand(type);
-  if (!cap) return { ok: true };
-  if (supports(device, cap)) return { ok: true };
-  return { ok: false, capability: cap };
+  const needed = capabilitiesForCommand(type);
+  if (!needed.length) return { ok: true };
+  if (needed.some((cap) => supports(device, cap))) return { ok: true };
+  return { ok: false, capability: needed[0] };
 }
 
 module.exports = {
   CAPABILITIES, CAP_SET, BASELINE, capabilitiesFor, supports, platformFamily, parseDeclared,
-  COMMAND_CAPABILITY, capabilityForCommand, commandAllowed,
+  COMMAND_CAPABILITY, capabilityForCommand, capabilitiesForCommand, commandAllowed,
 };
