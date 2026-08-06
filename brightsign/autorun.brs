@@ -390,7 +390,13 @@ Function StorageProbe() As Object
     hp = CreateObject("roStorageHotplug")
     ' Ask the platform which volumes exist rather than guessing; the static list is the fallback for
     ' an OS without the enumerator. Same shape BrightSign's own boilerplate uses.
-    volumes = ["SSD:", "SD:", "SD2:", "USB:"]
+    '
+    ' FLASH: is on this list and is NOT on GetStorageStatus()'s. The documented drive strings for
+    ' that method are "SD:", "SSD:" and "USB:" — internal flash is simply not one of the things it
+    ' can answer about, so a player booting from flash (which is how the XT245 in this office ran
+    ' until an NVMe went in) can never be reported as mounted no matter what is actually there.
+    ' Hence the roStorageInfo pass below: the mount check is treated as a hint, not a gate.
+    volumes = ["SSD:", "SD:", "SD2:", "USB:", "FLASH:"]
     ' Feature-gated (see HasFindMember). A player that cannot be probed simply keeps the static list,
     ' which is the answer the enumerator would have given anyway on every model we ship.
     if hp <> invalid and HasFindMember() then
@@ -415,20 +421,43 @@ Function StorageProbe() As Object
         end if
 
         if mounted then
-            result.present = true
-            result.volume = v
-            si = CreateObject("roStorageInfo", v)
-            if si <> invalid then
-                ' Real device capacity. The widget's storage quota — all the page can see via
-                ' navigator.storage.estimate() — is the cache budget, not the disk.
-                result.free_mb = si.GetFreeInMegabytes()
-                result.total_mb = si.GetSizeInMegabytes()
-            end if
-            return result
+            if FillStorage(result, v) then return result
         end if
     end for
 
+    ' Nothing claimed to be mounted — which is not the same as nothing being there.
+    '
+    ' GetStorageStatus() cannot answer for FLASH:, roStorageHotplug may not exist at all on an older
+    ' build, and either way the whole probe hung on one call whose "no" was indistinguishable from
+    ' "cannot say". roStorageInfo is the direct question: a volume that reports a non-zero size IS
+    ' the disk, whatever the hotplug object thinks. The dashboard was showing 1025 MB for a player
+    ' with an NVMe in it — the widget's own cache quota, reported through the fallback in
+    ' st-bridge.js — because this function returned present:false and the page had nothing better.
+    '
+    ' The mount check still runs FIRST: it is the more meaningful answer where it works, and it
+    ' picks the removable volume ahead of internal flash on a player that has both.
+    for each raw in volumes
+        if FillStorage(result, TrimDrive(raw)) then return result
+    end for
+
     return result
+End Function
+
+' Real device capacity for [drive], into [result]. True when the volume answered.
+'
+' The widget's storage quota — all the page can see via navigator.storage.estimate() — is the cache
+' budget, not the disk, which is the entire reason the host is asked at all.
+Function FillStorage(result As Object, drive As String) As Boolean
+    si = CreateObject("roStorageInfo", drive)
+    if si = invalid then return false
+    total = si.GetSizeInMegabytes()
+    if total = invalid or total <= 0 then return false
+    result.present = true
+    result.volume = drive
+    result.total_mb = total
+    free = si.GetFreeInMegabytes()
+    if free <> invalid and free >= 0 then result.free_mb = free
+    return true
 End Function
 
 ' Everything the page cannot ask the hardware directly.

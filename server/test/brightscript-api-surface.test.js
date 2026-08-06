@@ -381,3 +381,29 @@ test('a second widget is never given the first screen\'s rectangle', () => {
   assert.notEqual(args[1], 'rect',
     'the second widget must be positioned at the second output\'s canvas offset, not at rect');
 });
+
+test('storage is probed directly, not only through the mount check', () => {
+  // The mount check is roStorageHotplug.GetStorageStatus(), whose documented drive strings are
+  // "SD:", "SSD:" and "USB:" — internal FLASH: is not one of them, and the object may not exist on
+  // an older build at all. Gating the whole probe on it made "cannot say" indistinguishable from
+  // "no disk", and a player with an NVMe in it reported 1025 MB: the widget's own cache quota,
+  // reported through the navigator.storage.estimate() fallback in st-bridge.js, because the host
+  // had answered present:false.
+  //
+  // roStorageInfo is the direct question and needs no hotplug object. A volume that reports a
+  // non-zero size IS the disk.
+  const src = code('autorun.brs');
+  const probe = /Function StorageProbe\(\)[\s\S]*?\nEnd Function/.exec(src);
+  assert.ok(probe, 'StorageProbe went missing');
+  const body = probe[0];
+  // A second pass that does not consult `mounted` at all.
+  const passes = body.split(/for each raw in volumes/).length - 1;
+  assert.ok(passes >= 2, 'the probe must fall back to asking the volumes directly');
+  assert.ok(/FLASH:/i.test(body),
+    'internal flash must be on the list the direct pass walks — it is how a card-less player boots');
+  // And the direct pass must reject a volume that answers zero, or every player "has" every drive.
+  const fill = /Function FillStorage\([\s\S]*?\nEnd Function/.exec(src);
+  assert.ok(fill, 'FillStorage went missing');
+  assert.match(fill[0], /total\s*=\s*invalid\s+or\s+total\s*<=\s*0/,
+    'a volume that reports no size is not a disk');
+});
