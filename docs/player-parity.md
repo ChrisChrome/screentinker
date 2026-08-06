@@ -75,7 +75,7 @@ privilege model exists on those platforms — so the column is collapsed.
 |---|---|---|---|---|
 | `sync.clock` | ✅ | ✅ | ✅ | ✅ |
 | `sync.native` | ❌ no native protocol | ❌ | ❌ | ⚠️ SyncManager, BOS 8.2.10+; multicast so all members must share one L2 network |
-| `offline.cache` | ✅ content downloaded to disk, **resumable** (Range + If-Range), revision-keyed | ✅ service worker, **resumable chunked prefetch**, revision-keyed | ✅ **media cached to `wgt-private`** (`js/media-cache.js`), resumable, revision-keyed — declared at runtime, since a build with no writable private storage must not claim it | ✅ inherits the web player's service worker |
+| `offline.cache` | ✅ content downloaded to disk, **resumable** (Range + If-Range), revision-keyed | ✅ service worker, **resumable chunked prefetch**, revision-keyed | ✅ **media cached to `wgt-private`** (`js/media-cache.js`), resumable, revision-keyed — declared at runtime | ⚠️ **depends on the host widget's storage config — see below** |
 
 ---
 
@@ -91,6 +91,20 @@ Ordered by how visible the failure is to an operator.
    across attempts instead of restarting from zero, and revision-keyed, so a replaced asset is
    still a miss. The capability is declared at runtime rather than assumed: a build that cannot
    write to private storage keeps quiet about it.
+3. **BrightSign offline caching is NOT automatic — it depends on who created the widget.** A real
+   XT245 on alpha exposes `navigator.serviceWorker`, and then never even fetches `sw.js`:
+   registration is refused, so there is no worker, no content cache and no offline playback. That
+   unit is running **BSN's Supervisor** (`autorun.createdby = Supervisor 2.1.18.3`) rather than our
+   `brightsign/autorun.brs`, and Supervisor's widget has no `storage_path` — the setting our own
+   host script does set (`storage_path: "/cache"`, `storage_quota: "1073741824"`), and the
+   precondition for a widget having persistent storage at all. So this is very likely a widget
+   CONFIG issue rather than a platform limit, but **it is unverified on hardware**: nobody has yet
+   watched a player running our package register a worker.
+
+   The player no longer lies about it either way — `offline.cache` is declared only when a worker
+   is genuinely in control, and a refused registration reports `app_error/sw_unavailable` to the
+   server instead of a `console.warn` on a display nobody has a console for.
+
 3. **BrightSign `remote.screenshot` needs primary storage.** Reachable today only via the canvas
    fallback, which cannot read the video plane, so screenshots show everything except the video.
    Resolves itself when a card or SSD is fitted.

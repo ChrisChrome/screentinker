@@ -497,6 +497,10 @@
     // can't see SSID/RSSI, so we send only offline_ms + link_lost + cold_start:false.
     let disconnectedAt = 0;         // Date.now() at the first disconnect of the current gap (0 = not in a gap)
     let linkLostDuringGap = false;  // navigator went offline at any point during the gap
+    // Set when register() is REFUSED (not merely pending). A runtime can expose navigator
+    // .serviceWorker and still decline to run one — a real BrightSign widget does exactly that —
+    // and the display must stop claiming an offline capability it cannot honour.
+    let swRegistrationFailed = false;
     // feat/offline-cause-log: typed incident feed (device:event) — server inserts a device_events row.
     // Best-effort + auth-guarded (the reconnected socket is authenticated by the time we emit).
     function emitDeviceEvent(type, reason, detail) {
@@ -1723,11 +1727,21 @@
         }
       } catch (e) { /* bundle absent: hard cuts, and we do not claim the capability */ }
 
-      // Offline caching is the service worker. Reported on support rather than on an active
-      // controller: the first load registers it and has no controller yet, and a display that
-      // re-registers on every boot would otherwise flap this capability on and off.
+      // Offline caching is the service worker — and the API EXISTING is not the same as it
+      // working. A real BrightSign XT245 on alpha has `serviceWorker` in navigator, passes this
+      // check, and then never even fetches sw.js: registration is refused by its widget runtime.
+      // It declared offline.cache to the fleet and could not cache a single byte.
+      //
+      // So the claim is made on a worker that is actually IN CONTROL. The cost is that the very
+      // first load under-reports (registration has happened but the worker has not claimed the
+      // page yet) — which is the right direction to be wrong in, and self-corrects: activation
+      // triggers a reload, and the next register sends the true set. `swRegistrationFailed` makes
+      // the negative stick on a runtime where it will never succeed, rather than waiting on a
+      // controller that is never coming.
       try {
-        if ('serviceWorker' in navigator) caps.push('offline.cache');
+        if (!swRegistrationFailed && navigator.serviceWorker && navigator.serviceWorker.controller) {
+          caps.push('offline.cache');
+        }
       } catch (e) { /* locked-down browser */ }
 
       // Screenshots need somewhere to draw. Same-origin content and a 2d context are the real
@@ -4071,7 +4085,20 @@
             });
           }
         });
-      }, (err) => console.warn('SW registration failed:', err));
+      }, (err) => {
+        // A registration that fails has to be VISIBLE. This one went to console.warn on a display
+        // nobody has a console for, so a panel that could not cache anything looked identical to
+        // one that could — for as long as nobody thought to compare nginx logs against the
+        // capability it was advertising.
+        swRegistrationFailed = true;
+        console.warn('SW registration failed:', err);
+        try {
+          // 'app_error' rather than a new type: the server allow-lists event types, and a type it
+          // does not know is dropped silently — which would have made this report as invisible as
+          // the console.warn it replaces.
+          emitDeviceEvent('app_error', 'sw_unavailable', String((err && err.message) || err).slice(0, 200));
+        } catch (e) { /* reporting must never break the player */ }
+      });
     }
 
     // ==================== Keyboard shortcuts ====================

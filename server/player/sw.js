@@ -1,3 +1,6 @@
+// v23: offline.cache is claimed only when a worker is actually IN CONTROL — a real BrightSign
+// widget exposes navigator.serviceWorker, refuses to register one, and was advertising the
+// capability to the fleet regardless.
 // v22: worker scope widened to '/' (it never controlled /player before) + prune-to-playlist, so a
 // replaced asset's superseded copy is reclaimed rather than waiting on the quota.
 // v21: chunked resumable content prefetch + revision-keyed media URLs — index.html gained
@@ -8,7 +11,7 @@
 // — a player then ran a new index.html against a stale st-bridge.js and threw on every heartbeat.
 // Bump whenever a shipped /player asset changes shape; content lives in its own cache, so this
 // costs a small re-download and never re-fetches the playlist.
-const CACHE_NAME = 'rd-player-v22';
+const CACHE_NAME = 'rd-player-v23';
 // Content lives in its own cache so the shell can be re-versioned (the activate handler deletes
 // every cache that is not CACHE_NAME) WITHOUT throwing away megabytes of media that are still
 // perfectly valid. Rolling the shell used to mean a player re-downloaded its entire playlist.

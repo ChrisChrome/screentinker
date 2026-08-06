@@ -21,7 +21,7 @@ const { CAP_SET } = require('../lib/player-capabilities');
 const HTML = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
 
 /** Pull declaredCapabilities() out of the player and run it in a controlled world. */
-function declare({ host = false, sync = false, transitions = false, canvas = true, sw = true } = {}) {
+function declare({ host = false, sync = false, transitions = false, canvas = true, sw = true, swRefused = false } = {}) {
   const start = HTML.indexOf('    function declaredCapabilities() {');
   assert.notEqual(start, -1, 'declaredCapabilities() must exist in the player');
   let depth = 0, end = -1;
@@ -33,7 +33,9 @@ function declare({ host = false, sync = false, transitions = false, canvas = tru
 
   const sandbox = {
     console: { log() {}, warn() {} },
-    navigator: sw ? { serviceWorker: {} } : {},
+    // `sw` now means "a worker is IN CONTROL", not merely "the API exists" — those are different
+    // things, and a real BrightSign widget is the difference (see the test below).
+    navigator: sw ? { serviceWorker: { controller: {} } } : (swRefused ? { serviceWorker: {} } : {}),
     document: {
       createElement: () => (canvas
         ? { width: 0, height: 0, getContext: () => ({ drawImage() {} }), toDataURL: () => 'data:,' }
@@ -41,6 +43,7 @@ function declare({ host = false, sync = false, transitions = false, canvas = tru
     },
     BS: host ? { hasHost: () => true } : null,
   };
+  sandbox.swRegistrationFailed = swRefused;
   sandbox.window = sandbox;
   if (sync) sandbox.ScreenTinkerBSSync = { available: () => true };
   // The real runtime globals the player's own transitionRuntimeReady() checks. An earlier draft
@@ -101,9 +104,19 @@ test('screenshots are claimed only when there is something to draw on', () => {
   assert.ok(!declare({ canvas: false }).includes('remote.screenshot'));
 });
 
-test('offline cache follows service-worker support', () => {
+test('offline cache follows a worker that is actually IN CONTROL', () => {
   assert.ok(declare({ sw: true }).includes('offline.cache'));
   assert.ok(!declare({ sw: false }).includes('offline.cache'));
+});
+
+test('THE BRIGHTSIGN CASE: the API exists, no worker controls the page, so no claim', () => {
+  // Found on real hardware. A BrightSign XT245 on alpha has navigator.serviceWorker, passes an
+  // `'serviceWorker' in navigator` check, and then never even fetches sw.js — its widget runtime
+  // refuses to register one. It was advertising offline.cache to the fleet while being unable to
+  // cache a single byte, which is precisely the lie this whole capability model exists to stop.
+  const caps = declare({ swRefused: true });
+  assert.ok(!caps.includes('offline.cache'), 'a runtime that will not run a worker must not claim to cache');
+  assert.ok(caps.includes('playback.video'), 'and it must still declare what it genuinely can do');
 });
 
 test('transitions are declared only when the bundle actually loaded', () => {
