@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.9.30
+
+A patch off 1.9.29 carrying two fixes for faults that are live and silent. Both were found by a QA
+pass driving real browsers rather than by reading code, and both fail in the direction that leaves a
+screen dark with nothing in any log.
+
+### Fixed — a missing media file answered 200 with the dashboard, cached for a month
+`express.static` calls `next()` on a miss and the only thing downstream was the SPA catch-all, so
+`GET /uploads/content/<gone>.mp4` returned **200 OK, `Content-Type: text/html`**, 15KB of
+`index.html`, under the `public, max-age=2592000, immutable` header the mount had already set on the
+way in.
+
+For a player that is the worst possible answer. Every downloader in this product treats 200 as
+success, so a panel stores the HTML page **as the video**, caches it for a month, and renders a black
+frame. Android's cache validates the byte COUNT against `Content-Length`, not the content type, so a
+correctly-sized page passes the integrity check and is promoted as a valid asset.
+
+It is reachable exactly when it hurts: a content replace writes a new randomly-named file and unlinks
+the old one, so any snapshot still pointing at the old name asks for a file that is gone. A miss now
+terminates in a 404 with no cache header — `immutable` is a promise about a file that exists.
+
+### Fixed — an empty playlist wiped a display's entire offline library
+The player asks the service worker to hold its current media and to drop anything else. An empty list
+was honoured as "drop everything" — and `assignments: []` is what the server sends for a device
+between playlists, for a playlist never published, and from inside the `catch` when a stored snapshot
+fails to parse. Reproduced: three cached assets, one empty payload, cache emptied.
+
+That is only survivable while the uplink is up, which is precisely when the offline cache does not
+matter. A cache kept too long costs disk the quota reclaims anyway; one dropped at the wrong moment
+is a dark screen with no way back. An empty list is no longer a prune instruction.
+
 ## 1.9.29
 
 The release candidates 1.9.29-rc1 through rc5 are folded in here; the entries below record what

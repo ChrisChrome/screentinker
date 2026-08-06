@@ -1,3 +1,6 @@
+// v24: an empty playlist payload no longer prunes. `assignments: []` is what the server sends for a
+// device between playlists AND for a snapshot that failed to parse, and treating it as "keep nothing"
+// wiped the panel's entire offline library on a message that means nothing of the sort.
 // v23: offline.cache is claimed only when a worker is actually IN CONTROL — a real BrightSign
 // widget exposes navigator.serviceWorker, refuses to register one, and was advertising the
 // capability to the fleet regardless.
@@ -11,7 +14,7 @@
 // — a player then ran a new index.html against a stale st-bridge.js and threw on every heartbeat.
 // Bump whenever a shipped /player asset changes shape; content lives in its own cache, so this
 // costs a small re-download and never re-fetches the playlist.
-const CACHE_NAME = 'rd-player-v23';
+const CACHE_NAME = 'rd-player-v24';
 // Content lives in its own cache so the shell can be re-versioned (the activate handler deletes
 // every cache that is not CACHE_NAME) WITHOUT throwing away megabytes of media that are still
 // perfectly valid. Rolling the shell used to mean a player re-downloaded its entire playlist.
@@ -143,7 +146,17 @@ self.addEventListener('message', (event) => {
   // writes a new randomly-named file, so the old copy lives at a different PATH and nothing keyed
   // on the asset path can find it. Without this the cache only grows, and on a panel with a 1GB
   // widget quota a handful of replaced videos is the entire budget.
-  if (data.prune) prefetchChain = prefetchChain.then(() => pruneToPlaylist(data.urls)).catch(() => {});
+  // An EMPTY list is never a prune instruction, and that distinction is the whole guard. "This
+  // display needs nothing" and "the payload did not arrive intact" are the same message on the wire,
+  // and the second is not rare: buildPlaylistPayload() yields `assignments: []` for a device between
+  // playlists, for a playlist never published, AND inside the catch when a published_snapshot fails
+  // to JSON.parse. Honouring it deleted every byte of media the panel held — three cached assets,
+  // one empty payload, cache emptied — which is only survivable while the uplink is up, i.e. exactly
+  // when this cache does not matter. A cache kept too long costs disk the quota reclaims anyway; one
+  // dropped at the wrong moment is a dark screen with no way back.
+  if (data.prune && data.urls.length > 0) {
+    prefetchChain = prefetchChain.then(() => pruneToPlaylist(data.urls)).catch(() => {});
+  }
 
   for (const url of data.urls) {
     if (typeof url !== 'string' || !POLICY || !POLICY.isCacheableContent(url, 'GET')) continue;
