@@ -232,9 +232,18 @@ function showPlaylistPreview(playlist) {
         </div>
       </div>
       <div style="padding:16px;display:flex;align-items:center;justify-content:center;background:#000">
-        <div id="pvpStage" style="height:78vh;max-width:92vw;aspect-ratio:${aspect()};background:#000">
-          <iframe id="pvpFrame" style="border:0;background:#000" src="${frameSrc()}"></iframe>
+          <!-- The stage is the sized box; the frame inside it is rotated to the panel's own shape
+               (#238), so a portrait preview is no longer the double rotation it used to be.
+               72vh rather than 78: the modal caps at 92vh with overflow:hidden, and the header plus
+               the transport row cost ~12vh — at 78 the skip buttons fell off the bottom. -->
+          <div id="pvpStage" style="height:72vh;max-width:92vw;aspect-ratio:${aspect()};background:#000">
+            <iframe id="pvpFrame" style="border:0;background:#000" src="${frameSrc()}"></iframe>
+          </div>
         </div>
+        <div style="display:flex;justify-content:center;align-items:center;gap:12px;padding:10px 16px;border-top:1px solid var(--border)">
+          <button class="btn btn-secondary btn-sm" id="pvpPrev" disabled>&#8249; ${t('playlist.preview_prev')}</button>
+          <span id="pvpPosition" style="color:var(--text-muted);font-size:13px;min-width:110px;text-align:center">&nbsp;</span>
+          <button class="btn btn-secondary btn-sm" id="pvpNext" disabled>${t('playlist.preview_next')} &#8250;</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -243,22 +252,69 @@ function showPlaylistPreview(playlist) {
   frameDeviceOutput(stage, frame, orientation);
   const btnL = overlay.querySelector('#pvpLandscape');
   const btnP = overlay.querySelector('#pvpPortrait');
+  const btnPrev = overlay.querySelector('#pvpPrev');
+  const btnNext = overlay.querySelector('#pvpNext');
+  const position = overlay.querySelector('#pvpPosition');
+
+  // #239: skip/next. The preview already IS the real player in device-free preview mode, so the
+  // control is a message to that one iframe rather than a second copy of the playback logic.
+  // Addressing frame.contentWindow (not a broadcast) and pinning targetOrigin to our own origin is
+  // what keeps this off any real screen: a live display holds a socket to the server and is not
+  // reachable from this page at all, and the preview player itself ignores the message unless it
+  // booted with ?preview=1.
+  const send = (action) => {
+    try { frame.contentWindow?.postMessage({ source: 'screentinker-preview', action }, window.location.origin); } catch (e) {}
+  };
+  const onPlayerMessage = (ev) => {
+    if (ev.origin !== window.location.origin) return;
+    if (ev.source !== frame.contentWindow) return;   // ignore any other frame on the page
+    const d = ev.data;
+    if (!d || d.source !== 'screentinker-player' || d.type !== 'preview:state') return;
+    // A multi-zone playlist plays all zones at once, so there is no single item to step through —
+    // showing a counter there would be a lie and the buttons would appear dead.
+    if (d.zoned || !d.total) {
+      btnPrev.disabled = btnNext.disabled = true;
+      position.textContent = d.zoned ? t('playlist.preview_zoned') : '';
+      return;
+    }
+    btnPrev.disabled = btnNext.disabled = false;
+    position.textContent = t('playlist.preview_position', { current: (d.index >= 0 ? d.index : 0) + 1, total: d.total });
+  };
+  window.addEventListener('message', onPlayerMessage);
+  // The player posts its state as soon as it has content, but an orientation reload restarts it —
+  // ask again on every load so the counter can never be left stale from the previous run.
+  frame.addEventListener('load', () => send('sync'));
+
   const setOrientation = (o) => {
     orientation = o;
-    stage.style.aspectRatio = aspect();
-    frameDeviceOutput(stage, frame, orientation);
+      // The stage carries the aspect; the frame is rotated inside it (#238).
+      stage.style.aspectRatio = aspect();
+      frameDeviceOutput(stage, frame, orientation);
+      btnPrev.disabled = btnNext.disabled = true;   // reloading: no item until the player says so
+      position.textContent = '';
     frame.src = frameSrc();
     btnL.className = 'btn btn-sm ' + (o === 'landscape' ? 'btn-primary' : 'btn-secondary');
     btnP.className = 'btn btn-sm ' + (o.startsWith('portrait') ? 'btn-primary' : 'btn-secondary');
   };
   btnL.onclick = () => setOrientation('landscape');
   btnP.onclick = () => setOrientation('portrait');
-  const close = () => overlay.remove();
+  btnPrev.onclick = () => send('prev');
+  btnNext.onclick = () => send('next');
+  // Listeners are on window/document, so they outlive the overlay unless close() takes them with
+  // it — a leaked keydown handler would keep firing at a closed preview.
+  const close = () => {
+    overlay.remove();
+    window.removeEventListener('message', onPlayerMessage);
+    document.removeEventListener('keydown', onKey);
+  };
+  function onKey(ev) {
+    if (ev.key === 'Escape') close();
+    else if (ev.key === 'ArrowRight') send('next');
+    else if (ev.key === 'ArrowLeft') send('prev');
+  }
   overlay.querySelector('#pvpClose').onclick = close;
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
-  document.addEventListener('keydown', function esc(ev) {
-    if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
-  });
+  document.addEventListener('keydown', onKey);
 }
 
 /*
