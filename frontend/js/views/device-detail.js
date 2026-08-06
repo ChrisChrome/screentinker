@@ -1561,7 +1561,9 @@ async function setupPlaylistActions(device) {
             </div>
             <div class="form-group">
               <label>${t('device.assign.duration_label')}</label>
-              <input type="number" id="assignDuration" class="input" value="10" min="1" max="3600">
+              <!-- max is the server's absurd-duration ceiling (12h): a feature-length clip
+                   pre-filled from its own length must not land in an out-of-range field. -->
+              <input type="number" id="assignDuration" class="input" value="10" min="1" max="43200">
             </div>
             <!-- Tabs -->
             <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:12px">
@@ -1572,7 +1574,7 @@ async function setupPlaylistActions(device) {
             <!-- Media grid -->
             <div class="assign-content-grid" id="assignMedia">
               ${content.map(c => `
-                <div class="assign-content-item" data-content-id="${c.id}" data-type="content">
+                <div class="assign-content-item" data-content-id="${c.id}" data-type="content" data-duration="${Number(c.duration_sec) > 0 ? Math.ceil(c.duration_sec) : ''}">
                   ${c.thumbnail_path
                     ? `<img data-auth-src="/api/content/${c.id}/thumbnail" alt="">`
                     : c.remote_url
@@ -1632,12 +1634,21 @@ async function setupPlaylistActions(device) {
 
       let selectedId = null;
       let selectedType = null;
+      // #237: this modal always SENDS a duration, so the server's "default a video to its own
+      // length" rule can never fire here — the field has to carry the clip length itself, or
+      // picking a 32s video silently assigns a 10s item that cuts off. Anything the operator
+      // typed is theirs and is never overwritten.
+      const durInput = modal.querySelector('#assignDuration');
+      let durationTouched = false;
+      durInput?.addEventListener('input', () => { durationTouched = true; });
       modal.querySelectorAll('.assign-content-item').forEach(item => {
         item.addEventListener('click', () => {
           modal.querySelectorAll('.assign-content-item').forEach(i => i.classList.remove('selected'));
           item.classList.add('selected');
           selectedId = item.dataset.contentId;
           selectedType = item.dataset.type;
+          const clip = parseInt(item.dataset.duration || '', 10);
+          if (durInput && !durationTouched) durInput.value = clip > 0 ? clip : 10;
         });
       });
 

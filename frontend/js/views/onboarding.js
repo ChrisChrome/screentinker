@@ -219,7 +219,10 @@ export function render(container) {
               await fetch(`/api/assignments/device/${pairedDeviceId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                body: JSON.stringify({ content_id: content.id, duration_sec: 10 })
+                // #237: no duration_sec — onboarding never asked the operator for one, and a
+                // hardcoded 10 cut their very first video off mid-play. Omitting it lets the
+                // server default to the clip's own length (still 10s for a photo).
+                body: JSON.stringify({ content_id: content.id })
               });
             } catch {}
           }

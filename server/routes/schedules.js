@@ -9,6 +9,7 @@ const { db } = require('../db/database');
 // payload refs with no ownership check at all (only the target was checked).
 const { accessContext } = require('../lib/tenancy');
 const { effectiveDeviceTz } = require('../lib/device-timezone');
+const { resolveItemDuration } = require('../lib/item-duration');
 
 // Helper: build the expanded schedule query for a device (device-level + group-level)
 function getDeviceSchedulesQuery() {
@@ -271,12 +272,14 @@ router.post('/', (req, res) => {
   // playlist. That reuses the whole published/assign/push pipeline as-is.
   let effectivePlaylistId = playlist_id || null;
   if (!effectivePlaylistId && content_id) {
-    const c = db.prepare('SELECT filename FROM content WHERE id = ?').get(content_id);
+    const c = db.prepare('SELECT filename, duration_sec FROM content WHERE id = ?').get(content_id);
     const genId = uuidv4();
     db.prepare('INSERT INTO playlists (id, name, workspace_id, user_id, status) VALUES (?, ?, ?, ?, ?)')
       .run(genId, `Scheduled: ${(c && c.filename) || 'item'}`, targetWorkspaceId, req.user.id, 'published');
-    db.prepare('INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec) VALUES (?, ?, 0, 10)')
-      .run(genId, content_id);
+    // #237: a scheduled video is a one-item playlist with nowhere to edit the duration, so a
+    // flat 10 here would cut the clip off with no visible knob to fix it.
+    db.prepare('INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec) VALUES (?, ?, 0, ?)')
+      .run(genId, content_id, resolveItemDuration(null, c));
     // Publish through the shared path rather than hand-rolling the snapshot: players read
     // denormalized fields (filename, mime_type, filepath, remote_url, schedules...) out of
     // published_snapshot, and duplicating that shape here would rot the moment it changes.

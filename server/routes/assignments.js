@@ -8,19 +8,13 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // though playlists.js itself isn't yet workspace-filtered.
 const { accessContext } = require('../lib/tenancy');
 const { zoneInLayout } = require('../lib/zone-validate');
+// #237 + #widget zero-duration loop: one place decides what duration a new item gets —
+// explicit value, else the content's own length, else the 10s default (and never a 0).
+const { resolveItemDuration } = require('../lib/item-duration');
 
 // Mark playlist as draft (called after any item mutation)
 function markDraft(playlistId) {
   db.prepare("UPDATE playlists SET status = 'draft', updated_at = strftime('%s','now') WHERE id = ?").run(playlistId);
-}
-
-// Hardening (#widget zero-duration loop): a non-positive duration — especially
-// duration_sec=0 on a widget — makes the player schedule a 0ms auto-advance, which
-// self-loops and black-screens the TV. Never STORE a bad value: floor any missing/
-// invalid/<1 duration to the 10s default so it can't reach a device.
-function normalizeDuration(v) {
-  const n = Number(v);
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 10;
 }
 
 // Hardening (#zone-orphan): a zone_id only renders if it belongs to the layout the
@@ -105,17 +99,20 @@ router.post('/device/:deviceId', (req, res) => {
   const access = checkDeviceAccess(req, res, 'deviceId', true);
   if (!access) return;
   const { content_id, widget_id, zone_id, sort_order } = req.body;
-  const duration_sec = normalizeDuration(req.body.duration_sec);
 
   if (!content_id && !widget_id) return res.status(400).json({ error: 'content_id or widget_id required' });
 
+  let content = null;
   if (content_id) {
-    const content = db.prepare('SELECT id, workspace_id FROM content WHERE id = ?').get(content_id);
+    content = db.prepare('SELECT id, workspace_id, duration_sec FROM content WHERE id = ?').get(content_id);
     if (!content) return res.status(404).json({ error: 'Content not found' });
     if (content.workspace_id && content.workspace_id !== access.device.workspace_id) {
       return res.status(403).json({ error: 'Content is not in this device\'s workspace' });
     }
   }
+  // #237: pushing a video straight at a display is the shortest path in the product, so it
+  // has to default to the clip's length too — not the 10s that cut it off mid-play.
+  const duration_sec = resolveItemDuration(req.body.duration_sec, content);
   if (widget_id) {
     const widget = db.prepare('SELECT id, workspace_id FROM widgets WHERE id = ?').get(widget_id);
     if (!widget) return res.status(404).json({ error: 'Widget not found' });
@@ -234,7 +231,7 @@ router.put('/:id', (req, res) => {
   const values = [];
 
   if (sort_order !== undefined) { updates.push('sort_order = ?'); values.push(sort_order); }
-  if (duration_sec !== undefined) { updates.push('duration_sec = ?'); values.push(normalizeDuration(duration_sec)); }
+  if (duration_sec !== undefined) { updates.push('duration_sec = ?'); values.push(resolveItemDuration(duration_sec, null)); }
   // zone_id can be null (clear the zone) - treat undefined as "no change",
   // any other value (including null) as "write this".
   if (zone_id !== undefined) {
@@ -337,7 +334,7 @@ router.post('/device/:deviceId/copy-to/:targetDeviceId', (req, res) => {
 
   const transaction = db.transaction(() => {
     sourceItems.forEach((a, i) => {
-      stmt.run(targetPlaylistId, a.content_id, a.widget_id, a.zone_id || null, maxOrder + i + 1, normalizeDuration(a.duration_sec));
+      stmt.run(targetPlaylistId, a.content_id, a.widget_id, a.zone_id || null, maxOrder + i + 1, resolveItemDuration(a.duration_sec, null));
     });
   });
   transaction();

@@ -10,6 +10,7 @@ const { accessContext } = require('../lib/tenancy');
 const { requireScope } = require('../middleware/apiToken');
 const { resolveSyncBackend, BACKENDS } = require('../lib/sync-backend');
 const playerCapabilities = require('../lib/player-capabilities');
+const { resolveItemDuration } = require('../lib/item-duration');
 
 const VALID_COLOR = /^#[0-9A-Fa-f]{6}$/;
 const ALLOWED_COMMANDS = [
@@ -326,11 +327,14 @@ router.post('/:id/assign-content', requireGroupWrite, (req, res) => {
 
   // Verify content lives in the same workspace as the group (or is a
   // platform-template row).
-  const content = db.prepare('SELECT id, workspace_id FROM content WHERE id = ?').get(content_id);
+  const content = db.prepare('SELECT id, workspace_id, duration_sec FROM content WHERE id = ?').get(content_id);
   if (!content) return res.status(404).json({ error: 'Content not found' });
   if (content.workspace_id && content.workspace_id !== req.group.workspace_id) {
     return res.status(403).json({ error: 'Content is not in this group\'s workspace' });
   }
+  // #237: same duration rule as every other add path — a video defaults to its own length,
+  // and here a wrong default would be wrong on every screen in the group at once.
+  const itemDuration = resolveItemDuration(duration_sec, content);
 
   const members = db.prepare('SELECT device_id FROM device_group_members WHERE group_id = ?').all(req.params.id);
 
@@ -339,7 +343,7 @@ router.post('/:id/assign-content', requireGroupWrite, (req, res) => {
       const playlistId = ensureDevicePlaylist(m.device_id, req.user.id);
       const max = db.prepare('SELECT COALESCE(MAX(sort_order),0)+1 as next FROM playlist_items WHERE playlist_id = ?').get(playlistId);
       db.prepare('INSERT INTO playlist_items (playlist_id, content_id, sort_order, duration_sec) VALUES (?, ?, ?, ?)')
-        .run(playlistId, content_id, max.next, duration_sec || 10);
+        .run(playlistId, content_id, max.next, itemDuration);
       markDraft(playlistId);
     }
   });

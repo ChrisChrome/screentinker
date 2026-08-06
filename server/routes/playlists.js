@@ -7,6 +7,7 @@ const config = require('../config');
 // Phase 2.2k: workspace-aware access. requirePlaylistOwnership is replaced
 // by read/write helpers gated on the playlist's workspace_id.
 const { accessContext } = require('../lib/tenancy');
+const { resolveItemDuration } = require('../lib/item-duration');
 
 // Re-probe video duration with ffprobe if content.duration_sec is missing
 async function probeAndUpdateDuration(content) {
@@ -450,18 +451,20 @@ router.post('/:id/items', requirePlaylistWrite, async (req, res) => {
       return res.status(400).json({ error: 'duration_sec must be a positive integer' });
     }
 
+    let content = null;
     if (content_id) {
-      const content = db.prepare('SELECT id, workspace_id, duration_sec, mime_type, filepath FROM content WHERE id = ?').get(content_id);
+      content = db.prepare('SELECT id, workspace_id, duration_sec, mime_type, filepath FROM content WHERE id = ?').get(content_id);
       if (!content) return res.status(404).json({ error: 'Content not found' });
       if (content.workspace_id && content.workspace_id !== req.playlist.workspace_id) {
         return res.status(403).json({ error: 'Content is not in this playlist\'s workspace' });
       }
+      // Rows ingested before the probe existed (or while ffprobe was missing) have no stored
+      // duration; re-probe once so this add still gets the clip's length, and backfill the row.
       if (duration_sec === undefined || duration_sec === null) {
-        const contentDur = await probeAndUpdateDuration(content);
-        if (contentDur) duration_sec = Math.ceil(contentDur);
+        content.duration_sec = await probeAndUpdateDuration(content);
       }
     }
-    if (duration_sec === undefined || duration_sec === null) duration_sec = 10;
+    duration_sec = resolveItemDuration(duration_sec, content);
     if (widget_id) {
       const widget = db.prepare('SELECT id, workspace_id FROM widgets WHERE id = ?').get(widget_id);
       if (!widget) return res.status(404).json({ error: 'Widget not found' });
