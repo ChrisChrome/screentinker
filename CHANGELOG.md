@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.9.29-rc5
+
+### Fixed — the BrightSign host scripts were written against Roku's API reference
+BrightScript is Roku's language, the two references read almost identically, and nothing in CI can
+run either — so a call to an object that does not exist looked exactly like a call to one that does.
+Found by auditing against BrightSign's published reference after a consultant's deployment failed,
+and verified on an XT245.
+
+- **A string literal stopped the whole script loading.** `"{""width"":"` is not an escaped quote;
+  BrightScript has no escape sequences, so it is three adjacent literals with no operator between
+  them. The compiler rejects the entire file — `ScriptLoadError: Syntax Error (compile error &h02)`
+  — which is not a broken feature but **no player at all**, on a display showing nothing.
+- **`MatchFiles` was called with a path as both arguments.** It takes a DIRECTORY plus a pattern and
+  returns nothing when the pattern contains a separator, so the existence check could never return
+  true for any file on any player. That is the reported failure: `no autorun.zip on any volume`
+  printed while `dir SD:` listed it. It also silently disabled the entire self-update path.
+- **Roku objects that do not exist on BrightSign**, each quietly disabling a feature: `roFileSystem`
+  (~20 sites — an update could never be marked applied), `roMessageDigest` (verification returned
+  false unconditionally and burned the retry counter), `PostFromStringWithRetry` (a snapshot request
+  raised "member function not found" from inside the event loop and took the player down).
+- **`Unpack()` deletes everything already in its target directory.** Unpacking an update to the
+  volume root would have erased the player's provisioning and its whole content pool as a side
+  effect of a routine upgrade. It now stages to a directory of its own and never overwrites
+  `screentinker.json`.
+- Rotation moves to `SetScreenModes()` (`SetMode()` takes one argument) and fires only on a real
+  change, because that call reboots the player.
+
+`server/test/brightscript-api-surface.test.js` guards all of it — a deny-list of Roku APIs plus the
+argument shapes and literal forms that compile and then do nothing.
+
+### Fixed — a player that could not cache was telling the fleet it could
+A real BrightSign exposes `navigator.serviceWorker`, passes an `'serviceWorker' in navigator` check,
+and then never even fetches the worker: its runtime refuses to register one. It advertised
+`offline.cache` while unable to cache a byte. The capability is now claimed only when a worker is
+genuinely in control, and a refused registration reports itself to the server instead of a
+`console.warn` on a display nobody has a console for.
+
+### Fixed — storage paths assumed a card slot that may not exist
+`StorageRoot()` knew only internal flash and SD. Fitting real storage to a flash-booting player and
+moving the deployment onto it resolved every derived path — the offline page, the widget's local
+storage, the update paths — to a slot with nothing in it. It now probes in the order the OS itself
+searches for an autorun script. The widget's `storage_path` is likewise an absolute path on the boot
+volume rather than a bare `/cache`, which carried no drive specifier and so had nowhere to persist.
+
 ## 1.9.29-rc4
 
 ### Fixed — the web player's offline cache was switched off at the URL everyone uses
