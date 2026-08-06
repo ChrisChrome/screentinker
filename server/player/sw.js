@@ -1,6 +1,6 @@
 // v24: an empty playlist payload no longer prunes. `assignments: []` is what the server sends for a
-// device between playlists AND for a snapshot that failed to parse, and treating it as "keep nothing"
-// wiped the panel's entire offline library on a message that means nothing of the sort.
+// device between playlists AND for a snapshot that failed to parse, and treating it as "keep
+// nothing" wiped the panel's entire offline library on a message that means nothing of the sort.
 // v23: offline.cache is claimed only when a worker is actually IN CONTROL — a real BrightSign
 // widget exposes navigator.serviceWorker, refuses to register one, and was advertising the
 // capability to the fleet regardless.
@@ -54,11 +54,26 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
   // Widget renders pinned to a revision: cache-FIRST, because those exact bytes cannot change
-  // without the rev changing. This is what lets a widget keep rendering when the network is gone —
-  // previously the server sent no-store for every render, so widgets were the one thing the
-  // player's offline cache could never hold, and a display that lost its uplink lost them.
-  // ignoreSearch is deliberately NOT used here: the query string carries the rev, and ignoring it
-  // would match a different revision's entry, which is the staleness we are trying to remove.
+  // without the rev changing. ignoreSearch is deliberately NOT used here: the query string carries
+  // the rev, and ignoring it would match a different revision's entry, which is the staleness we
+  // are trying to remove.
+  //
+  // MEASURED LIMIT, do not read more into this branch than it delivers. The player mounts widgets in
+  // an iframe sandboxed to `allow-scripts` with NO allow-same-origin (index.html,
+  // renderWidgetBuffered), so that frame is an OPAQUE-origin client — and a service worker does not
+  // control opaque-origin clients. Its navigation request never reaches this handler. Driven in
+  // Chrome against a live server: a clock widget mounted five times over 25s and the shell cache
+  // held zero widget entries, while a plain fetch() of the identical URL from the controlled page
+  // was intercepted and stored. So this branch serves anything that reaches it — a same-origin
+  // fetch, a future non-sandboxed mount — and today the player's own widgets are not that.
+  //
+  // What actually keeps widgets rendering offline right now is the HTTP cache plus the server's
+  // `max-age=31536000, immutable` on a rev-pinned render (routes/widgets.js). That is sound in a
+  // desktop browser and is NOT a documented-persistent store on BrightSign, which guarantees
+  // survival across reboots for IndexedDB, localStorage and SQLite only — the same gap that made
+  // content caching necessary. Closing it properly means routing the render through a same-origin
+  // fetch and mounting it as srcdoc; granting the frame allow-same-origin instead would hand widget
+  // scripts the player's origin, which is not a trade worth making for an offline nicety.
   if (url.pathname.startsWith('/api/widgets/') && url.pathname.endsWith('/render') && url.searchParams.has('rev')) {
     event.respondWith(
       caches.match(event.request).then(cached => {
@@ -146,14 +161,16 @@ self.addEventListener('message', (event) => {
   // writes a new randomly-named file, so the old copy lives at a different PATH and nothing keyed
   // on the asset path can find it. Without this the cache only grows, and on a panel with a 1GB
   // widget quota a handful of replaced videos is the entire budget.
+  //
   // An EMPTY list is never a prune instruction, and that distinction is the whole guard. "This
-  // display needs nothing" and "the payload did not arrive intact" are the same message on the wire,
-  // and the second is not rare: buildPlaylistPayload() yields `assignments: []` for a device between
-  // playlists, for a playlist never published, AND inside the catch when a published_snapshot fails
-  // to JSON.parse. Honouring it deleted every byte of media the panel held — three cached assets,
-  // one empty payload, cache emptied — which is only survivable while the uplink is up, i.e. exactly
-  // when this cache does not matter. A cache kept too long costs disk the quota reclaims anyway; one
-  // dropped at the wrong moment is a dark screen with no way back.
+  // display needs nothing" and "the payload did not arrive intact" are the same message on the
+  // wire, and the second one is not rare: buildPlaylistPayload() yields `assignments: []` for a
+  // device between playlists, for a playlist that has never been published, AND for a
+  // published_snapshot that fails to JSON.parse. Honouring it deleted every byte of media the panel
+  // held — reproduced here: three cached assets, one empty payload, cache emptied — which is only
+  // survivable while the uplink is up, i.e. exactly when this cache does not matter. A cache that is
+  // kept too long costs disk the quota reclaims anyway; one dropped at the wrong moment is a dark
+  // screen with no way back.
   if (data.prune && data.urls.length > 0) {
     prefetchChain = prefetchChain.then(() => pruneToPlaylist(data.urls)).catch(() => {});
   }
