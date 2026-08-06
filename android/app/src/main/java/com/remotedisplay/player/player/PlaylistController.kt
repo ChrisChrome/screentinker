@@ -544,7 +544,10 @@ class PlaylistController(
         retryRunnable = Runnable {
             if (isRunning && items.isNotEmpty()) {
                 if (firstActiveIndex() < 0) { showNothingScheduled(); return@Runnable }
-                val idx = PlaylistSelection.nextPlayableIndex(items.size, currentIndex) { playableNow(it) }
+                // Include currentIndex when nothing is on screen: there it is the intended START,
+                // not a position that has had its turn. Skipping it dropped item 1 on every cold
+                // start, because a fresh panel always gets the playlist before the media.
+                val idx = PlaylistSelection.recheckIndex(items.size, currentIndex, hasContentOnScreen) { playableNow(it) }
                 if (idx >= 0) { currentIndex = idx; playCurrentItem() } else onContentNotReady()
             }
         }

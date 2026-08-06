@@ -31,6 +31,39 @@ object PlaylistSelection {
         return -1
     }
 
+    /**
+     * First playable index AT OR AFTER [from] (wrapping), or -1 if none. A negative [from] means
+     * "no position yet" and starts at 0 rather than wrapping onto the last item.
+     */
+    fun playableFromIndex(size: Int, from: Int, isPlayable: (Int) -> Boolean): Int {
+        if (size <= 0) return -1
+        val start = if (from < 0) 0 else from % size
+        for (i in 0 until size) {
+            val idx = (start + i) % size
+            if (isPlayable(idx)) return idx
+        }
+        return -1
+    }
+
+    /**
+     * Which item a content re-check should play once something finally becomes ready.
+     *
+     * [hasContentOnScreen] is the entire distinction, and getting it wrong costs the operator the
+     * first item of their playlist. When content IS up, currentIndex is a real position that has
+     * already had its turn, so the scan must move PAST it. When nothing is up, currentIndex is only
+     * where playback INTENDED to begin — updatePlaylist() seeds it to 0 for a playlist that has not
+     * started yet — so it has never been shown, and advancing past it silently drops item 1 from the
+     * first pass through the playlist.
+     *
+     * That is the cold-start case on every fresh panel: the playlist arrives before its media has
+     * downloaded, start() finds nothing playable, and the re-check three seconds later is what
+     * actually begins playback. On a two-item playlist it looks exactly like "only one of the two
+     * ever plays" until the list wraps.
+     */
+    fun recheckIndex(size: Int, from: Int, hasContentOnScreen: Boolean, isPlayable: (Int) -> Boolean): Int =
+        if (hasContentOnScreen) nextPlayableIndex(size, from, isPlayable)
+        else playableFromIndex(size, from, isPlayable)
+
     enum class NonePlayable { KEEP_CURRENT, SHOW_WAITING }
 
     /**

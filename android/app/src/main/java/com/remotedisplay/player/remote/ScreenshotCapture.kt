@@ -66,16 +66,25 @@ class ScreenshotCapture {
                 if (tv.isAvailable && tv.visibility == View.VISIBLE) {
                     val tvBitmap = tv.bitmap
                     if (tvBitmap != null) {
-                        val loc = IntArray(2)
-                        tv.getLocationInWindow(loc)
-                        val rootLoc = IntArray(2)
-                        view.getLocationInWindow(rootLoc)
-                        val x = (loc[0] - rootLoc[0]).toFloat()
-                        val y = (loc[1] - rootLoc[1]).toFloat()
-                        val destRect = Rect(x.toInt(), y.toInt(), x.toInt() + tv.width, y.toInt() + tv.height)
-                        canvas.drawBitmap(tvBitmap, null, destRect, null)
+                        // Place the frame through the SAME transform chain the hierarchy was drawn
+                        // with, rather than an axis-aligned rect at getLocationInWindow().
+                        //
+                        // #236 gave a video-wall panel a mounting rotation, which puts a real
+                        // rotation on an ancestor of this TextureView. An axis-aligned rect cannot
+                        // express that, so the frame was pasted un-rotated at a position that fell
+                        // outside the capture bitmap entirely — and what the dashboard received was
+                        // the plain black that view.draw() leaves wherever a TextureView is, i.e. a
+                        // panel that looks dead while it is happily playing. Verified on the
+                        // emulator: at rotation 90 every remote screenshot of a video came back
+                        // #010101 with zero variance, while rotation 0 was correct.
+                        val m = matrixTo(tv, view)
+                        // The surface bitmap is not required to match the view's size.
+                        if (tvBitmap.width > 0 && tvBitmap.height > 0) {
+                            m.preScale(tv.width.toFloat() / tvBitmap.width, tv.height.toFloat() / tvBitmap.height)
+                        }
+                        canvas.drawBitmap(tvBitmap, m, null)
                         tvBitmap.recycle()
-                        Log.d("ScreenshotCapture", "Composited TextureView at ($x,$y) size=${tv.width}x${tv.height}")
+                        Log.d("ScreenshotCapture", "Composited TextureView ${tv.width}x${tv.height} via $m")
                     }
                 }
             }
@@ -112,6 +121,28 @@ class ScreenshotCapture {
             Log.i("ScreenshotCapture", "Encoded ${w}x${h}, size=${result.length} chars")
             return result
         }
+    }
+
+    /**
+     * The matrix mapping [view]'s own coordinates into [ancestor]'s, by walking up the parent chain
+     * and concatenating each step the way the framework does when it draws a child: the child's own
+     * matrix (rotation/scale/translation about its pivot) followed by its layout offset.
+     *
+     * Stops at [ancestor], or at the top of the View chain if it is never reached — a partial chain
+     * still places the frame better than ignoring the transform completely.
+     */
+    private fun matrixTo(view: View, ancestor: View): android.graphics.Matrix {
+        val out = android.graphics.Matrix()
+        var v: View = view
+        while (true) {
+            val local = android.graphics.Matrix(v.matrix)     // translationX/Y + rotation about pivot
+            local.postTranslate(v.left.toFloat(), v.top.toFloat())
+            out.postConcat(local)                             // out = local * out  (child-first)
+            val parent = v.parent
+            if (parent !is View || parent === ancestor) break
+            v = parent
+        }
+        return out
     }
 
     private fun findAllTextureViews(view: View, result: MutableList<TextureView>) {
