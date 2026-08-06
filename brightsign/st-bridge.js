@@ -230,6 +230,30 @@
   // its own telemetry object, and a null here would overwrite a value another player family had
   // legitimately supplied. Absent means "nothing to say", which is not the same as "zero".
   var telemetry = {};
+
+  /*
+   * Facts pushed by the host, merged into the same cache the heartbeat reads.
+   *
+   * Registered at load, directly on the listener list rather than behind the readiness gate: the
+   * host starts sending these the moment the widget exists, and anything attached later would miss
+   * the boot report — the one that says which volume the player came up from and whether a package
+   * applied.
+   *
+   * The host's numbers WIN over the page's where they overlap. navigator.storage.estimate()
+   * describes the widget's cache quota, not the disk: a panel can report gigabytes free while the
+   * volume holding them is full, and only the host can tell the difference.
+   */
+  listeners.push(function (msg) {
+    if (msg && msg.type === 'host-telemetry') {
+      var keys = ['uptime_seconds', 'local_ip', 'model', 'os_version', 'video_mode',
+                  'storage_volume', 'storage_free_mb', 'storage_total_mb',
+                  'boot_volume', 'package_version'];
+      for (var i = 0; i < keys.length; i++) {
+        var v = msg[keys[i]];
+        if (v !== undefined && v !== null && v !== '') telemetry[keys[i]] = v;
+      }
+    }
+  });
   var TELEMETRY_REFRESH_MS = 60000;
 
   var deviceInfo = null;
@@ -624,6 +648,42 @@
     hostProbe: function () { return probe; },
 
     onHostMessage: function (fn) { if (typeof fn === 'function') listeners.push(fn); },
+
+    /*
+     * Host diagnostics, routed into the channels the player already speaks.
+     *
+     * The host sees things the page has no API for — the uptime, the wired IP, the video mode
+     * actually in force, which volume it booted from, whether a staged package applied — and until
+     * now it printed all of it to a serial console. On a panel on a wall that is the same as not
+     * reporting it. A bad string literal once stopped this script compiling and the only evidence
+     * anywhere was on a cable; the server just saw a player that never appeared.
+     *
+     * These are deliberately thin: the bridge does not decide what a log line or an incident MEANS,
+     * it just carries them to the player, which sends them the same way it sends its own.
+     */
+    onHostLog: function (fn) {
+      if (typeof fn !== 'function') return;
+      listeners.push(function (msg) {
+        if (!msg || msg.type !== 'host-log') return;
+        fn({
+          tag: String(msg.tag || 'host').slice(0, 64),
+          level: String(msg.level || 'i').slice(0, 8),
+          message: String(msg.message || '').slice(0, 2000)
+        });
+      });
+    },
+
+    onHostEvent: function (fn) {
+      if (typeof fn !== 'function') return;
+      listeners.push(function (msg) {
+        if (!msg || msg.type !== 'host-event' || !msg.event) return;
+        fn({
+          event: String(msg.event),
+          reason: String(msg.reason || '').slice(0, 64),
+          detail: String(msg.detail || '').slice(0, 500)
+        });
+      });
+    },
 
     /*
      * Telemetry, read synchronously from a cache.

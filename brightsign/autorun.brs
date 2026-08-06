@@ -460,7 +460,7 @@ End Function
 ' card holds nothing but autorun.zip and the OS processes it. Once autorun.brs exists at the
 ' storage root the OS no longer auto-processes the archive — so from then on the host has to do it
 ' itself, or self-update would work exactly once.
-Sub ApplyPendingPackage(root As String)
+Sub ApplyPendingPackage(root As String, buf As Object)
     dir$ = root + "/"
     zipPath$ = root + "/autorun.zip"
     donePath$ = root + "/autorun.zip.done"
@@ -470,11 +470,11 @@ Sub ApplyPendingPackage(root As String)
     if not FileExists(dir$ + "autorun.zip") then return
     if FileExists(dir$ + "autorun.zip.done") then return  ' already unpacked; again is the boot loop
 
-    print "[st-update] unpacking pending package"
+    LogTo(buf, "update", "unpacking pending package")
 
     package = CreateObject("roBrightPackage", zipPath$)
     if package = invalid then
-        print "[st-update] ERROR: archive unreadable — parking it as .bad"
+        LogTo(buf, "update", "ERROR: archive unreadable — parking it as .bad")
         MoveFile(zipPath$, badPath$)
         return
     end if
@@ -492,7 +492,7 @@ Sub ApplyPendingPackage(root As String)
     ' Unpack() returns Void, so success is proven by looking for what should now exist rather than
     ' by testing a return value that was never there.
     if not FileExists(stage$ + "/autorun.brs") then
-        print "[st-update] ERROR: extract produced no autorun.brs — parking it as .bad"
+        LogTo(buf, "update", "ERROR: extract produced no autorun.brs — parking it as .bad")
         MoveFile(zipPath$, badPath$)
         return
     end if
@@ -507,15 +507,15 @@ Sub ApplyPendingPackage(root As String)
             if MoveFile(stage$ + "/" + name, root + "/" + name) then moved% = moved% + 1
         end if
     end for
-    print "[st-update] installed "; moved%; " file(s)"
+    LogTo(buf, "update", "installed " + Stri(moved%).Trim() + " file(s)")
 
     if not MoveFile(zipPath$, donePath$) then
         ' Refusing to reboot without the marker: we would extract and reboot forever.
-        print "[st-update] ERROR: could not mark done — not rebooting"
+        LogTo(buf, "update", "ERROR: could not mark done — not rebooting")
         return
     end if
 
-    print "[st-update] package applied — rebooting into it"
+    LogTo(buf, "update", "package applied — rebooting into it")
     sleep(2000)
     RebootSystem()
 End Sub
@@ -646,10 +646,112 @@ Function VerifyPackage(path As String, expected As String, expectedSize As Integ
     return LCase(digest.ToHexString()) = LCase(expected)
 End Function
 
+'=== host diagnostics =======================================================================
+'
+' Everything the host knows that the PAGE cannot ask for, routed into the same channels the other
+' players already use: the dashboard log stream, the device-event feed, and the heartbeat telemetry.
+'
+' This exists because of a specific, expensive afternoon. A single bad string literal stopped this
+' script compiling, and the only evidence anywhere was a line on a serial console — the server saw a
+' player that simply never appeared, and the display showed nothing. Every other player reports its
+' own failures; this one printed them to a cable. A panel on a wall has no cable.
+'
+' The pre-widget phase is the part that matters most and is the part that is hardest to reach: the
+' storage probe, a pending package being applied, the video mode being set, all happen before there
+' is a page to talk to. Those lines accumulate in a buffer and are flushed the moment the widget
+' exists, so the boot story arrives even though it happened before anyone could listen.
+
+' Append a diagnostic to the pre-widget buffer AND put it on the console. The buffer is an roArray
+' created in Main and passed down; BrightScript has no global store (no GetGlobalAA here), and
+' threading it explicitly beats the alternative of losing the boot entirely.
+Sub LogTo(buf As Object, tag As String, message As String)
+    print "[st-"; tag; "] "; message
+    if buf <> invalid then
+        if buf.Count() < 200 then                 ' a boot that logs 200 lines has a worse problem
+            buf.Push({ tag: tag, message: message })
+        end if
+    end if
+End Sub
+
+' Send one diagnostic to the page, which forwards it to the server as a device:log line.
+Sub HostLog(widget As Object, tag As String, message As String)
+    print "[st-"; tag; "] "; message
+    if widget = invalid then return
+    widget.PostJSMessage({ type: "host-log", tag: tag, level: "i", message: message })
+End Sub
+
+' Hand the buffered boot diagnostics to the page in one go, oldest first.
+Sub FlushLog(widget As Object, buf As Object)
+    if widget = invalid or buf = invalid then return
+    for each line in buf
+        widget.PostJSMessage({ type: "host-log", tag: line.tag, level: "i", message: line.message })
+    end for
+    buf.Clear()
+End Sub
+
+' A device EVENT rather than a log line: these land in the incident feed the dashboard shows against
+' a display, so they are reserved for things an operator would want explained — a reboot, a network
+' change, the player falling over.
+Sub HostEvent(widget As Object, event As String, reason As String, detail As String)
+    print "[st-event] "; event; " "; reason; " "; detail
+    if widget = invalid then return
+    widget.PostJSMessage({ type: "host-event", event: event, reason: reason, detail: detail })
+End Sub
+
+' The facts only the host can see. The page has no API for any of this: @brightsign/storage exposes
+' format and eject, not volumes; there is no JavaScript route to the uptime, the wired IP, the video
+' mode actually in force, or which volume the player booted from.
+Sub SendHostTelemetry(widget As Object, cfg As Object)
+    if widget = invalid then return
+
+    t = { type: "host-telemetry" }
+
+    ' Seconds since boot. A display that reports a small uptime every time it is polled is
+    ' rebooting in a loop, which is otherwise indistinguishable from a healthy one.
+    up = UpTime(0)
+    if up <> invalid then t.uptime_seconds = Int(up)
+
+    di = CreateObject("roDeviceInfo")
+    if di <> invalid then
+        t.model = di.GetModel()
+        t.os_version = di.GetVersion()
+    end if
+
+    ' The wired address. Empty string when nothing is configured, per the documented contract.
+    nc = CreateObject("roNetworkConfiguration", 0)
+    if nc <> invalid then
+        cur = nc.GetCurrentConfig()
+        if cur <> invalid and cur.ip4_address <> invalid and cur.ip4_address <> "" then
+            t.local_ip = cur.ip4_address
+        end if
+    end if
+
+    vm = CreateObject("roVideoMode")
+    if vm <> invalid then t.video_mode = vm.GetMode()
+
+    ' Which volume is actually in use, and how much of it is left. The page's
+    ' navigator.storage.estimate() reports the widget's CACHE QUOTA, not the disk — a panel can
+    ' report gigabytes free while the volume holding them is full.
+    st = StorageProbe()
+    if st.present then
+        t.storage_volume = st.volume
+        t.storage_free_mb = st.free_mb
+        t.storage_total_mb = st.total_mb
+    end if
+    t.boot_volume = StorageRoot()
+    t.package_version = PackageVersion()
+
+    widget.PostJSMessage(t)
+End Sub
+
 '=== main ===================================================================================
 
 Sub Main()
+    ' Diagnostics from before there is a page to send them to. Flushed the moment the widget exists.
+    boot = CreateObject("roArray", 32, true)
+
     cfg = LoadConfig()
+    LogTo(boot, "boot", "host " + PackageVersion() + " from " + StorageRoot() + " -> " + cfg.server_url)
 
     ' Crash dumps land here if the widget ever falls over — cheap, and the only forensic trail
     ' available on a panel nobody can reach.
@@ -661,7 +763,7 @@ Sub Main()
     ' A package staged by a previous run lands here, before anything is on screen. Doing it after
     ' the widget started would mean rebooting out of a playing playlist, and the panel would blink
     ' mid-content for a reason nobody watching could explain.
-    ApplyPendingPackage(StorageRoot())
+    ApplyPendingPackage(StorageRoot(), boot)
 
     port = CreateObject("roMessagePort")
 
@@ -680,6 +782,11 @@ Sub Main()
     rect = FullScreenRect()
     widget = MakeWidget(PlayerUrl(cfg, 1), rect, port, cfg)
     widget.Show()
+
+    ' The boot story, delivered late but delivered. Everything above here happened with no page to
+    ' talk to, which is exactly the window in which the interesting failures live.
+    FlushLog(widget, boot)
+    SendHostTelemetry(widget, cfg)
 
     widget2 = invalid
     if dual then
@@ -706,7 +813,14 @@ Sub Main()
     ' exception, decoder stall) without the OS ever reporting an error. st-bridge.js posts a
     ' heartbeat every 30s; three missed beats and we rebuild the widget. This is the difference
     ' between a panel that recovers on its own and one that needs a site visit.
-    WATCHDOG_MS = 120000
+    ' Seconds first, milliseconds derived: the diagnostic message needs an INTEGER to format, and
+    ' dividing at the call site would hand Stri a float.
+    WATCHDOG_S = 120
+    WATCHDOG_MS = WATCHDOG_S * 1000
+
+    lastHostTel = CreateObject("roTimespan")
+    lastHostTel.Mark()
+    HOST_TEL_MS = 60000
 
     while true
         msg = wait(5000, port)
@@ -726,7 +840,12 @@ Sub Main()
                 ' The key is `uri` on a load-error; `url` belongs to download-request. Printing
                 ' the wrong one meant the single diagnostic that names the failing resource always
                 ' printed "invalid".
-                print "[st] load-error ("; retries; "): "; data.uri
+                ' data.uri is already a String per the event contract, so no conversion is wanted:
+                ' Str() is for numbers and would abort the event loop. Guarded because a missing key
+                ' yields invalid, and assigning invalid to a $-typed name is a runtime error.
+                uri$ = ""
+                if data.uri <> invalid then uri$ = data.uri
+                HostEvent(widget, "app_error", "load-error", "attempt " + Stri(retries).Trim() + ": " + uri$)
                 sleep(ChooseBackoff(retries))
                 if retries >= 3 then
                     ' The server URL rides along so the fallback page can name it on screen and
@@ -804,9 +923,19 @@ Sub Main()
 
         ' watchdog
         if lastBeat.TotalMilliseconds() > WATCHDOG_MS then
-            print "[st] watchdog: no heartbeat in "; WATCHDOG_MS; "ms — rebuilding widget"
+            ' Reported as a crash, because that is what it is from the floor: the page stopped
+            ' answering and the host restarted it. Previously this healed the panel in silence, so a
+            ' display rebuilding itself every two minutes looked identical to one that was fine.
+            HostEvent(widget, "crash", "watchdog", "no heartbeat for " + Stri(WATCHDOG_S).Trim() + "s — rebuilt the widget")
             widget = RebuildWidget(widget, PlayerUrl(cfg, 1), rect, port, cfg)
             lastBeat.Mark()
+        end if
+
+        ' Host facts, on the same cadence as the package check is cheap but far too slow to be
+        ' useful; every telemetry tick would be too chatty. A minute is what the dashboard shows.
+        if lastHostTel.TotalMilliseconds() > HOST_TEL_MS then
+            lastHostTel.Mark()
+            SendHostTelemetry(widget, cfg)
         end if
 
         ' Periodic package check. Marked BEFORE the call, not after: a check that blocks on a slow

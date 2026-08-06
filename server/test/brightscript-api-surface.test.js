@@ -213,3 +213,15 @@ test('file existence is tested with roReadFile, not MatchFiles', () => {
       `${f}: FileExists must use roReadFile — MatchFiles does not answer reliably for a volume root`);
   }
 });
+
+test('Str() is never applied to something that is already a string', () => {
+  // Str(value As Float). Handing it a string is a type error that aborts wherever it runs — and the
+  // place this was reached from is the event loop, i.e. it would take the player down while
+  // reporting a diagnostic. Message keys documented as String need no conversion at all.
+  for (const f of FILES) {
+    for (const m of code(f).matchAll(/\bStr\((\w+(?:\.\w+)*)\)/g)) {
+      assert.ok(/%$|^\d/.test(m[1]) || /count|len|size|retries|attempts/i.test(m[1]),
+        `${f}: Str(${m[1]}) — Str is for numbers; a String needs no conversion`);
+    }
+  }
+});

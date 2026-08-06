@@ -503,6 +503,35 @@
     let swRegistrationFailed = false;
     // feat/offline-cause-log: typed incident feed (device:event) — server inserts a device_events row.
     // Best-effort + auth-guarded (the reconnected socket is authenticated by the time we emit).
+    /*
+     * BrightSign host diagnostics, forwarded as if the page had produced them.
+     *
+     * The host sees what the page cannot — the uptime, the wired IP, which volume it booted from,
+     * whether a staged package applied — and everything it knew used to go to a serial console.
+     * On a panel on a wall that is the same as knowing nothing: a script that failed to compile
+     * looked, from here, exactly like a player that never started.
+     *
+     * Wired once, guarded, and a no-op on every other platform: the hooks only exist on the
+     * BrightSign bridge, so a browser skips this entirely.
+     */
+    function wireHostDiagnostics() {
+      try {
+        if (!BS || typeof BS.onHostLog !== 'function') return;
+        BS.onHostLog((line) => {
+          try {
+            if (socket?.connected && config.deviceId) {
+              socket.emit('device:log', {
+                device_id: config.deviceId,
+                tag: line.tag, level: line.level, message: line.message
+              });
+            }
+            console.log(`[host/${line.tag}] ${line.message}`);
+          } catch (e) { /* diagnostics must never break playback */ }
+        });
+        BS.onHostEvent((ev) => emitDeviceEvent(ev.event, ev.reason, ev.detail));
+      } catch (e) { /* a bridge that throws here must not stop the player starting */ }
+    }
+
     function emitDeviceEvent(type, reason, detail) {
       try {
         if (!socket?.connected || !config.deviceId) return;
@@ -1380,6 +1409,9 @@
         startWatchdog(); // v4: arm-gated half-open watchdog (no-op until a heartbeat-ack arms it)
         startPlaylistRefresh();
         startVersionCheck();
+        // After the socket is up, because these forward to the SERVER — wiring them earlier would
+        // drop the host's boot report on the floor rather than delivering it late.
+        wireHostDiagnostics();
       });
 
       socket.on('device:paired', (data) => {
