@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.9.29
+
+The release candidates 1.9.29-rc1 through rc5 are folded in here; the entries below record what
+changed since 1.9.28 in the form it actually ships. Two of these were found only by driving real
+hardware and a real browser, and neither could have been caught by a test in this repo.
+
+### Fixed — the web player's offline cache was switched off at the URL everyone uses
+A service worker's default scope is its own directory, so `/player/sw.js` could only control
+`/player/` **and below** — which does not include `/player` itself, the URL the dashboard shows and
+the one panels are configured with. Registration succeeded, logged success, and then controlled
+nothing: no shell cache, no content cache, no offline playback, and no error to notice.
+
+### Fixed — screens went black on a bad link instead of playing cached content
+The offline playback path was never the problem: the cache could never be **filled**. Every download
+began at byte 0 and the partial was discarded on any interruption, so an asset larger than one
+uninterrupted transfer was re-fetched forever. Downloads now resume, with `If-Range` and a 416 guard
+so a changed or over-long asset can never be spliced.
+
+### Added — every player caches media for offline playback
+Tizen caches the media itself now, not just the playlist; the web player (and BrightSign) accumulate
+in resumable chunks driven by the playlist rather than by playback. Content carries a revision, so
+replacing an asset reaches displays that already hold the old bytes — previously it could not, ever.
+
+### Added — players declare what they can actually do
+Each player reports its real capabilities at registration and the dashboard stops offering controls
+that cannot work. A display that declares nothing keeps its per-platform baseline, so nothing in the
+field loses controls on upgrade.
+
+### Fixed — the BrightSign host scripts were written against Roku's API reference
+BrightScript is Roku's language and the two references read alike, so calls to objects that do not
+exist looked exactly like calls to ones that do. A string literal that stopped the script compiling,
+an existence check that could never return true, and a self-update path that could never mark a
+package applied — all corrected, and guarded by a checker, since nothing in CI can run BrightScript.
+
 ## 1.9.29-rc5
 
 ### Fixed — the BrightSign host scripts were written against Roku's API reference
