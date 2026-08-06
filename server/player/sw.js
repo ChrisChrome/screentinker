@@ -54,11 +54,26 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
   // Widget renders pinned to a revision: cache-FIRST, because those exact bytes cannot change
-  // without the rev changing. This is what lets a widget keep rendering when the network is gone —
-  // previously the server sent no-store for every render, so widgets were the one thing the
-  // player's offline cache could never hold, and a display that lost its uplink lost them.
-  // ignoreSearch is deliberately NOT used here: the query string carries the rev, and ignoring it
-  // would match a different revision's entry, which is the staleness we are trying to remove.
+  // without the rev changing. ignoreSearch is deliberately NOT used here: the query string carries
+  // the rev, and ignoring it would match a different revision's entry, which is the staleness we
+  // are trying to remove.
+  //
+  // MEASURED LIMIT, do not read more into this branch than it delivers. The player mounts widgets in
+  // an iframe sandboxed to `allow-scripts` with NO allow-same-origin (index.html,
+  // renderWidgetBuffered), so that frame is an OPAQUE-origin client — and a service worker does not
+  // control opaque-origin clients. Its navigation request never reaches this handler. Driven in
+  // Chrome against a live server: a clock widget mounted five times over 25s and the shell cache
+  // held zero widget entries, while a plain fetch() of the identical URL from the controlled page
+  // was intercepted and stored. So this branch serves anything that reaches it — a same-origin
+  // fetch, a future non-sandboxed mount — and today the player's own widgets are not that.
+  //
+  // What actually keeps widgets rendering offline right now is the HTTP cache plus the server's
+  // `max-age=31536000, immutable` on a rev-pinned render (routes/widgets.js). That is sound in a
+  // desktop browser and is NOT a documented-persistent store on BrightSign, which guarantees
+  // survival across reboots for IndexedDB, localStorage and SQLite only — the same gap that made
+  // content caching necessary. Closing it properly means routing the render through a same-origin
+  // fetch and mounting it as srcdoc; granting the frame allow-same-origin instead would hand widget
+  // scripts the player's origin, which is not a trade worth making for an offline nicety.
   if (url.pathname.startsWith('/api/widgets/') && url.pathname.endsWith('/render') && url.searchParams.has('rev')) {
     event.respondWith(
       caches.match(event.request).then(cached => {
