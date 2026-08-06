@@ -12,6 +12,7 @@ const reconnectThrottle = require('../lib/reconnect-throttle');
 const contentAckLimiter = require('../lib/content-ack-limiter');
 const statusLogWriter = require('../lib/status-log-writer');
 const { normalizeTransitions } = require('../lib/transition-config');
+const { normalizeWallRotation } = require('../lib/wall-geometry'); // #236 per-panel mounting rotation
 const { protectSocket } = require('../lib/safe-socket');
 const flapLimiter = require('../lib/flap-limiter');
 const sessionSettle = require('../lib/session-settle');   // #148 patch2: eviction-storm debounce
@@ -421,7 +422,10 @@ function buildPlaylistPayload(deviceId) {
         screen_rect: screenRect,
         player_rect: playerRect,
         is_leader: wall.leader_device_id === deviceId,
-        rotation: pos.rotation || 0,
+        // #236: how far this panel's own image has to be turned to come out upright on the wall.
+        // Normalised here so a junk column value can never reach a player and stand one panel of a
+        // live wall on its side — a bad rotation degrades to "as drawn", not to "sideways".
+        rotation: normalizeWallRotation(pos.rotation),
       };
     }
   }

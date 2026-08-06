@@ -7,6 +7,9 @@ const { db } = require('../db/database');
 // dead code after the Phase 2.1 role rename (no users carry role='admin'
 // anymore; team_members is a vestigial table from the pre-workspace model).
 const { accessContext } = require('../lib/tenancy');
+// #236: per-panel mounting rotation. Normalised on the way IN as well as out, so a bad value from a
+// scripted API caller is rejected at the door instead of persisting and confusing every later read.
+const { normalizeWallRotation } = require('../lib/wall-geometry');
 
 // Load a wall + access context. Returns the wall row or null after sending
 // 403/404. requireWrite=true also denies workspace_viewer.
@@ -251,7 +254,7 @@ router.put('/:id/devices', requireWallWrite, (req, res) => {
     for (const d of devices) {
       insertPos.run(
         req.params.id, d.device_id,
-        d.grid_col, d.grid_row, d.rotation || 0,
+        d.grid_col, d.grid_row, normalizeWallRotation(d.rotation),
         d.canvas_x ?? null, d.canvas_y ?? null,
         d.canvas_width ?? null, d.canvas_height ?? null,
       );
@@ -316,7 +319,7 @@ router.get('/:id/device-config/:deviceId', requireWallRead, (req, res) => {
     grid_rows: wall.grid_rows,
     grid_col: position.grid_col,
     grid_row: position.grid_row,
-    rotation: position.rotation,
+    rotation: normalizeWallRotation(position.rotation),
     bezel_h_px: wall.bezel_h_mm,
     bezel_v_px: wall.bezel_v_mm,
     sync_mode: wall.sync_mode,

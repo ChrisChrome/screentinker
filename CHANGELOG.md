@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Fixed — a wall of portrait panels had to be built backwards (#236)
+The wall canvas was secretly framebuffer space, not the wall as you see it. That is invisible while
+every panel is the normal way up, and actively misleading the moment one isn't: two portrait-mounted
+panels standing side by side had to be **stacked vertically** in the editor, with a pre-rotated copy
+of every video, before the output came out right. It worked, but only after trial and error, and it
+meant a portrait wall could never reuse existing content.
+
+Each panel now carries a mounting rotation (0/90/180/270), the canvas means the physical wall, and
+the player works out the mapping — so side by side is drawn side by side and landscape content plays
+across portrait panels unmodified. Applied on the web, Tizen and Android players.
+
+**Existing walls are untouched and need no migration.** Every wall in the field is rotation 0, which
+takes the original code path verbatim — an operator who upgrades will not find a wall that was
+aligned yesterday has moved. Rebuilding an existing portrait wall the natural way round is an opt-in
+change the operator makes when they choose to.
+
+While a display is a member of a wall, its per-panel rotation replaces its own Orientation setting:
+the two describe the same physical fact, and honouring both turned the content twice.
+
+### Added — a wall no longer hides its own screens (#235)
+Grouping displays into a wall replaced their individual cards, so one dead panel of a four-panel
+wall was invisible from the dashboard, and inspecting a single screen meant pulling it out of the
+wall (re-syncing the live wall) and putting it back. The wall screen now lists its panels with live
+online state and a link straight to each device's page, and the wall card on the dashboard shows a
+per-member status chip. A screenshot can be requested per panel without disturbing playback.
+
 ## 1.9.29
 
 The release candidates 1.9.29-rc1 through rc5 are folded in here; the entries below record what

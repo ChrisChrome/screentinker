@@ -241,6 +241,7 @@
   <script src="/player/schedule-eval.js"></script>
   <script src="/player/media-mute.js"></script>
   <script src="/player/orientation-style.js"></script>
+  <script src="/player/wall-geometry.js"></script>
   <script src="/player/player-media-health.js"></script>
   <!-- feat/transition-engine: WebGL transition runtime (renderer + shaders). Optional; if it fails to
        load the player just hard-cuts. Not deferred so it's ready before the first content swap. -->
@@ -2250,24 +2251,36 @@
     // the stage — which keeps the vertical position of every source pixel
     // identical across devices that share a viewport height (1vh maps to
     // the same physical pixel on each).
+    // #236: the geometry (including per-panel mounting rotation) comes from the shared rule in
+    // server/lib/wall-geometry.js. Kept out of here because Tizen, Android and this player must
+    // agree to the pixel across a seam, and because the rotated cases are only checkable by test.
     function styleWallStage(stageEl) {
       if (!wallConfig?.screen_rect || !wallConfig?.player_rect) return;
       const s = wallConfig.screen_rect;
       const p = wallConfig.player_rect;
       if (!s.w || !s.h) return;
-      const left   = ((p.x - s.x) / s.w) * 100;
-      const top    = ((p.y - s.y) / s.h) * 100;
-      const width  = (p.w / s.w) * 100;
-      const height = (p.h / s.h) * 100;
+      const st = window.WallGeometry
+        ? window.WallGeometry.wallStageStyle(s, p, wallConfig.rotation)
+        // If the shared script failed to load, fall back to the unrotated rule rather than leaving
+        // the stage unstyled — a wrong-but-full-frame panel beats a blank one on a live wall.
+        : {
+            left: (((p.x - s.x) / s.w) * 100) + 'vw',
+            top: (((p.y - s.y) / s.h) * 100) + 'vh',
+            width: ((p.w / s.w) * 100) + 'vw',
+            height: ((p.h / s.h) * 100) + 'vh',
+            transform: '', transformOrigin: '',
+          };
+      if (!st) return;
       const dev = (config.deviceId || '?').slice(0, 8);
-      console.log('[wall/render ' + dev + '] screen_rect: ' + JSON.stringify(s) + ' player_rect: ' + JSON.stringify(p));
+      console.log('[wall/render ' + dev + '] screen_rect: ' + JSON.stringify(s) + ' player_rect: ' + JSON.stringify(p) + ' rotation=' + (wallConfig.rotation || 0));
       console.log('[wall/render ' + dev + '] viewport: ' + window.innerWidth + 'x' + window.innerHeight + ' DPR=' + window.devicePixelRatio);
-      console.log('[wall/render ' + dev + '] stage: left=' + left.toFixed(4) + 'vw top=' + top.toFixed(4) + 'vh width=' + width.toFixed(4) + 'vw height=' + height.toFixed(4) + 'vh');
-      stageEl.style.left = left + 'vw';
-      stageEl.style.top = top + 'vh';
-      stageEl.style.width = width + 'vw';
-      stageEl.style.height = height + 'vh';
-      stageEl.style.transform = '';
+      console.log('[wall/render ' + dev + '] stage: left=' + st.left + ' top=' + st.top + ' width=' + st.width + ' height=' + st.height + ' transform=' + (st.transform || 'none'));
+      stageEl.style.left = st.left;
+      stageEl.style.top = st.top;
+      stageEl.style.width = st.width;
+      stageEl.style.height = st.height;
+      stageEl.style.transform = st.transform;
+      stageEl.style.transformOrigin = st.transformOrigin;
     }
 
     // No-op kept for callers that bind a resize listener (kept around in case
@@ -2312,6 +2325,12 @@
 
       // Apply orientation. #109: the PiP layer gets the SAME transform as the player so a
       // corner overlay tracks the visible content (not the physical panel) in every orientation.
+      // #236: on a wall panel that carries its own mounting rotation, the two settings describe the
+      // SAME physical fact, so honouring both turns the content twice and throws it off-screen. The
+      // wall rotation wins there; when it is 0 (every wall in the field today) nothing changes.
+      const effectiveOrientation = window.WallGeometry
+        ? window.WallGeometry.orientationForWallMember(data.orientation, data.wall_config?.rotation)
+        : data.orientation;
       if (data.orientation) {
         // On BrightSign, rotate the OUTPUT first. Video decodes onto a hardware plane the DOM
         // cannot transform, so the CSS rotation below turns the images and widgets and leaves the
@@ -2322,7 +2341,7 @@
         // cleared or the graphics rotate twice. If it cannot, we fall through to CSS, which rotates
         // most of the content rather than none of it.
         if (BS && typeof BS.setOrientation === 'function' && BS.hasHost()) {
-          BS.setOrientation(data.orientation).then((rotatedByHost) => {
+          BS.setOrientation(effectiveOrientation).then((rotatedByHost) => {
             if (!rotatedByHost) return;   // CSS path below already ran
             [document.getElementById('playerContainer'), document.getElementById('pipContainer')]
               .forEach((el) => {
@@ -2339,7 +2358,7 @@
         // portrait content landed 420px off-screen on a 1920x1080 panel — rotated correctly and
         // placed wrongly. Tizen and Android both centre the box first; the web player did not.
         const st = window.OrientationStyle
-          ? window.OrientationStyle.orientationStyle(data.orientation)
+          ? window.OrientationStyle.orientationStyle(effectiveOrientation)
           : null;
         if (st) {
           [document.getElementById('playerContainer'), document.getElementById('pipContainer')]
@@ -2361,7 +2380,10 @@
       function wallKey(c) {
         if (!c) return '';
         const s = c.screen_rect || {}, p = c.player_rect || {};
-        return `${c.wall_id}:${c.is_leader}:s${s.x},${s.y},${s.w},${s.h}:p${p.x},${p.y},${p.w},${p.h}`;
+        // #236: rotation is part of the key. Left out, re-hanging a panel and changing only its
+        // rotation in the editor looks like "no change" and the panel keeps the old transform until
+        // it is rebooted — which reads as the editor silently ignoring you.
+        return `${c.wall_id}:${c.is_leader}:r${c.rotation || 0}:s${s.x},${s.y},${s.w},${s.h}:p${p.x},${p.y},${p.w},${p.h}`;
       }
       const wallChanged = wallKey(wallConfig) !== wallKey(data.wall_config);
       if (wallChanged) applyWallMode(data.wall_config || null);

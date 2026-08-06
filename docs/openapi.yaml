@@ -1560,7 +1560,18 @@ paths:
                       device_id: { type: string }
                       grid_col: { type: integer }
                       grid_row: { type: integer }
-                      rotation: { type: integer }
+                      rotation:
+                        type: integer
+                        enum: [0, 90, 180, 270]
+                        default: 0
+                        description: >-
+                          How this panel is physically mounted, as degrees CLOCKWISE that its image
+                          must be turned to come out upright on the wall (the same convention as a
+                          device's `orientation`). canvas_* are in WALL space — the wall as the
+                          audience sees it — so a portrait-mounted 1920x1080 panel is a tall tile
+                          with rotation 90, and content needs no pre-rotating. Anything other than
+                          0/90/180/270 is stored as 0. While a panel is in a wall this replaces its
+                          own `orientation`, so the two can never rotate the content twice.
                       canvas_x: { type: number }
                       canvas_y: { type: number }
                       canvas_width: { type: number }

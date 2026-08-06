@@ -1,6 +1,7 @@
 import { api } from '../api.js';
+import { on, off, requestScreenshot } from '../socket.js';
 import { showToast } from '../components/toast.js';
-import { esc } from '../utils.js';
+import { esc, livenessBadge } from '../utils.js';
 import { t } from '../i18n.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, {
@@ -16,6 +17,25 @@ const DEFAULT_SCREEN_H = 180;
 const CANVAS_MIN_W = 1200;
 const CANVAS_MIN_H = 700;
 const CANVAS_PADDING = 200; // extra room beyond bounding box, in canvas units
+
+// #236: how far a panel's own image has to be turned to come out upright on the wall — i.e. how
+// far the panel itself is hung the other way. Degrees CLOCKWISE, matching the per-device
+// orientation setting; the render rule lives in server/lib/wall-geometry.js.
+//
+// Before this existed the canvas was secretly FRAMEBUFFER space, so a customer with two portrait
+// panels side by side had to stack them vertically here and pre-rotate every video. The canvas is
+// now what it always looked like: the wall as the audience sees it.
+const WALL_ROTATIONS = [0, 90, 180, 270];
+const ROTATION_LABELS = { 0: 'Normal (0°)', 90: 'Turned left (90°)', 180: 'Upside down (180°)', 270: 'Turned right (270°)' };
+// A panel already configured portrait is already hung sideways; carry that across so the operator
+// doesn't have to say the same thing twice (and so the tile lands the right shape first time).
+const ORIENTATION_TO_ROTATION = { 'landscape': 0, 'portrait': 90, 'landscape-flipped': 180, 'portrait-flipped': 270 };
+
+// Mirrors rotatedFootprint() in server/lib/wall-geometry.js — kept tiny and local because the
+// dashboard has no import path to the server lib.
+function footprintFor(renderW, renderH, rotation) {
+  return (rotation === 90 || rotation === 270) ? { w: renderH, h: renderW } : { w: renderW, h: renderH };
+}
 
 export async function render(container) {
   const hash = window.location.hash;
@@ -105,6 +125,14 @@ async function renderWallEditor(container, wallId) {
     if (d && d.render_width > 0 && d.render_height > 0) return { w: d.render_width, h: d.render_height };
     return { w: DEFAULT_SCREEN_W, h: DEFAULT_SCREEN_H };
   };
+  // #236: the tile is the panel's footprint ON THE WALL, so a sideways-hung panel is a tall tile.
+  const footprintOnWall = (id, rotation) => {
+    const r = renderSizeFor(id);
+    return footprintFor(r.w, r.h, rotation);
+  };
+  // A device already set to portrait is already hung sideways — start it there rather than making
+  // the operator discover the rotation control after the wall comes out wrong.
+  const defaultRotationFor = (id) => ORIENTATION_TO_ROTATION[deviceById(id)?.orientation] || 0;
   // When the panel's physical resolution differs from what it renders (rotated mount:
   // the box reports 800x1332 but draws 1332x800), the tile size can look "wrong". Return a
   // short note making explicit that the tile is sized to the RENDER surface, not the panel.
@@ -127,8 +155,10 @@ async function renderWallEditor(container, wallId) {
     rotation: d.rotation || 0,
     x: d.canvas_x ?? (d.grid_col * (baseW + bezelH)),
     y: d.canvas_y ?? (d.grid_row * (baseH + bezelV)),
-    w: d.canvas_width ?? renderSizeFor(d.device_id).w,
-    h: d.canvas_height ?? renderSizeFor(d.device_id).h,
+    // Backfill sizes as the panel's footprint at its saved rotation. Every wall in the field is
+    // rotation 0, where this is exactly the old expression — so nothing existing moves.
+    w: d.canvas_width ?? footprintOnWall(d.device_id, d.rotation || 0).w,
+    h: d.canvas_height ?? footprintOnWall(d.device_id, d.rotation || 0).h,
   }));
 
   // Default player covers the bounding box of all screens; if there are no
@@ -224,6 +254,19 @@ async function renderWallEditor(container, wallId) {
           </select>
           <button class="btn btn-primary btn-sm" id="setPlaylistBtn" style="margin-left:8px">${t('wall.set_playlist')}</button>
         </div>
+
+        <!-- #235: a wall used to swallow its members whole — joining one removed the device's card
+             from Displays, so an operator could not see that one panel of a four-panel wall had
+             dropped off, and the only way to check a single screen was to pull it out of the wall
+             (which re-syncs the live wall) and put it back. Panel state and a way through to the
+             device live here now. -->
+        <div style="margin-top:20px">
+          <h3 style="font-size:14px;margin:0 0 8px;display:flex;align-items:center;gap:10px">
+            Panels
+            <span id="wallPanelSummary" style="font-size:12px;font-weight:400;color:var(--text-muted)"></span>
+          </h3>
+          <div id="wallPanelStatus"></div>
+        </div>
       </div>
 
       <div style="width:260px;flex-shrink:0">
@@ -234,9 +277,13 @@ async function renderWallEditor(container, wallId) {
         <div class="info-card" style="margin-top:14px;padding:10px;font-size:12px;line-height:1.55">
           <strong style="font-size:12px">How it works</strong>
           <ul style="margin:6px 0 0 14px;padding:0;color:var(--text-secondary)">
+            <li>This canvas is the wall <strong>as the audience sees it</strong>. Arrange the
+                rectangles to match the physical layout.</li>
             <li>Each rectangle is a physical screen.</li>
             <li>The blue dashed rectangle is the player window — content plays inside this rect.</li>
             <li>Each screen shows only the part of the player that overlaps it.</li>
+            <li>Panel hung sideways? Select it and set <em>How this panel is mounted</em> — the
+                tile turns to match and the content is rotated for you.</li>
             <li>Drag corners to resize, drag the body to move.</li>
           </ul>
         </div>
@@ -252,6 +299,7 @@ async function renderWallEditor(container, wallId) {
     for (const s of screens) canvas.appendChild(renderScreenEl(s));
     updateOverlapsAll();
     renderSidebar();
+    renderPanelStatus();
     applySelectionClasses();
     renderSelectionPanel();
     applyTransform();
@@ -287,12 +335,43 @@ async function renderWallEditor(container, wallId) {
           <label>W</label><input type="number" data-field="w" value="${Math.round(rect.w)}" step="1" min="40">
           <label>H</label><input type="number" data-field="h" value="${Math.round(rect.h)}" step="1" min="24">
         </div>
+        ${isPlayer ? '' : `
+        <div style="margin-top:10px">
+          <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:3px">How this panel is mounted</label>
+          <select id="screenRotation" class="input" style="width:100%;font-size:12px;background:var(--bg-input)">
+            ${WALL_ROTATIONS.map(r => `<option value="${r}" ${(rect.rotation || 0) === r ? 'selected' : ''}>${ROTATION_LABELS[r]}</option>`).join('')}
+          </select>
+          <p style="margin:5px 0 0;font-size:10px;color:var(--text-muted);line-height:1.4">
+            Lay the canvas out to match the <strong>physical</strong> wall and set this per panel —
+            content is rotated for you, so portrait walls don't need pre-rotated video.
+            While a panel is in a wall this replaces its own Orientation setting.
+          </p>
+        </div>`}
         <p style="margin:8px 0 0;font-size:10px;color:var(--text-muted);line-height:1.4">
           Arrow keys nudge by 1px. Hold <kbd>Shift</kbd> for 10px.
           Click outside any rect to deselect.
         </p>
       </div>
     `;
+    panel.querySelector('#screenRotation')?.addEventListener('change', (ev) => {
+      const r = getSelectedRect();
+      if (!r) return;
+      const next = parseInt(ev.target.value, 10) || 0;
+      const prev = r.rotation || 0;
+      r.rotation = next;
+      // Turning a panel by a quarter turn changes its footprint on the wall. Swap the tile about
+      // its own CENTRE so it turns in place — resizing from the corner would shove every
+      // neighbouring tile out of alignment and undo the operator's careful placement.
+      const wasQuarter = (prev === 90 || prev === 270);
+      const isQuarter = (next === 90 || next === 270);
+      if (wasQuarter !== isQuarter) {
+        const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+        const w = r.h, h = r.w;
+        r.w = w; r.h = h; r.x = cx - w / 2; r.y = cy - h / 2;
+      }
+      markDirty();
+      renderAll();
+    });
     panel.querySelector('#deselectBtn').addEventListener('click', () => {
       selected = null;
       applySelectionClasses();
@@ -384,6 +463,7 @@ async function renderWallEditor(container, wallId) {
         <div class="wall-screen-meta">
           <span class="status-dot ${s.device_status}" style="display:inline-block"></span>
           <span style="font-size:10px;color:var(--text-muted)">${Math.round(s.w)}×${Math.round(s.h)}</span>
+          ${(s.rotation || 0) !== 0 ? `<span class="wall-screen-rot" title="${esc(ROTATION_LABELS[s.rotation])}" style="font-size:10px;color:var(--accent);margin-left:4px">⟳${s.rotation}°</span>` : ''}
         </div>
         ${renderNoteFor(s.device_id) ? `<div class="wall-screen-rendernote" style="font-size:9px;color:var(--warning,#e0a800);margin-top:2px;line-height:1.2">${esc(renderNoteFor(s.device_id))}</div>` : ''}
       </div>
@@ -452,6 +532,88 @@ async function renderWallEditor(container, wallId) {
       ov.style.height = inter.h + 'px';
     });
   }
+
+  // #235: per-panel state for the wall, with a way through to the device itself.
+  // Live socket updates are merged over the fetched rows so a panel that drops off mid-session
+  // turns red here without a reload — "is the wall actually up?" has to be answerable from the
+  // dashboard, because today it means sending someone to look at it.
+  const liveStatus = {};
+  function panelLiveness(deviceId) {
+    const d = deviceById(deviceId) || {};
+    const live = liveStatus[deviceId];
+    return livenessBadge({ ...d, ...(live || {}) }, { short: true });
+  }
+
+  function renderPanelStatus() {
+    const host = document.getElementById('wallPanelStatus');
+    if (!host) return;
+    const summary = document.getElementById('wallPanelSummary');
+
+    if (screens.length === 0) {
+      host.innerHTML = `<p style="color:var(--text-muted);font-size:12px;margin:0">No panels on this wall yet — drag displays onto the canvas.</p>`;
+      if (summary) summary.textContent = '';
+      return;
+    }
+
+    const badges = screens.map(s => ({ s, b: panelLiveness(s.device_id) }));
+    const down = badges.filter(x => x.b.state !== 'online').length;
+    if (summary) {
+      summary.textContent = down === 0
+        ? `${screens.length} panel${screens.length === 1 ? '' : 's'}, all online`
+        : `${down} of ${screens.length} not online`;
+      summary.style.color = down === 0 ? 'var(--success)' : 'var(--danger, #e5484d)';
+    }
+
+    host.innerHTML = `
+      <div class="wall-panel-list" style="display:flex;flex-direction:column;gap:6px">
+        ${badges.map(({ s, b }) => {
+          const d = deviceById(s.device_id) || {};
+          const meta = [
+            d.app_version ? `v${esc(d.app_version)}` : '',
+            (s.rotation || 0) !== 0 ? esc(ROTATION_LABELS[s.rotation]) : '',
+          ].filter(Boolean).join(' · ');
+          return `
+            <div class="playlist-item" data-device-id="${esc(s.device_id)}" style="display:flex;align-items:center;gap:10px">
+              <span class="status-dot ${esc(b.state)}" style="display:inline-block;flex-shrink:0"></span>
+              <div style="flex:1;min-width:0">
+                <div class="playlist-item-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.device_name || d.name || 'Display')}</div>
+                <div class="playlist-item-meta" style="font-size:11px">
+                  <span class="wall-panel-liveness"${b.title ? ` title="${esc(b.title)}"` : ''}>${esc(b.label)}</span>${meta ? ` · ${meta}` : ''}
+                </div>
+              </div>
+              <button class="btn btn-sm wall-panel-shot" data-device-id="${esc(s.device_id)}" style="padding:2px 8px;font-size:11px"
+                      title="Ask this panel for a screenshot — safe on a live wall, it doesn't change what's playing">Screenshot</button>
+              <a class="btn btn-sm" href="#/device/${esc(s.device_id)}" style="padding:2px 8px;font-size:11px"
+                 title="Device info, incident log and remote controls">Open</a>
+            </div>`;
+        }).join('')}
+      </div>
+      <p style="margin:8px 0 0;font-size:10px;color:var(--text-muted);line-height:1.4">
+        Opening a panel doesn't remove it from the wall. Pushing different content to one panel
+        will desync the wall — use the wall playlist above instead.
+      </p>`;
+
+    host.querySelectorAll('.wall-panel-shot').forEach(btn => {
+      btn.addEventListener('click', () => {
+        requestScreenshot(btn.dataset.deviceId);
+        showToast('Screenshot requested — it appears on the panel\'s device page', 'info');
+      });
+    });
+  }
+
+  const panelStatusHandler = (data) => {
+    if (!data?.device_id) return;
+    liveStatus[data.device_id] = data;
+    // Keep the canvas tile dots in step with the list, or the two halves of this screen disagree
+    // about whether a panel is up.
+    const scr = screens.find(s => s.device_id === data.device_id);
+    if (scr && data.status) scr.device_status = data.status;
+    const dot = canvas.querySelector(`.wall-screen[data-device-id="${CSS.escape(data.device_id)}"] .status-dot`);
+    if (dot && data.status) dot.className = `status-dot ${data.status}`;
+    renderPanelStatus();
+  };
+  on('device-status', panelStatusHandler);
+  cleanupHooks.push(() => off('device-status', panelStatusHandler));
 
   function renderSidebar() {
     const sidebar = document.getElementById('availableDevices');
@@ -579,7 +741,11 @@ async function renderWallEditor(container, wallId) {
     if (data.type !== 'sidebar-device' || !data.device_id) return;
     const vpRect = viewport.getBoundingClientRect();
     // #14: size the new tile to the device's render resolution (centered on the drop point).
-    const sz = renderSizeFor(data.device_id);
+    // #236: ...as its FOOTPRINT, so a panel already set to portrait drops in as a tall tile that
+    // matches how it is actually hung, instead of a landscape tile the operator has to reason
+    // backwards from.
+    const rotation = defaultRotationFor(data.device_id);
+    const sz = footprintOnWall(data.device_id, rotation);
     // Drop pixel → canvas-data coord: undo viewport offset, pan, and zoom.
     const x = (e.clientX - vpRect.left - pan.x) / zoom - sz.w / 2;
     const y = (e.clientY - vpRect.top - pan.y) / zoom - sz.h / 2;
@@ -587,7 +753,7 @@ async function renderWallEditor(container, wallId) {
       device_id: data.device_id,
       device_name: data.device_name || 'Display',
       device_status: data.device_status || 'offline',
-      grid_col: 0, grid_row: 0, rotation: 0,
+      grid_col: 0, grid_row: 0, rotation,
       x, y, w: sz.w, h: sz.h,
     });
     markDirty();
