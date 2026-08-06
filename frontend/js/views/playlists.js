@@ -735,7 +735,12 @@ async function showAddItemModal(playlistId, opts = {}) {
     list.innerHTML = filtered.map(item => {
       const isWidget = activeTab === 'widgets';
       const name = item.filename || item.name || t('common.unknown');
-      const sub = isWidget ? (item.widget_type || t('playlist.item_widget')) : (item.mime_type || '');
+      // #237: the server gives a video item the clip's own length instead of the 10s default.
+      // Show that length here so the duration the item lands with is something the operator
+      // saw coming, rather than a number that appears in the list after the fact.
+      const clipSec = !isWidget && Number(item.duration_sec) > 0 ? Math.ceil(item.duration_sec) : 0;
+      const clip = clipSec ? ` · ${Math.floor(clipSec / 60)}:${String(clipSec % 60).padStart(2, '0')}` : '';
+      const sub = isWidget ? (item.widget_type || t('playlist.item_widget')) : ((item.mime_type || '') + clip);
       const thumb = item.thumbnail_path ? `/api/content/${esc(item.id)}/thumbnail` : null;
       return `
         <div class="add-item-row" data-id="${esc(item.id)}" data-type="${isWidget ? 'widget' : 'content'}" style="display:flex;align-items:center;gap:12px;padding:10px;border-radius:var(--radius);cursor:pointer;transition:background 0.1s">

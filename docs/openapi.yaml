@@ -673,7 +673,11 @@ paths:
                 widget_id: { type: string }
                 zone_id: { type: string }
                 sort_order: { type: integer }
-                duration_sec: { type: integer }
+                duration_sec:
+                  type: integer
+                  description: >
+                    Omit to let the server choose: video content defaults to the clip's own
+                    length (rounded up to a whole second), anything else to 10s.
       responses:
         '201': { description: Created playlist item. }
   /playlists/{id}/items/reorder:
@@ -815,7 +819,11 @@ paths:
                 content_id: { type: string }
                 widget_id: { type: string }
                 zone_id: { type: string }
-                duration_sec: { type: integer }
+                duration_sec:
+                  type: integer
+                  description: >
+                    Omit to let the server choose: video content defaults to the clip's own
+                    length (rounded up to a whole second), anything else to 10s.
                 sort_order: { type: integer }
       responses:
         '201': { description: Created item. }
@@ -1242,7 +1250,11 @@ paths:
               required: [content_id]
               properties:
                 content_id: { type: string }
-                duration_sec: { type: integer }
+                duration_sec:
+                  type: integer
+                  description: >
+                    Omit to let the server choose: video content defaults to the clip's own
+                    length (rounded up to a whole second), anything else to 10s.
       responses:
         '200': { description: '{ success, devices_updated }.' }
   /groups/{id}/assign-playlist:

@@ -17,6 +17,7 @@ const { listDesignatedPlaylists, isZonedPlaylist, folderSubtree } = require('../
 const { listLayoutGeometry } = require('../lib/agency-layouts');
 const { publishPlaylist } = require('./playlists'); // #73: shared publish path for auto-publish
 const { isConfigured } = require('../services/email'); // #73: gate digest enqueue on SMTP being set
+const { resolveItemDuration } = require('../lib/item-duration');
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -112,7 +113,9 @@ router.post('/playlists/:playlistId/items', (req, res) => {
   if (duration_sec != null && (typeof duration_sec !== 'number' || duration_sec < 1)) {
     return res.status(400).json({ error: 'duration_sec must be a positive integer' });
   }
-  duration_sec = duration_sec || content.duration_sec || 10;
+  // #237: the raw content duration used to be stored as probed (31.7s), and a fraction is
+  // truncated by the Android player's optInt read — so round to whole seconds here too.
+  duration_sec = resolveItemDuration(duration_sec, content);
 
   const sd = start_date ?? null, ed = end_date ?? null;
   for (const [k, v] of [['start_date', sd], ['end_date', ed]]) {
