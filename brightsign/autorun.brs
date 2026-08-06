@@ -193,7 +193,13 @@ Sub TakeSnapshot(widget As Object, req As Object)
     if req <> invalid and req.width <> invalid then w% = req.width
     if req <> invalid and req.height <> invalid then h% = req.height
 
-    body$ = "{""width"":" + Stri(w%).Trim() + ",""height"":" + Stri(h%).Trim() + "}"
+    ' BrightScript has NO escape sequences in string literals: "" does not mean an escaped quote,
+    ' it ends one string and begins another, so `"{""width"":"` is three literals with no operator
+    ' between them — a compile error that stops the WHOLE SCRIPT loading, not just this function.
+    ' A quote has to come from Chr(34). This line is why the player booted to nothing:
+    '   ScriptLoadError: Syntax Error. (compile error &h02) in SSD:/autorun.brs(196)
+    q$ = Chr(34)
+    body$ = "{" + q$ + "width" + q$ + ":" + Stri(w%).Trim() + "," + q$ + "height" + q$ + ":" + Stri(h%).Trim() + "}"
 
     ut = CreateObject("roUrlTransfer")
     if ut = invalid then
@@ -205,8 +211,28 @@ Sub TakeSnapshot(widget As Object, req As Object)
     ut.SetUserAndPassword("admin", serial$)
     ut.AddHeader("Content-Type", "application/json")
 
-    resp$ = ut.PostFromStringWithRetry(body$, 1)
-    if resp$ = invalid or resp$ = "" then
+    ' PostFromStringWithRetry does not exist — calling it raised "Member function not found" from
+    ' inside the event loop, i.e. a snapshot request took the whole player down. And the synchronous
+    ' PostFromString() is no use either: it returns only a response CODE and discards the body, which
+    ' is where the thumbnail is. The documented way to read a POST response is asynchronous, on a
+    ' message port.
+    port = CreateObject("roMessagePort")
+    ut.SetPort(port)
+    if not ut.AsyncPostFromString(body$) then
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "could not reach the local DWS" })
+        return
+    end if
+
+    ' Bounded: a capture that never answers must not wedge the event loop that drives playback.
+    ev = Wait(20000, port)
+    if type(ev) <> "roUrlEvent" then
+        ut.AsyncCancel()
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "the local DWS did not answer" })
+        return
+    end if
+
+    resp$ = ev.GetString()
+    if resp$ = "" then
         widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "no response from the local DWS" })
         return
     end if
@@ -258,18 +284,48 @@ Sub SetOrientation(widget As Object, o As String)
         return
     end if
 
-    mode$ = vm.GetMode()
-    if mode$ = invalid or mode$ = "" then mode$ = "1920x1080x60p"
-
-    ok = vm.SetMode(mode$, transform$)
-    if ok = invalid then ok = false
-
-    if ok then
-        print "[st] orientation "; o; " -> transform "; transform$
-    else
-        print "[st] orientation "; o; ": SetMode refused transform "; transform$
+    ' SetMode() takes ONE argument — a mode string. Passing a transform as a second argument was a
+    ' "wrong number of function parameters" abort, so this Sub never reached its own reply and the
+    ' page never learned to fall back. Rotation lives on SetScreenModes(), whose per-screen config
+    ' carries a `transform` of normal|90|180|270 and rotates EVERYTHING including the video plane.
+    ' Implemented in BOS 9.0.15+; an older player simply has no method here and is told so.
+    ' FindMemberFunction is the guard BrightSign's own scripts use for a method that may not exist
+    ' on this OS version — safer than naming a member directly, which would attempt the call.
+    if FindMemberFunction(vm, "GetScreenModes") = invalid or FindMemberFunction(vm, "SetScreenModes") = invalid then
+        print "[st] orientation: this OS has no SetScreenModes — the page keeps its CSS fallback"
+        widget.PostJSMessage({ type: "orientation-result", ok: false, error: "SetScreenModes unavailable" })
+        return
     end if
-    widget.PostJSMessage({ type: "orientation-result", ok: ok, transform: transform$ })
+
+    configs = vm.GetScreenModes()
+    if configs = invalid or configs.Count() = 0 then
+        widget.PostJSMessage({ type: "orientation-result", ok: false, error: "no screen configuration" })
+        return
+    end if
+
+    ' ⚠️ SetScreenModes REBOOTS the player when it changes the screen configuration. A playlist push
+    ' repeats the current orientation on every update, so applying it unconditionally would reboot
+    ' the display every time the server spoke to it. Only a real change is worth a reboot.
+    changed = false
+    for each c in configs
+        if c.transform <> transform$ then
+            c.transform = transform$
+            changed = true
+        end if
+    end for
+
+    if not changed then
+        print "[st] orientation already "; transform$; " — nothing to do"
+        widget.PostJSMessage({ type: "orientation-result", ok: true, transform: transform$ })
+        return
+    end if
+
+    ' Tell the page BEFORE the call: the reboot may take the player out mid-sentence, and a display
+    ' that rotates without ever confirming looks like the command was ignored.
+    widget.PostJSMessage({ type: "orientation-result", ok: true, transform: transform$, rebooting: true })
+    print "[st] orientation "; o; " -> transform "; transform$; " (the player will now reboot)"
+    sleep(1000)
+    vm.SetScreenModes(configs)
 End Sub
 
 '=== capability probe =======================================================================
@@ -289,10 +345,19 @@ End Sub
 Function StorageProbe() As Object
     result = { present: false, volume: "", free_mb: 0, total_mb: 0 }
 
-    volumes = ["SSD:", "SD:", "USB1:"]
+    ' "USB:" not "USB1:" — the docs warn that GetStorageStatus() results are UNRELIABLE when called
+    ' with a "USBn:" parameter, and list "USB:", "SD:", "SSD:", "SD2:/", "Flash:" as the drive
+    ' strings it understands. One roStorageHotplug for the whole loop rather than one per volume.
+    hp = CreateObject("roStorageHotplug")
+    ' Ask the platform which volumes exist rather than guessing; the static list is the fallback for
+    ' an OS without the enumerator. Same shape BrightSign's own boilerplate uses.
+    volumes = ["SSD:", "SD:", "SD2:", "USB:"]
+    if hp <> invalid and FindMemberFunction(hp, "GetStorages") <> invalid then
+        found = hp.GetStorages()
+        if found <> invalid and found.Count() > 0 then volumes = found
+    end if
     for each v in volumes
         mounted = false
-        hp = CreateObject("roStorageHotplug")
         if hp <> invalid then
             st = hp.GetStorageStatus(v)
             if st <> invalid and st.mounted then mounted = true
@@ -372,8 +437,16 @@ Function PackageVersion() As String
     return "0.0.0-dev"   ' ST_PACKAGE_VERSION (stamped at build time — do not edit by hand)
 End Function
 
-Function DoesFileExist(filePath$ As String) As Boolean
-    files = MatchFiles(filePath$, filePath$)
+' Does [name] exist in directory [dir]?
+'
+' MatchFiles takes a DIRECTORY plus a pattern, and returns nothing when the pattern contains a
+' separator. The previous version passed a full path as both arguments, so it answered "no" for
+' every file on every player — which silently disabled this entire self-update path: the pending
+' package was never seen, the .part file was never cleaned up, and the .done marker was never
+' noticed. Two arguments, so there is no path-splitting to get wrong.
+Function FileExists(dir As String, name As String) As Boolean
+    files = MatchFiles(dir, name)
+    if files = invalid then return false
     return files.Count() > 0
 End Function
 
@@ -385,33 +458,55 @@ End Function
 ' storage root the OS no longer auto-processes the archive — so from then on the host has to do it
 ' itself, or self-update would work exactly once.
 Sub ApplyPendingPackage(root As String)
+    dir$ = root + "/"
     zipPath$ = root + "/autorun.zip"
     donePath$ = root + "/autorun.zip.done"
     badPath$ = root + "/autorun.zip.bad"
+    stage$ = root + "/st-staging"
 
-    if not DoesFileExist(zipPath$) then return
-    if DoesFileExist(donePath$) then return   ' already unpacked; extracting again is the boot loop
+    if not FileExists(dir$, "autorun.zip") then return
+    if FileExists(dir$, "autorun.zip.done") then return  ' already unpacked; again is the boot loop
 
     print "[st-update] unpacking pending package"
 
     package = CreateObject("roBrightPackage", zipPath$)
     if package = invalid then
-        print "[st-update] ERROR: archive unreadable (is it STORED?) — parking it as .bad"
-        fs = CreateObject("roFileSystem")
-        if fs <> invalid then fs.Rename(zipPath$, badPath$)
+        print "[st-update] ERROR: archive unreadable — parking it as .bad"
+        MoveFile(zipPath$, badPath$)
         return
     end if
 
-    if not package.Unpack(root + "/") then
-        print "[st-update] ERROR: extract failed — parking it as .bad so we do not retry forever"
-        fs = CreateObject("roFileSystem")
-        if fs <> invalid then fs.Rename(zipPath$, badPath$)
+    ' ⚠️ Unpack() DELETES everything already in its target directory: "Providing a destination path
+    ' of SD:/ will wipe all preexisting files from the card". Unpacking straight to the volume root
+    ' would therefore erase this player's provisioning and its entire content pool on every update —
+    ' the update would work and the display would come back empty and unpaired.
+    '
+    ' So it goes to a staging directory of its own, and the files are moved into place afterwards.
+    ' The wipe is then a FEATURE: it clears any half-extracted remains of a previous attempt.
+    CreateDirectory(stage$)
+    package.Unpack(stage$ + "/")
+
+    ' Unpack() returns Void, so success is proven by looking for what should now exist rather than
+    ' by testing a return value that was never there.
+    if not FileExists(stage$ + "/", "autorun.brs") then
+        print "[st-update] ERROR: extract produced no autorun.brs — parking it as .bad"
+        MoveFile(zipPath$, badPath$)
         return
     end if
 
-    fs = CreateObject("roFileSystem")
-    if fs = invalid then return
-    if not fs.Rename(zipPath$, donePath$) then
+    ' screentinker.json is deliberately NOT copied over: it carries THIS player's provisioning
+    ' (server URL, device id), and the copy inside a package carries the build's defaults. Letting
+    ' an update overwrite it would re-point or unpair the display as a side effect of a routine
+    ' upgrade — silently, and on every player at once.
+    moved% = 0
+    for each name in MatchFiles(stage$, "*")
+        if name <> "screentinker.json" then
+            if MoveFile(stage$ + "/" + name, root + "/" + name) then moved% = moved% + 1
+        end if
+    end for
+    print "[st-update] installed "; moved%; " file(s)"
+
+    if not MoveFile(zipPath$, donePath$) then
         ' Refusing to reboot without the marker: we would extract and reboot forever.
         print "[st-update] ERROR: could not mark done — not rebooting"
         return
@@ -442,7 +537,7 @@ Sub CheckPackageUpdate(cfg As Object, root As String)
     xfer.SetUrl(url$)
     xfer.EnablePeerVerification(true)
     body$ = xfer.GetToString()
-    if body$ = "" then return                  ' unreachable: keep running what works
+    if body$ = "" then return                  ' unreachable server: keep running what works
 
     manifest = ParseJson(body$)
     if manifest = invalid then return
@@ -456,8 +551,7 @@ Sub CheckPackageUpdate(cfg As Object, root As String)
 
     ' Any earlier partial is deleted first: resuming into an existing file would concatenate two
     ' downloads into something that hashes to neither.
-    fs = CreateObject("roFileSystem")
-    if fs <> invalid and DoesFileExist(partPath$) then fs.Delete(partPath$)
+    if FileExists(root + "/", "autorun.zip.part") then DeleteFile(partPath$)
 
     dl = CreateObject("roUrlTransfer")
     if dl = invalid then return
@@ -466,7 +560,7 @@ Sub CheckPackageUpdate(cfg As Object, root As String)
     if dl.GetToFile(partPath$) <> 200 then
         print "[st-update] download failed"
         RecordPackageAttempt(reg, attempts% + 1)
-        if fs <> invalid then fs.Delete(partPath$)
+        DeleteFile(partPath$)
         return
     end if
 
@@ -474,15 +568,14 @@ Sub CheckPackageUpdate(cfg As Object, root As String)
     if not VerifyPackage(partPath$, manifest.sha256, manifest.size) then
         print "[st-update] VERIFICATION FAILED — discarding, staying on "; PackageVersion()
         RecordPackageAttempt(reg, attempts% + 1)
-        if fs <> invalid then fs.Delete(partPath$)
+        DeleteFile(partPath$)
         return
     end if
 
     ' Promote. Marker first — see the ordering note above.
-    if fs = invalid then return
-    if DoesFileExist(root + "/autorun.zip.done") then fs.Delete(root + "/autorun.zip.done")
-    if DoesFileExist(root + "/autorun.zip") then fs.Delete(root + "/autorun.zip")
-    if not fs.Rename(partPath$, root + "/autorun.zip") then
+    if FileExists(root + "/", "autorun.zip.done") then DeleteFile(root + "/autorun.zip.done")
+    if FileExists(root + "/", "autorun.zip") then DeleteFile(root + "/autorun.zip")
+    if not MoveFile(partPath$, root + "/autorun.zip") then
         print "[st-update] ERROR: could not stage the package — staying put"
         RecordPackageAttempt(reg, attempts% + 1)
         return
@@ -505,35 +598,40 @@ End Sub
 ' sha256 + size. Both matter: the hash proves the bytes are the ones we were promised, the size
 ' floor catches an error page or captive-portal login saved under the package's name.
 Function VerifyPackage(path As String, expected As String, expectedSize As Integer) As Boolean
-    if expected = invalid or expected = "" then return false
+    ' Guard the arguments before the type declarations do it for us: a manifest missing sha256 or
+    ' size passes `invalid` into an `As String`/`As Integer` parameter, which is a runtime error at
+    ' the CALL — before any check inside the function could help.
+    if expected = "" then return false
 
-    fs = CreateObject("roFileSystem")
-    if fs = invalid then return false
-
-    info = fs.Stat(path)
-    if info = invalid then return false
-    if info.size < 1024 then
-        print "[st-update] package is implausibly small ("; info.size; " bytes)"
+    ' roByteArray + roHashGenerator. The previous version used roFileSystem.Stat/OpenInputFile and
+    ' roMessageDigest — all three are Roku objects that do not exist on BrightSign, so this function
+    ' returned false unconditionally and every self-update failed verification and burned an
+    ' attempt. The package is tens of kilobytes, so reading it whole is cheaper than the streaming
+    ' loop it replaces.
+    ba = CreateObject("roByteArray")
+    if ba = invalid then return false
+    if not ba.ReadFile(path) then
+        print "[st-update] package unreadable at "; path
         return false
     end if
-    if expectedSize > 0 and info.size <> expectedSize then
-        print "[st-update] size mismatch: got "; info.size; " expected "; expectedSize
+
+    size% = ba.Count()
+    if size% < 1024 then
+        print "[st-update] package is implausibly small ("; size%; " bytes)"
+        return false
+    end if
+    if expectedSize > 0 and size% <> expectedSize then
+        print "[st-update] size mismatch: got "; size%; " expected "; expectedSize
         return false
     end if
 
-    digest = CreateObject("roMessageDigest")
+    hg = CreateObject("roHashGenerator", "sha256")
+    if hg = invalid then return false
+    digest = hg.Hash(ba)
     if digest = invalid then return false
-    digest.SetAlgorithm("sha256")
 
-    file = fs.OpenInputFile(path)
-    if file = invalid then return false
-    while true
-        chunk = file.Read(65536)
-        if chunk.Count() = 0 then exit while
-        digest.Update(chunk)
-    end while
-
-    return LCase(digest.Final()) = LCase(expected)
+    ' Hash() answers with an roByteArray, not a string.
+    return LCase(digest.ToHexString()) = LCase(expected)
 End Function
 
 '=== main ===================================================================================
@@ -613,7 +711,10 @@ Sub Main()
                 ' Back off, then fall back to the local page so the screen says something
                 ' truthful instead of showing white. The local page keeps retrying the server.
                 retries = retries + 1
-                print "[st] load-error ("; retries; "): "; data.url
+                ' The key is `uri` on a load-error; `url` belongs to download-request. Printing
+                ' the wrong one meant the single diagnostic that names the failing resource always
+                ' printed "invalid".
+                print "[st] load-error ("; retries; "): "; data.uri
                 sleep(ChooseBackoff(retries))
                 if retries >= 3 then
                     ' The server URL rides along so the fallback page can name it on screen and

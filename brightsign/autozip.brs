@@ -13,11 +13,13 @@
 ' being processed at all. autorun.brs belongs INSIDE the zip, which is where the build script puts
 ' it (scripts/build-autorun-zip.sh).
 '
-' Unpacks with roBrightPackage, which is what BrightSign's own tooling uses — NOT roUnzip.
-' A BrightSign consultant flagged this after our first archive failed his automated deployment:
-' the zip reached the player and then could not be opened. Two causes, both fixed:
-'   - the archive must be STORED, no compression (scripts/build-autorun-zip.sh now asserts it)
-'   - roBrightPackage is the supported reader for a player package
+' Unpacks with roBrightPackage, which is what BrightSign's own tooling uses.
+'
+' On compression: roBrightPackage supports deflate32 with default options, PPMd, and "no
+' compression". What it does NOT support is bzip2, LZMA, Deflate64 and Zip64 (the last being what
+' Windows Explorer's built-in zipper produces). We build STORED, which is stricter than required and
+' costs nothing at this size — but note that compression was NOT the cause of the deployment failure
+' this script was blamed for. That was the MatchFiles bug below.
 '
 ' Requires BrightSignOS 7.0.60+.
 
@@ -26,9 +28,9 @@
 ' for the file beats assuming a volume: extracting to "SD:/" on a player with no card writes to a
 ' volume that does not exist, and the deployment silently does nothing.
 Function SourceRoot() As String
-    volumes = ["USB1:", "SD:", "SSD:", "FLASH:"]
+    volumes = ["USB1:", "SD:", "SD2:", "SSD:", "FLASH:"]
     for each v in volumes
-        if DoesFileExist(v + "/autorun.zip") then return v
+        if FileExists(v + "/", "autorun.zip") then return v
     end for
     return ""
 End Function
@@ -45,14 +47,14 @@ Sub Main()
 
     print "[st-autozip] volume "; root$
 
-    if not DoesFileExist(zipPath$) then
+    if not FileExists(extractPath$, "autorun.zip") then
         print "[st-autozip] no autorun.zip at "; zipPath$; " — nothing to do"
         return
     end if
 
     ' Idempotence. Without this the player extracts, reboots, extracts again, reboots again —
     ' a boot loop that looks like a hardware fault.
-    if DoesFileExist(donePath$) then
+    if FileExists(extractPath$, "autorun.zip.done") then
         print "[st-autozip] already unpacked (autorun.zip.done present) — leaving it alone"
         return
     end if
@@ -67,20 +69,22 @@ Sub Main()
         return
     end if
 
-    if not package.Unpack(extractPath$) then
-        print "[st-autozip] ERROR: unpack failed"
+    ' Unpack() returns VOID — there is no boolean to test, and `if not package.Unpack(...)` was a
+    ' type error rather than an error check. Success is proven the only way that actually means
+    ' anything: the file we came here to install is now on the card.
+    package.Unpack(extractPath$)
+
+    if not FileExists(extractPath$, "autorun.brs") then
+        print "[st-autozip] ERROR: unpack produced no autorun.brs — leaving the archive for a retry"
         return
     end if
 
     print "[st-autozip] extracted"
 
-    fs = CreateObject("roFileSystem")
-    if fs = invalid then
-        print "[st-autozip] ERROR: no roFileSystem — cannot mark the archive done"
-        return
-    end if
-
-    if not fs.Rename(zipPath$, donePath$) then
+    ' MoveFile/DeleteFile are GLOBAL functions on BrightSign. roFileSystem is a Roku object and does
+    ' not exist here, so every one of these calls used to return invalid — which meant the archive
+    ' was never marked done and the player never rebooted into the player it had just installed.
+    if not MoveFile(zipPath$, donePath$) then
         print "[st-autozip] ERROR: could not rename the archive; refusing to reboot into a loop"
         return
     end if
@@ -90,7 +94,17 @@ Sub Main()
     RebootSystem()
 End Sub
 
-Function DoesFileExist(filePath$ As String) As Boolean
-    files = MatchFiles(filePath$, filePath$)
+' Does [name] exist in directory [dir]?
+'
+' THE BUG THIS FIXES. The previous version passed a full path as BOTH arguments of MatchFiles.
+' MatchFiles takes a DIRECTORY plus a pattern, and the documentation is explicit: "you will get no
+' results if the pattern contains a directory separator". So it returned an empty list every time,
+' for every file, on every player — and this script reported "no autorun.zip on any volume" while a
+' `dir SD:` sat there listing autorun.zip. Reported from a real deployment on an HD1026.
+'
+' Two arguments rather than one path, so there is no string-splitting to get wrong.
+Function FileExists(dir As String, name As String) As Boolean
+    files = MatchFiles(dir, name)
+    if files = invalid then return false
     return files.Count() > 0
 End Function
