@@ -20,7 +20,7 @@ export function render(container) {
         { icon: '&#128197;', title: 'Content Scheduling', steps: ['Go to Schedule and select a device', 'Click "Add Schedule" to create a time slot', 'Set start/end times and recurrence rules', 'Higher priority schedules override lower ones', 'Content auto-switches based on the schedule'] },
         { icon: '&#128421;', title: 'Remote Control', steps: ['Go to a device\'s detail page', 'Click the "Remote Control" tab', 'Click "Start Remote" to begin streaming', 'Use the d-pad, volume, and power buttons', 'Click anywhere on the screen to simulate a tap'] },
         { icon: '&#128433;', title: 'Kiosk/Touchscreen', steps: ['Go to Kiosk and create a new page', 'Add buttons with labels, icons, and actions', 'Configure the idle screen timeout', 'Preview the page in the editor', 'Assign to a device as a widget'] },
-        { icon: '&#127916;', title: 'Video Walls', steps: ['Go to Video Walls and create a new wall', 'Set the grid size (e.g., 2x2)', 'Drag devices onto grid positions', 'Set bezel compensation if needed', 'Assign content to play across all displays'] },
+        { icon: '&#127916;', title: 'Video Walls', steps: ['Go to Video Walls and create a new wall', 'Drag displays onto the canvas and arrange them to match the PHYSICAL wall', 'Panel hung sideways? Select it and set "How this panel is mounted" — no need to pre-rotate your video', 'Set bezel compensation if needed, then "Fit player to screens"', 'Assign a playlist to play across all displays', 'The Panels list below the canvas shows each screen\'s online state and links to its device page'] },
       ].map(guide => `
         <div class="settings-section" style="margin:0">
           <h3 style="font-size:15px">${guide.icon} ${guide.title}</h3>
@@ -44,6 +44,7 @@ export function render(container) {
         { q: 'Can I white-label the dashboard?', a: 'Yes! Go to Settings > White Label to customize the brand name, colors, logo, and domain.' },
         { q: 'How do I export proof-of-play reports?', a: 'Go to Reports, set your date range and filters, then click "Export CSV".' },
         { q: 'What is a video wall?', a: 'A video wall combines multiple displays into one large screen. For example, four TVs in a 2x2 grid showing one big image/video.' },
+        { q: 'How do I build a wall from portrait (sideways-mounted) panels?', a: 'Arrange the tiles on the wall canvas exactly as the panels are hung — side by side stays side by side. Then select each tile and set "How this panel is mounted" to match how it was turned. The player rotates the content for you, so you do not need a pre-rotated copy of your video. While a display is in a wall, this setting replaces its own Orientation.' },
       ].map(faq => `
         <div style="border-bottom:1px solid var(--border);padding:12px 0">
           <div style="font-weight:600;font-size:14px;margin-bottom:4px">${faq.q}</div>

@@ -447,8 +447,17 @@ class MainActivity : AppCompatActivity() {
     // Video-wall slice transform. The content view represents the whole wall (player_rect);
     // size + offset rootView so this screen's screen_rect fills the device viewport, content
     // stretched to fill (object-fit:fill parity, set on the views via MediaPlayerManager).
-    // Mirrors the web player's vw/vh stage math. Per-tile rotation is intentionally not
-    // applied (web/Tizen parity). cfg == null restores full screen.
+    // Mirrors the web player's vw/vh stage math. cfg == null restores full screen.
+    //
+    // #236: per-panel mounting rotation is now applied. Ported by hand from
+    // server/lib/wall-geometry.js, which is the canonical rule and the only place it is tested —
+    // Kotlin cannot load the shared script the web player pulls, so any change there has to be
+    // mirrored here or a wall of mixed players grows a seam. `rotation` is degrees CLOCKWISE the
+    // content is turned inside the framebuffer (the same convention as the orientation setting),
+    // and Android's View.rotation is clockwise-positive too, so it maps straight across.
+    //
+    // Transform order matters: Android rotates about the pivot (view centre) and THEN applies
+    // translation, so the translation is computed to land the view's CENTRE, not its top-left.
     private fun applyWallTransform(cfg: WallController.WallConfig?) {
         val lp = rootView.layoutParams
         if (cfg == null) {
@@ -476,19 +485,49 @@ class MainActivity : AppCompatActivity() {
         }
         val dw = resources.displayMetrics.widthPixels.toFloat()
         val dh = resources.displayMetrics.heightPixels.toFloat()
-        lp.width = ((p.w / s.w) * dw).toInt()
-        lp.height = ((p.h / s.h) * dh).toInt()
-        rootView.layoutParams = lp
-        rootView.translationX = ((p.x - s.x) / s.w) * dw   // negative for right/lower tiles
-        rootView.translationY = ((p.y - s.y) / s.h) * dh
-        rootView.rotation = 0f                              // per-tile rotation: TODO (parity = none)
+        val rot = when (cfg.rotation) { 90 -> 90; 180 -> 180; 270 -> 270; else -> 0 }
+
+        if (rot == 0) {
+            // Left byte-identical to the pre-#236 expression on purpose: every wall in the field is
+            // rotation 0, and an operator who updates must not find a wall that was aligned
+            // yesterday has shifted by a rounding error.
+            lp.width = ((p.w / s.w) * dw).toInt()
+            lp.height = ((p.h / s.h) * dh).toInt()
+            rootView.layoutParams = lp
+            rootView.translationX = ((p.x - s.x) / s.w) * dw   // negative for right/lower tiles
+            rootView.translationY = ((p.y - s.y) / s.h) * dh
+            rootView.rotation = 0f
+        } else {
+            // A quarter turn measures the wall's horizontal against the framebuffer's VERTICAL —
+            // on a panel hung sideways, moving right along the wall moves down the display.
+            val quarter = (rot == 90 || rot == 270)
+            val boxW = (p.w / s.w) * (if (quarter) dh else dw)
+            val boxH = (p.h / s.h) * (if (quarter) dw else dh)
+            // Where the player rect's centre sits within this panel's rect, 0..1 in wall space.
+            val nx = (p.x + p.w / 2f - s.x) / s.w
+            val ny = (p.y + p.h / 2f - s.y) / s.h
+            // ...and where that lands in the framebuffer once the panel's turn is undone.
+            val cx: Float
+            val cy: Float
+            when (rot) {
+                90 -> { cx = 1f - ny; cy = nx }
+                180 -> { cx = 1f - nx; cy = 1f - ny }
+                else -> { cx = ny; cy = 1f - nx }   // 270
+            }
+            lp.width = boxW.toInt()
+            lp.height = boxH.toInt()
+            rootView.layoutParams = lp
+            rootView.rotation = rot.toFloat()
+            rootView.translationX = cx * dw - boxW / 2f
+            rootView.translationY = cy * dh - boxH / 2f
+        }
         rootView.scaleX = 1f
         rootView.scaleY = 1f
         rootView.requestLayout()
         mirrorTransformToPip()
         // Orientation no longer reflects reality; ensure it re-applies after wall exit.
         currentOrientation = null
-        Log.i("MainActivity", "Wall transform: size=${lp.width}x${lp.height} tx=${rootView.translationX} ty=${rootView.translationY}")
+        Log.i("MainActivity", "Wall transform: size=${lp.width}x${lp.height} tx=${rootView.translationX} ty=${rootView.translationY} rot=$rot")
     }
 
     private fun setupServiceCallbacks() {

@@ -1203,11 +1203,38 @@ WallController.prototype.styleStage = function (config) {
   this.stage.classList.add('wall-mode');
   var st = this.stage.style;
   st.position = 'absolute';
-  st.left = (((p.x - s.x) / s.w) * 100) + 'vw';
-  st.top = (((p.y - s.y) / s.h) * 100) + 'vh';
-  st.width = ((p.w / s.w) * 100) + 'vw';
-  st.height = ((p.h / s.h) * 100) + 'vh';
-  st.transform = ''; st.transformOrigin = '';
+
+  // #236: per-panel mounting rotation. Ported by hand from server/lib/wall-geometry.js, which is the
+  // canonical rule and the only place it is tested — the .wgt is packaged, so it cannot pull the
+  // shared script the web player loads. Any change there has to be mirrored here or a mixed wall
+  // grows a seam. rotation is degrees CLOCKWISE the content is turned inside the framebuffer, the
+  // same convention as the device orientation setting.
+  var rot = [0, 90, 180, 270].indexOf(Number(config.rotation)) >= 0 ? Number(config.rotation) : 0;
+  if (rot === 0) {
+    // Left byte-identical to the pre-#236 expression on purpose: every wall in the field is
+    // rotation 0 and must not shift by a float's worth after an update.
+    st.left = (((p.x - s.x) / s.w) * 100) + 'vw';
+    st.top = (((p.y - s.y) / s.h) * 100) + 'vh';
+    st.width = ((p.w / s.w) * 100) + 'vw';
+    st.height = ((p.h / s.h) * 100) + 'vh';
+    st.transform = ''; st.transformOrigin = '';
+    return;
+  }
+  var nx = (p.x + p.w / 2 - s.x) / s.w;
+  var ny = (p.y + p.h / 2 - s.y) / s.h;
+  var quarter = (rot === 90 || rot === 270);
+  var cx, cy;
+  if (rot === 90) { cx = 1 - ny; cy = nx; }
+  else if (rot === 180) { cx = 1 - nx; cy = 1 - ny; }
+  else { cx = ny; cy = 1 - nx; }
+  st.left = (cx * 100) + 'vw';
+  st.top = (cy * 100) + 'vh';
+  // A quarter turn measures the wall's horizontal against the framebuffer's VERTICAL.
+  st.width = ((p.w / s.w) * 100) + (quarter ? 'vh' : 'vw');
+  st.height = ((p.h / s.h) * 100) + (quarter ? 'vw' : 'vh');
+  // translate BEFORE rotate, or the -50% offset is rotated too and the tile lands on the wrong side.
+  st.transform = 'translate(-50%, -50%) rotate(' + rot + 'deg)';
+  st.transformOrigin = 'center center';
 };
 
 // #group-sync: the sync id is wall_id (WALL) or group_id (GROUP mode).

@@ -410,6 +410,14 @@ app.get('/player/orientation-style.js', (req, res) => {
   res.sendFile(path.join(__dirname, 'lib', 'orientation-style.js'));
 });
 
+// #236: video-wall tile geometry, from its single source. Four players have to agree on this to
+// the pixel — they render one frame across panels that share a seam, and a half-pixel of
+// disagreement between two of them is a visible line down the middle of the wall.
+app.get('/player/wall-geometry.js', (req, res) => {
+  res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'lib', 'wall-geometry.js'));
+});
+
 app.get('/player/media-mute.js', (req, res) => {
   res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(__dirname, 'lib', 'media-mute.js'));

@@ -191,7 +191,9 @@ function renderWallCard(wall) {
       cells.push(`<div class="wall-card-cell${dev ? ' filled' : ''}" title="${dev ? esc(dev.device_name) : '[' + c + ',' + r + ']'}"></div>`);
     }
   }
-  const onlineCount = (wall.devices || []).filter(d => d.device_status === 'online').length;
+  const members = wall.devices || [];
+  const onlineCount = members.filter(d => d.device_status === 'online').length;
+  const allUp = onlineCount === members.length && members.length > 0;
   return `
     <div class="device-card wall-card" data-wall-id="${wall.id}" onclick="window.location.hash='#/wall/${wall.id}'">
       <div class="device-card-preview wall-card-preview">
@@ -204,8 +206,20 @@ function renderWallCard(wall) {
       <div class="device-card-body">
         <div class="device-card-name">${esc(wall.name)}</div>
         <div class="device-card-meta">
-          <div class="meta-item">${(wall.devices || []).length} ${(wall.devices || []).length === 1 ? 'tile' : 'tiles'}</div>
-          <div class="meta-item" style="color:${onlineCount === (wall.devices || []).length ? 'var(--success)' : 'var(--text-muted)'}">${onlineCount} online</div>
+          <div class="meta-item">${members.length} ${members.length === 1 ? 'tile' : 'tiles'}</div>
+          <div class="meta-item" style="color:${allUp ? 'var(--success)' : 'var(--danger, #e5484d)'}">${allUp ? 'all online' : `${onlineCount}/${members.length} online`}</div>
+        </div>
+        <!-- #235: a wall replaces its members' cards, so without this strip one dead panel of a
+             four-panel wall is invisible from the dashboard. Each chip links straight to the
+             device page — being in a wall must not cost device-level visibility. -->
+        <div class="wall-card-members" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px">
+          ${members.map(d => `
+            <a class="wall-card-member" href="#/device/${esc(d.device_id)}" data-member-device-id="${esc(d.device_id)}" onclick="event.stopPropagation()"
+               title="${esc(d.device_name)} — ${esc(d.device_status || 'unknown')}. Open device info & controls"
+               style="display:inline-flex;align-items:center;gap:4px;max-width:120px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;font-size:10px;color:var(--text-secondary);text-decoration:none">
+              <span class="status-dot ${esc(d.device_status || 'offline')}" style="display:inline-block;flex-shrink:0"></span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.device_name)}</span>
+            </a>`).join('')}
         </div>
       </div>
     </div>
@@ -421,6 +435,14 @@ export function render(container) {
     cards.forEach(card => {
       const statusEl = card.querySelector('.device-card-status');
       if (statusEl) statusEl.innerHTML = `<span class="device-status-badge ${b.state}" data-liveness="${b.state}" data-offline-reason="${esc(b.reason)}"${b.title ? ` title="${esc(b.title)}"` : ''}>${esc(b.label)}</span>`;
+    });
+    // #235: a wall member has no card of its own, only a chip on the wall card. Without this a
+    // panel could go offline and the dashboard would keep showing it green until a full reload —
+    // exactly the blind spot the issue is about.
+    document.querySelectorAll(`.wall-card-member[data-member-device-id="${CSS.escape(data.device_id)}"]`).forEach(chip => {
+      const dot = chip.querySelector('.status-dot');
+      if (dot) dot.className = `status-dot ${b.state}`;
+      chip.title = `${chip.title.split(' — ')[0]} — ${b.label}. Open device info & controls`;
     });
   };
 
