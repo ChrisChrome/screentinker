@@ -1676,11 +1676,12 @@
           if (BS && BS.reboot()) console.log('[bs] reboot requested via host');
           else console.log('reboot: not supported on this player');
         }
-        // Media volume, 0-100 from the dashboard. Applies to whatever is playing now and is
-        // remembered for items mounted later.
+        // Media volume. Applies to whatever is playing now and is remembered for items mounted
+        // later (see setMediaVolume). The wire parsing is volumeLevelFromCommand().
         if (data.type === 'set_volume') {
-          const pct = Number(data.payload?.value ?? data.value);
-          if (isFinite(pct)) setMediaVolume(Math.max(0, Math.min(100, pct)) / 100);
+          const v = volumeLevelFromCommand(data);
+          if (v === null) console.warn('[volume] set_volume with no usable level/value:', JSON.stringify(data));
+          else setMediaVolume(v);
         }
       });
 
@@ -4032,6 +4033,42 @@
       try { return BS.displayPower(on); } catch (e) { return false; }
     }
 
+    /*
+     * The 0..1 volume a set_volume command is asking for, or null when it does not carry one.
+     *
+     * The wire form is `payload.level`, a FRACTION. That is what the dashboard sends
+     * (device-detail.js: `{ level: slider / 100 }`), what a group command relays unchanged, and what
+     * the Android player reads (`optDouble("level")`) — so the fraction is canonical and this player
+     * now matches it instead of inventing a third convention.
+     *
+     * What was here read `payload.value` and treated it as a percentage, which matched nothing the
+     * product sends: the slider was a no-op on every browser panel. Correcting only the KEY would
+     * have been worse than leaving it broken — 0.5 clamped as a percentage is 0.5%, inaudible, and
+     * it would have looked fixed to anyone who checked only that the handler ran.
+     *
+     * `value` is still accepted as a 0..100 percentage for any caller written against the old
+     * handler. The scale is chosen by WHICH KEY ARRIVED, never by the magnitude of the number: 1 is
+     * legal in both scales (1% and full volume), so a magnitude test is guaranteed to be wrong for
+     * somebody, silently, in whichever direction hurts more.
+     *
+     * Extracted from the socket handler so the parsing can be asserted without a socket — the bug
+     * it replaces was invisible precisely because nothing ever ran it against a real payload.
+     */
+    function volumeLevelFromCommand(data) {
+      if (!data || typeof data !== 'object') return null;
+      const p = (data.payload && typeof data.payload === 'object') ? data.payload : {};
+      const pick = (k) => {
+        const raw = (p[k] !== undefined && p[k] !== null) ? p[k] : data[k];
+        if (raw === undefined || raw === null || raw === '' || typeof raw === 'boolean') return null;
+        const n = Number(raw);
+        return isFinite(n) ? n : null;
+      };
+      const level = pick('level');                                   // canonical: 0..1
+      const pct = level === null ? pick('value') : null;             // legacy: 0..100
+      const v = level !== null ? level : (pct !== null ? pct / 100 : null);
+      return v === null ? null : Math.max(0, Math.min(1, v));
+    }
+
     // Volume that survives the next item. Media elements are created per item, so remembering the
     // level is what makes a volume command stick rather than lasting until the playlist advances.
     let mediaVolume = null;
@@ -4040,8 +4077,17 @@
       // Wall followers stay silent by design; don't override that.
       try { if (typeof isWallFollower === 'function' && isWallFollower()) return; } catch (e) { /* not a wall */ }
       document.querySelectorAll('video, audio').forEach((el) => {
-        try { el.volume = v; el.muted = v === 0; } catch (e) { /* element torn down mid-call */ }
+        try { el.volume = v; } catch (e) { /* element torn down mid-call */ }
       });
+      // Volume is a LEVEL. Mute is a separate decision with four inputs and a fixed order
+      // (lib/media-mute.js), already resolved when the element was mounted, and this function does
+      // not get to overrule it. It used to write `el.muted = (v === 0)`, which un-muted whatever was
+      // playing on any non-zero volume: an item an operator had deliberately silenced started making
+      // noise the moment somebody touched the volume slider — reproduced live (item flagged muted,
+      // one set_volume, muted went false). The same write contradicts the resolver's autoplay rule,
+      // where unmuting without a user gesture costs the VIDEO rather than winning the audio.
+      //
+      // Nothing is lost by leaving mute alone: volume 0 is silence on every media element we run on.
     }
 
     // Media elements are created per item across several code paths — fullscreen, zones, the
@@ -4059,7 +4105,10 @@
       }
       if (mediaVolume == null) return;
       try { if (typeof isWallFollower === 'function' && isWallFollower()) return; } catch (err) { /* not a wall */ }
-      try { el.volume = mediaVolume; el.muted = mediaVolume === 0; } catch (err) { /* gone */ }
+      // Level only — see setMediaVolume: the mount path has already resolved this element's mute
+      // from media-mute.js, and re-deciding it here from the volume number alone would undo a
+      // per-item mute (and, without a user gesture, the playback itself).
+      try { el.volume = mediaVolume; } catch (err) { /* gone */ }
     }, true);
 
     // Screen-off state, tracked because the playlist keeps advancing while the screen is "off"
