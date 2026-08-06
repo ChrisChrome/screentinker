@@ -171,7 +171,33 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # ghcr refused this push on the 1.9.29 release with "denied: permission_denied: Error from
+      # intermediary with HTTP status code 403", then accepted the identical build on a manual
+      # re-run minutes later. Nothing about the token, the permissions or the workflow changed in
+      # between — the registry simply said no once.
+      #
+      # That is worth one retry rather than a failed release, and it is worst exactly here: the
+      # GitHub Release job has already published by this point, so a failure leaves a tag that
+      # exists with no image behind it. Anyone deploying from ghcr — alpha, and every self-hoster
+      # pulling :latest — sees a version that is announced and unpullable, which reads as a broken
+      # release rather than a hiccup at a registry.
       - uses: docker/build-push-action@v6
+        id: push
+        continue-on-error: true
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.ver.outputs.tags }}
+
+      - name: Pause before retrying the push
+        if: steps.push.outcome == 'failure'
+        run: sleep 45
+
+      # No continue-on-error: a second refusal is a real failure and must fail the release.
+      - name: Retry the push
+        if: steps.push.outcome == 'failure'
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
