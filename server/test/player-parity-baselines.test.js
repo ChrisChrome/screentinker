@@ -212,11 +212,15 @@ test('BICONDITIONAL: offline.cache in a baseline iff that player has a media cac
     'a widget that refuses to register a worker cannot cache one byte');
 });
 
-test('display.power is claimed only where BOTH halves work without privilege', () => {
-  // Android v1.9.28 answers screen_on with a logged no-op and gates screen_off on
-  // owner/admin/accessibility, so the pair is not honest for an undeclared panel. Tizen implements
-  // both with a plain overlay and no signing requirement.
-  assert.equal(caps.BASELINE.android.includes('display.power'), false);
+test('display.power is claimed where at least one half does something', () => {
+  // Android is the deliberate exception and the baseline comment carries the reasoning: v1.9.28
+  // answers screen_on with a logged no-op, but screen_off genuinely blanks the panel (owner/admin
+  // FORCE_LOCK, else the accessibility lock). One capability renders both dashboard buttons, so
+  // withholding it to hide the dead ON button also removes blank-at-night — the half signage
+  // actually schedules — from every panel that has not updated. Kept, knowingly.
+  // Tizen implements both with a plain overlay and no signing requirement.
+  assert.ok(caps.BASELINE.android.includes('display.power'),
+    'screen_off works on a fielded Android panel; do not withhold it to hide screen_on');
   assert.ok(caps.BASELINE.tizen.includes('display.power'));
   assert.equal(caps.BASELINE.web.includes('display.power'), false, 'a browser tab cannot power a panel');
   assert.equal(caps.BASELINE.brightsign.includes('display.power'), false, 'CEC needs the host bridge');

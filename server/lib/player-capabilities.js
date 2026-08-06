@@ -74,7 +74,7 @@ const BASELINE = {
     // still in the field. Both are Tier 0: MainActivity applies them with no owner, no admin and
     // no WRITE_SETTINGS, so they are unconditional on any build a fielded panel could be running.
     'audio.mute', 'audio.volume',
-    'display.rotation', 'display.brightness',
+    'display.rotation', 'display.power', 'display.brightness',
     // Capture without accessibility falls back to ScreenshotCapture.captureView, which is a real
     // frame of the player's own view — i.e. of the content. Narrower than the full-screen path,
     // but the operator gets a picture, not a dead button.
@@ -82,12 +82,24 @@ const BASELINE = {
     'remote.input',
     'system.restart_player', 'system.self_update',
     'sync.clock', 'offline.cache',
-    // NOT display.power. v1.9.28 MainActivity answers screen_on with
+    // display.power is KEPT for the un-updated Android fleet, deliberately, with the trade-off
+    // recorded here because it is genuinely two-sided.
+    //
+    // v1.9.28 MainActivity answers screen_on with
     //   Log.w("screen_on: no privileged wake path on a non-rooted panel — no-op")
-    // so the ON half is dead on 100% of fielded Android panels, and screen_off only works with
-    // owner / device-admin / accessibility. The dashboard renders BOTH buttons off this one
-    // capability. A panel you can sleep and cannot wake is the worst possible version of this
-    // feature, which is exactly why PlayerCapabilities.kt gates its own claim on both halves.
+    // so the ON half is dead on every fielded Android panel, while screen_off does work (device
+    // owner / device-admin FORCE_LOCK, else the accessibility lock). One capability renders BOTH
+    // dashboard buttons, so this baseline cannot offer the working half without the dead one.
+    //
+    // Withholding it takes away blank-at-night, which is the half signage actually schedules, from
+    // every panel that has not updated. Keeping it means an operator can sleep a screen and not
+    // wake it from the dashboard — mitigated by the fact that a schedule, a restart, or anyone
+    // standing at the panel will wake it, while nothing else can blank it.
+    //
+    // A panel that HAS updated declares for itself, and PlayerCapabilities.kt gates its own claim
+    // on both halves — so this governs the un-updated fleet only. If the dead ON button turns out
+    // to be the louder complaint, split it into display.power_off / display.power_on rather than
+    // dropping the pair.
     //
     // NOT system.reboot. STPolicy.reboot() requires device owner; off-owner v1.9.28 falls back to
     // the accessibility power DIALOG, which needs a human standing at the screen — and on the

@@ -27,16 +27,17 @@ test('the legacy fleet is not locked out of the commands it has always accepted'
   // nothing, and a refusal keyed off "declared nothing => supports nothing" bricks every control
   // in the product at once.
   const legacy = { client_type: 'apk', android_version: '9' };
-  for (const cmd of ['launch', 'refresh', 'update', 'set_volume', 'set_brightness']) {
+  for (const cmd of ['launch', 'refresh', 'update', 'set_volume', 'set_brightness',
+    // screen_off blanks a fielded panel for real, and screen_on shares its capability. The pair
+    // stays reachable so scheduled blank-at-night keeps working on displays that have not updated;
+    // see the display.power note in lib/player-capabilities.js for the accepted trade-off.
+    'screen_off', 'screen_on']) {
     assert.equal(caps.commandAllowed(legacy, cmd).ok, true, `${cmd} must still reach a legacy Android panel`);
   }
-  // reboot / screen_on / screen_off are NOT on that list any more, and that is the parity audit's
-  // finding rather than an oversight: v1.9.28 answers screen_on with a logged no-op on every
-  // panel, and STPolicy.reboot() needs device owner. Keeping them would have been the other half
-  // of the same bug — a control that appears to work and changes nothing.
-  for (const cmd of ['reboot', 'screen_on', 'screen_off']) {
-    assert.equal(caps.commandAllowed(legacy, cmd).ok, false, `${cmd} is privilege-gated on a fielded panel`);
-  }
+  // reboot IS refused, and that is the parity audit's finding rather than an oversight:
+  // STPolicy.reboot() needs device owner, and the off-owner fallback paints an accessibility power
+  // DIALOG over the signage that a human has to dismiss. That is worse than a refusal.
+  assert.equal(caps.commandAllowed(legacy, 'reboot').ok, false, 'reboot needs device owner');
 });
 
 test('a command with no capability requirement is never refused', () => {
