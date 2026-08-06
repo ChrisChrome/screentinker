@@ -27,8 +27,15 @@ test('the legacy fleet is not locked out of the commands it has always accepted'
   // nothing, and a refusal keyed off "declared nothing => supports nothing" bricks every control
   // in the product at once.
   const legacy = { client_type: 'apk', android_version: '9' };
-  for (const cmd of ['reboot', 'launch', 'refresh', 'update', 'screen_on', 'screen_off', 'set_volume']) {
+  for (const cmd of ['launch', 'refresh', 'update', 'set_volume', 'set_brightness']) {
     assert.equal(caps.commandAllowed(legacy, cmd).ok, true, `${cmd} must still reach a legacy Android panel`);
+  }
+  // reboot / screen_on / screen_off are NOT on that list any more, and that is the parity audit's
+  // finding rather than an oversight: v1.9.28 answers screen_on with a logged no-op on every
+  // panel, and STPolicy.reboot() needs device owner. Keeping them would have been the other half
+  // of the same bug — a control that appears to work and changes nothing.
+  for (const cmd of ['reboot', 'screen_on', 'screen_off']) {
+    assert.equal(caps.commandAllowed(legacy, cmd).ok, false, `${cmd} is privilege-gated on a fielded panel`);
   }
 });
 
@@ -66,9 +73,11 @@ test('the per-window dim is NOT the backlight — conflating them hides a workin
 test('every command in the map points at a capability that actually exists', () => {
   // A typo here does not fail loudly: supports() returns false for an unknown name, so the command
   // is refused for EVERY device on every platform, forever.
-  for (const [cmd, cap] of Object.entries(caps.COMMAND_CAPABILITY)) {
-    if (cap === null) continue;
-    assert.ok(caps.CAP_SET.has(cap), `${cmd} maps to unknown capability ${cap}`);
+  for (const cmd of Object.keys(caps.COMMAND_CAPABILITY)) {
+    // A command may name several capabilities, any of which is enough; all of them must be real.
+    for (const cap of caps.capabilitiesForCommand(cmd)) {
+      assert.ok(caps.CAP_SET.has(cap), `${cmd} maps to unknown capability ${cap}`);
+    }
   }
 });
 
