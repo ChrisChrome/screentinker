@@ -126,10 +126,18 @@ End Function
 Function MakeWidget(url As String, rect As Object, port As Object, cfg As Object) As Object
     config = {
         url: url
-        nodejs_enabled: true                    ' Node runtime inside the widget
-        brightsign_js_objects_enabled: true     ' REQUIRED for require("@brightsign/*") — without
-                                                ' this the bridge silently degrades to no-ops and
-                                                ' the player loses identity AND restart delegation
+        ' THIS is what gates require("@brightsign/*"). Without it the bridge silently degrades to
+        ' no-ops and the player loses identity AND restart delegation. ("BrightSign modules are
+        ' actually part of the firmware, but in terms of usage they are identical to other Node.js
+        ' modules" — so no Node runtime means no modules.)
+        nodejs_enabled: true
+        ' NOT what gates require(). This flag enables the LEGACY GLOBAL objects — BSDeviceInfo,
+        ' BSMessagePort and friends — which this bridge does not use; BrightSign's own cookbook
+        ' examples call require("@brightsign/bt") with nodejs_enabled alone. Kept set because
+        ' several of their samples set both and it costs nothing, but the comment that used to sit
+        ' here credited it with holding the whole bridge up, which would send the next person
+        ' debugging a dead bridge to exactly the wrong line.
+        brightsign_js_objects_enabled: true
         javascript_enabled: true
         security_params: { websecurity: true }
         hwz_default: "on"                       ' hardware z-order — video on its own plane
@@ -139,7 +147,10 @@ Function MakeWidget(url As String, rect As Object, port As Object, cfg As Object
         ' persist to. The XT245 on alpha exposes navigator.serviceWorker and then refuses to
         ' register one, which is exactly what a widget with no usable storage would do.
         storage_path: StorageRoot() + "/cache"  ' local storage, on the volume we booted from
-        storage_quota: "1073741824"             ' 1GB, as a STRING — service-worker offline cache
+        ' 1GB, as a DOUBLE. The docs are explicit: "A BrightScript integer is only guaranteed to be
+        ' able to represent a count of bytes up to 2GB so avoid using integers... Use float or double
+        ' instead... (string can also be used but is not recommended)". This was a string.
+        storage_quota: 1073741824.0
         port: port
         mouse_enabled: false
     }
@@ -289,8 +300,15 @@ Sub SetOrientation(widget As Object, o As String)
     ' page never learned to fall back. Rotation lives on SetScreenModes(), whose per-screen config
     ' carries a `transform` of normal|90|180|270 and rotates EVERYTHING including the video plane.
     ' Implemented in BOS 9.0.15+; an older player simply has no method here and is told so.
-    ' FindMemberFunction is the guard BrightSign's own scripts use for a method that may not exist
-    ' on this OS version — safer than naming a member directly, which would attempt the call.
+    ' FindMemberFunction is the documented way to ask whether a method exists on this OS version —
+    ' safer than naming a member directly, which would attempt the call. It is itself feature-gated
+    ' (see HasFindMember), and a player that cannot ask cannot be told the answer is yes: rotation
+    ' is refused rather than risked, and the page keeps its CSS fallback.
+    if not HasFindMember() then
+        print "[st] orientation: cannot probe this OS for SetScreenModes — keeping the CSS fallback"
+        widget.PostJSMessage({ type: "orientation-result", ok: false, error: "cannot probe this OS version" })
+        return
+    end if
     if FindMemberFunction(vm, "GetScreenModes") = invalid or FindMemberFunction(vm, "SetScreenModes") = invalid then
         print "[st] orientation: this OS has no SetScreenModes — the page keeps its CSS fallback"
         widget.PostJSMessage({ type: "orientation-result", ok: false, error: "SetScreenModes unavailable" })
@@ -342,6 +360,27 @@ End Sub
 ' interface is physically dead, and the DWS still refuses the capture — internal flash is not
 ' "primary storage" as that endpoint means it. Counting it would re-create the exact lie this
 ' probe exists to prevent.
+' Drop a trailing "/" from a drive specifier. roStorageHotplug.GetStorages() answers with one
+' ("SSD:/"), the rest of this script speaks the bare form ("SSD:"), and roStorageInfo takes either.
+Function TrimDrive(raw As String) As String
+    n% = Len(raw)
+    if n% > 0 and Mid(raw, n%, 1) = "/" then return Left(raw, n% - 1)
+    return raw
+End Function
+
+' Turn a drive specifier into the one GetStorageStatus() actually accepts.
+'
+' GetStorages() -> ["USB1:/", "SD:/", "SD2:/", "SSD:/", "Flash:/"]
+' GetStorageStatus() understands "USB:", "SD:", "SSD:", "SD2:/", "Flash:" and is documented as
+' UNRELIABLE for "USBn:". So: drop the trailing slash, and collapse any USBn to a bare "USB:".
+' roStorageInfo, by contrast, is documented for the NUMBERED form — so the two callers get
+' different strings and the numbering is only thrown away where it does harm.
+Function StatusDrive(raw As String) As String
+    d$ = TrimDrive(raw)
+    if LCase(Left(d$, 3)) = "usb" then return "USB:"
+    return d$
+End Function
+
 Function StorageProbe() As Object
     result = { present: false, volume: "", free_mb: 0, total_mb: 0 }
 
@@ -352,14 +391,26 @@ Function StorageProbe() As Object
     ' Ask the platform which volumes exist rather than guessing; the static list is the fallback for
     ' an OS without the enumerator. Same shape BrightSign's own boilerplate uses.
     volumes = ["SSD:", "SD:", "SD2:", "USB:"]
-    if hp <> invalid and FindMemberFunction(hp, "GetStorages") <> invalid then
-        found = hp.GetStorages()
-        if found <> invalid and found.Count() > 0 then volumes = found
+    ' Feature-gated (see HasFindMember). A player that cannot be probed simply keeps the static list,
+    ' which is the answer the enumerator would have given anyway on every model we ship.
+    if hp <> invalid and HasFindMember() then
+        if FindMemberFunction(hp, "GetStorages") <> invalid then
+            found = hp.GetStorages()
+            if found <> invalid and found.Count() > 0 then volumes = found
+        end if
     end if
-    for each v in volumes
+    for each raw in volumes
+        ' ⚠️ GetStorages() answers in a DIFFERENT vocabulary to the one GetStorageStatus() accepts:
+        ' it returns ["USB1:/", "SD:/", "SD2:/", "SSD:/", "Flash:/"] — trailing slash, and USB
+        ' NUMBERED. GetStorageStatus() is documented as UNRELIABLE when called with a "USBn:"
+        ' parameter and understands "USB:", "SD:", "SSD:", "SD2:/", "Flash:". So handing the
+        ' enumerator's own output straight back to it re-creates exactly the bug the static list was
+        ' written to avoid — silently, and only on the OS versions that HAVE the enumerator, which is
+        ' why the static fallback looked correct in testing.
+        v = TrimDrive(raw)
         mounted = false
         if hp <> invalid then
-            st = hp.GetStorageStatus(v)
+            st = hp.GetStorageStatus(StatusDrive(raw))
             if st <> invalid and st.mounted then mounted = true
         end if
 
@@ -408,6 +459,34 @@ Function FullScreenRect() As Object
     return CreateObject("roRectangle", 0, 0, vm.GetResX(), vm.GetResY())
 End Function
 
+' Where the SECOND output lives inside the combined canvas, or invalid on a single-output player.
+'
+' GetResX/GetResY only ever describe output 1, so they cannot answer this. The per-screen
+' configuration can: each entry carries display_x/display_y (its origin within the canvas built by
+' SetScreenModes) and `enabled`. A widget placed at that origin paints that output; there is no
+' other mechanism, because roHtmlWidget has no output selector.
+'
+' Returns invalid unless a SECOND, ENABLED screen genuinely exists — the caller then stays
+' single-screen and says so, rather than stacking two widgets on output one. The docs warn that
+' GetScreenModes on a player with unconnected outputs "won't get a valid return" for them, so an
+' entry that does not describe a real screen is treated as absent.
+Function SecondScreenRect() As Object
+    if not HasFindMember() then return invalid
+    vm = CreateObject("roVideoMode")
+    if vm = invalid then return invalid
+    if FindMemberFunction(vm, "GetScreenModes") = invalid then return invalid
+
+    configs = vm.GetScreenModes()
+    if configs = invalid or configs.Count() < 2 then return invalid
+
+    s = configs[1]
+    if s = invalid then return invalid
+    if s.enabled <> invalid and s.enabled = false then return invalid
+    if s.display_x = invalid or s.display_y = invalid then return invalid
+
+    return CreateObject("roRectangle", s.display_x, s.display_y, vm.GetResX(), vm.GetResY())
+End Function
+
 '=== self-update ============================================================================
 '
 ' The package (autorun.zip) can replace THIS SCRIPT. That makes it the most dangerous thing the
@@ -435,6 +514,20 @@ End Function
 
 Function PackageVersion() As String
     return "0.0.0-dev"   ' ST_PACKAGE_VERSION (stamped at build time — do not edit by hand)
+End Function
+
+' Can this player use FindMemberFunction() at all?
+'
+' ⚠️ It is NOT unconditionally available: "It is only available if
+' roDeviceInfo.HasFeature("FindMemberFunction") returns true." Calling it on a player without the
+' feature is a runtime error — and both call sites are reached FROM THE EVENT LOOP (the capability
+' probe on every boot, the storage figures in host telemetry every 60 seconds), so on such a player
+' the host script would die within a minute of starting and take the display with it. The guard it
+' was being used AS is the thing that needed guarding.
+Function HasFindMember() As Boolean
+    di = CreateObject("roDeviceInfo")
+    if di = invalid then return false
+    return di.HasFeature("FindMemberFunction")
 End Function
 
 ' Does [path] exist?
@@ -556,6 +649,17 @@ Sub CheckPackageUpdate(cfg As Object, root As String)
     if manifest.action = invalid then return
     if manifest.action <> "download" then
         if manifest.reason <> invalid then print "[st-update] no action: "; manifest.reason
+        return
+    end if
+
+    ' Guard the manifest HERE, at the call site, because that is the only place a guard can help.
+    ' VerifyPackage takes `As String` / `As Integer` parameters, and a missing key is `invalid`:
+    ' handing invalid to a typed parameter is a runtime error raised at the CALL, before a single
+    ' line inside the function runs. The check inside VerifyPackage reads like it covers this and
+    ' cannot — the script would already have aborted, from inside the event loop, taking playback
+    ' down with it. url is checked for the same reason (it is concatenated into a `As String`).
+    if manifest.url = invalid or manifest.sha256 = invalid or manifest.size = invalid then
+        print "[st-update] manifest says download but is missing url/sha256/size — ignoring it"
         return
     end if
 
@@ -783,17 +887,37 @@ Sub Main()
     widget = MakeWidget(PlayerUrl(cfg, 1), rect, port, cfg)
     widget.Show()
 
-    ' The boot story, delivered late but delivered. Everything above here happened with no page to
-    ' talk to, which is exactly the window in which the interesting failures live.
-    FlushLog(widget, boot)
-    SendHostTelemetry(widget, cfg)
-
+    ' NOT flushed here. Show() only creates the widget — the page has not been fetched, let alone
+    ' run st-bridge.js, so there is nothing on the other end of PostJSMessage yet and every line
+    ' would go into the void. Buffered instead until the page says hello (its `probe` message,
+    ' which st-bridge.js posts as soon as it loads), which is the whole reason the buffer exists.
+    ' The same window ate SendHostTelemetry; telemetry repeats every 60s so it self-healed and the
+    ' boot report — the one that only ever happens once — did not.
     widget2 = invalid
     if dual then
-        screen2 = 2
-        if cfg.output_mode = "clone" then screen2 = 1
-        widget2 = MakeWidget(PlayerUrl(cfg, screen2), rect, port, cfg)
-        if widget2 <> invalid then widget2.Show()
+        ' ⚠️ There is NO per-widget output selector. roHtmlWidget takes a rectangle and nothing else:
+        ' its init parameters have no `screen`/`output` key, and neither does the JavaScript
+        ' HtmlWidgetParams. A second output is addressed by BUILDING ONE TALL CANVAS with
+        ' SetScreenModes (display_x/display_y stack the outputs) and then placing the second widget
+        ' at that offset inside it.
+        '
+        ' Which means the previous version could not work: it passed the SAME full-screen rect for
+        ' both widgets, so widget 2 was composited directly on top of widget 1 on output ONE — two
+        ' players fighting over one screen while the second output stayed dark. "dual" and "clone"
+        ' were configuration options that made the display worse and reported nothing.
+        rect2 = SecondScreenRect()
+        if rect2 = invalid then
+            ' Refused rather than guessed. Multi-output is documented for the XC2055 (two) and
+            ' XC4055 (four); the XT line has HDMI IN and HDMI OUT, which the series blurb describes
+            ' as "dual HDMI" and which is not a second output at all.
+            LogTo(boot, "boot", "output_mode=" + cfg.output_mode + " but this player exposes one output — staying single-screen")
+            HostEvent(widget, "app_error", "output-mode", "dual/clone requested; this player has a single output")
+        else
+            screen2 = 2
+            if cfg.output_mode = "clone" then screen2 = 1
+            widget2 = MakeWidget(PlayerUrl(cfg, screen2), rect2, port, cfg)
+            if widget2 <> invalid then widget2.Show()
+        end if
     end if
 
     retries = 0
@@ -894,6 +1018,11 @@ Sub Main()
                     ' Asked once during boot, before the player registers: the answer decides which
                     ' controls the dashboard is allowed to offer for this display.
                     SendProbeResult(widget)
+                    ' ...and this is the first PROOF that a page is listening, so it is the earliest
+                    ' moment the buffered boot story can actually be delivered. st-bridge.js holds it
+                    ' until the player's socket is up, so late here is still in time.
+                    FlushLog(widget, boot)
+                    SendHostTelemetry(widget, cfg)
 
                 else if m.type = "set-orientation" then
                     if m.orientation <> invalid then SetOrientation(widget, m.orientation)

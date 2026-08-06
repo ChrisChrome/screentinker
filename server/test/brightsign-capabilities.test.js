@@ -26,7 +26,8 @@ const { CAP_SET } = require('../lib/player-capabilities');
  *   host      - a message port exists (nodejs_enabled widget with a live autorun.brs)
  *   probeRes  - what the host answers the capability probe with (null = never answers)
  *   modules   - which @brightsign/* modules resolve
- *   sw        - navigator.serviceWorker present
+ *   sw           - navigator.serviceWorker present (the BrightSign reality: present, never usable)
+ *   swControlled - ...and a worker actually controlling the page (what offline.cache really needs)
  */
 function load(o = {}) {
   const opts = Object.assign(
@@ -38,7 +39,13 @@ function load(o = {}) {
 
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
-    navigator: Object.assign({ userAgent: 'BrightSign/9.0.189 (XT245) Chrome/120' }, opts.sw ? { serviceWorker: {} } : {}),
+    // `serviceWorker` present but with NO controller is the real BrightSign shape: the property is
+    // there, registration never happens, and nothing ever controls the page. Modelled separately
+    // from `swControlled` because a stand-in that conflated them is what let the bug ship.
+    navigator: Object.assign(
+      { userAgent: 'BrightSign/9.0.189 (XT245) Chrome/120' },
+      opts.swControlled ? { serviceWorker: { controller: {} } } : (opts.sw ? { serviceWorker: {} } : {})
+    ),
     location: { search: '' },
     setInterval: () => 1,
     setTimeout: (fn) => { inbound.push(fn); return 1; },   // deterministic: fired manually
@@ -171,9 +178,22 @@ test('NEVER declared: the things BrightSign genuinely has no equivalent for', ()
   }
 });
 
-test('offline.cache follows the service worker, not the platform', () => {
-  assert.ok(load({ probeRes: WITH_DISK }).caps.includes('offline.cache'));
+test('offline.cache needs a worker in CONTROL, not merely a navigator property', () => {
+  // Found on hardware, and this test used to assert the bug. `navigator.serviceWorker` EXISTS on a
+  // BrightSign widget and is not usable: our XT245 on alpha passes the presence check, then never
+  // even fetches sw.js. Presence was therefore the one signal that could not tell "caches offline"
+  // from "cannot", and it answered yes to both — so every BrightSign in the fleet advertised an
+  // offline capability it could not honour, which is precisely the dead-button failure this whole
+  // capability model exists to remove.
+  //
+  // A controller is proof rather than a promise: something is actually intercepting this page's
+  // fetches. The web player learned this a release ago (declareCapabilities in
+  // server/player/index.html); this copy had not.
+  assert.ok(!load({ probeRes: WITH_DISK, sw: true }).caps.includes('offline.cache'),
+    'a runtime that exposes serviceWorker and will not run one must not claim to cache');
   assert.ok(!load({ probeRes: WITH_DISK, sw: false }).caps.includes('offline.cache'));
+  assert.ok(load({ probeRes: WITH_DISK, swControlled: true }).caps.includes('offline.cache'),
+    'a worker that IS controlling the page is a real offline story and must still be declared');
 });
 
 test('the probe is actually sent to the host', () => {

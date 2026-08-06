@@ -530,8 +530,29 @@
   // context), and remembers the level so items mounted LATER inherit it — media elements are
   // created per item, so a one-shot set would last only until the playlist advanced.
   var mediaVolume = null;   // 0..1, null = never set
+
+  /*
+   * ⚠️ THE WIRE FORMAT IS `level`, AND IT IS A 0..1 FRACTION.
+   *
+   * That is what the dashboard sends — `sendCommand(id, 'set_volume', { level: value / 100 })` in
+   * frontend/js/views/device-detail.js — and what the Android player reads (`optDouble("level")`).
+   * This handler looked for `value`/`volume` as a 0..100 percentage, so it matched nothing the
+   * dashboard has ever sent: every slider move reported "no usable value in payload" and changed
+   * nothing, while the panel declared audio.volume as a working capability.
+   *
+   * Both halves had to move together, and that is the trap. Accepting `level` while still treating
+   * it as a percentage turns a request for 50% into 0.5% — inaudible, indistinguishable from broken,
+   * and it would have looked exactly like a fix.
+   */
   function applyVolume(payload) {
-    var pct = payload && (payload.value !== undefined ? payload.value : payload.volume);
+    var pct;
+    if (payload && payload.level !== undefined && isFinite(Number(payload.level))) {
+      pct = Number(payload.level) * 100;                 // the canonical wire form: a fraction
+    } else if (payload && payload.value !== undefined) {
+      pct = payload.value;                               // legacy/hand-issued: already a percentage
+    } else if (payload) {
+      pct = payload.volume;
+    }
     var n = Number(pct);
     if (!isFinite(n)) { reportCmd('warn', 'set_volume', 'no usable value in payload'); return; }
     n = Math.max(0, Math.min(100, n));
@@ -811,20 +832,22 @@
     // that survives an outage and media that does not just means the panel knows precisely what it
     // cannot show. Deferred off the render path: the sweep is synchronous and this call arrives
     // while the stage is being repainted.
-    try {{
+    // (The doubled braces this block used to carry were a templating artifact, not syntax: `{{ }}`
+    // parses as a block inside a block, so it ran correctly and read as a typo in eight places.)
+    try {
       if (!window.__stMediaCache && window.MediaCache) window.__stMediaCache = window.MediaCache.create();
       var mc = window.__stMediaCache;
-      if (mc && serverUrl) {{
+      if (mc && serverUrl) {
         var mcItems = payload.assignments || [];
         var mcBase = serverUrl.replace(/\/+$/, '');
-        setTimeout(function () {{
-          mc.sync(mcItems, function (it) {{
+        setTimeout(function () {
+          mc.sync(mcItems, function (it) {
             return mcBase + '/api/content/' + it.content_id + '/file'
               + (it.content_rev ? '?rev=' + encodeURIComponent(it.content_rev) : '');
-          }});
-        }}, 2000);
-      }}
-    }} catch (e) {{ /* caching must never break the payload path */ }}
+          });
+        }, 2000);
+      }
+    } catch (e) { /* caching must never break the payload path */ }
     // If we have content + we're paired, make sure we're on the stage.
     if (elPairing.classList.contains('hidden') === false) show(elStage);
     else if (elStage.classList.contains('hidden')) show(elStage);

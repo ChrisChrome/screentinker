@@ -98,7 +98,12 @@ const BASELINE = {
     'display.rotation', 'display.power',
     'remote.input',
     'system.reboot', 'system.restart_player',
-    'sync.clock', 'offline.cache',
+    'sync.clock',
+    // NOT offline.cache. A BrightSign widget EXPOSES navigator.serviceWorker and will not run one:
+    // our XT245 on alpha passes every presence check and then never even fetches sw.js. There is no
+    // other caching mechanism in the widget either — content comes off the network every time — so
+    // a legacy BrightSign that declares nothing has no offline story at all, and claiming one told
+    // the dashboard a panel would survive an outage that will in fact go blank.
   ],
   // A browser tab. Deliberately the smallest set: it cannot reboot its host, rotate a panel, or
   // capture anything outside its own document.
