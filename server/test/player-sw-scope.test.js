@@ -70,7 +70,12 @@ test('the worker prunes to the set the player declares', () => {
   // a panel with a 1GB widget quota, a few replaced videos is the whole budget.
   const sw = fs.readFileSync(path.join(__dirname, '..', 'player', 'sw.js'), 'utf8');
   assert.match(sw, /function pruneToPlaylist/);
-  assert.match(sw, /if \(data\.prune\)/, 'the prune must be driven by the player declaring a complete set');
+  // The guard is `data.prune && data.urls.length > 0`, not a bare `data.prune`: an EMPTY list is
+  // never a prune instruction. `assignments: []` is what the server sends for a device between
+  // playlists and from the catch when a snapshot fails to parse, and honouring it as "keep nothing"
+  // wiped a panel's whole offline library (fixed in 1.9.30).
+  assert.match(sw, /if \(data\.prune && data\.urls\.length > 0\)/,
+    'the prune must require a NON-EMPTY declared set');
 
   const html = fs.readFileSync(path.join(__dirname, '..', 'player', 'index.html'), 'utf8');
   assert.match(html, /prune:\s*true/);

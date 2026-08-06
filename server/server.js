@@ -996,7 +996,28 @@ app.use('/uploads/content', (req, res, next) => {
     // re-assert the override here for anything not inline-safe.
     hardenUploadResponse(res, filePath);
   },
-}));
+}), (req, res) => {
+  /*
+   * A miss ENDS here. express.static calls next() when the file isn't there, and the only thing
+   * left downstream is the SPA catch-all — so GET /uploads/content/<gone>.mp4 answered 200
+   * text/html with 15KB of dashboard, under the `immutable, max-age=30d` header this middleware
+   * had already set on the way in.
+   *
+   * That is the worst possible answer for a player. Every downloader treats 200 as success, so the
+   * panel stores the HTML page AS the video, caches it for a month, and plays a black frame with
+   * nothing in any log to say why. Android's cache validates the BYTE COUNT, not the type, so a
+   * correctly-sized page passes the integrity check and is promoted as a valid asset.
+   *
+   * It is reachable the moment an asset is replaced (a replace writes a new random filename and
+   * unlinks the old one) or a file goes missing from the volume — exactly when a screen most needs
+   * to fail loudly.
+   *
+   * The Cache-Control goes too: 'immutable' is a promise about a file that exists.
+   */
+  res.removeHeader('Cache-Control');
+  res.removeHeader('Content-Disposition');
+  res.type('application/json').status(404).json({ error: 'Not found' });
+});
 
 // Media proxy for remote (URL-referenced) playlist items — public by construction (players are
 // unauthenticated browsers). Takes an itemId, never a caller URL: it fetches the item's stored
