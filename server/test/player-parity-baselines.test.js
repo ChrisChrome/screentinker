@@ -25,20 +25,42 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execSync } = require('node:child_process');
 const caps = require('../lib/player-capabilities');
 
 const ROOT = path.join(__dirname, '..', '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
+/*
+ * Baselines describe what an UN-UPDATED display can do, so they must be judged against the SHIPPED
+ * source, not the working tree.
+ *
+ * This distinction is not pedantic — it is the bug that made this file contradict itself. The
+ * baselines were justified against `git show v1.9.28:<source>`, then read from the working tree, so
+ * the moment a player's payload bug was fixed the biconditional below demanded a baseline change for
+ * displays that cannot possibly have the fix yet. A baseline entry should move when a fix SHIPS, not
+ * when it is written.
+ *
+ * Falls back to the working tree when the tags are not available (a shallow CI clone), because a
+ * missing tag is a worse reason to fail a build than a slightly-early assertion.
+ */
+function readShipped(rel) {
+  try {
+    const tag = execSync("git tag --list 'v*' --sort=-v:refname | head -1", { cwd: ROOT, encoding: 'utf8' }).trim();
+    if (tag) return execSync(`git show ${tag}:${rel}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 26 });
+  } catch (e) { /* no tags, or the path did not exist in that release */ }
+  return read(rel);
+}
+
 const SRC = {
-  web: read('server/player/index.html'),
+  web: readShipped('server/player/index.html'),
   android: [
     'android/app/src/main/java/com/remotedisplay/player/MainActivity.kt',
     'android/app/src/main/java/com/remotedisplay/player/service/WebSocketService.kt',
     'android/app/src/main/java/com/remotedisplay/player/telemetry/PlayerCapabilities.kt',
   ].map(read).join('\n'),
-  tizen: ['tizen/js/app.js', 'tizen/js/device-control.js', 'tizen/js/capabilities.js'].map(read).join('\n'),
-  brightsign: ['brightsign/st-bridge.js', 'brightsign/autorun.brs'].map(read).join('\n'),
+  tizen: ['tizen/js/app.js', 'tizen/js/device-control.js', 'tizen/js/capabilities.js'].map(readShipped).join('\n'),
+  brightsign: ['brightsign/st-bridge.js', 'brightsign/autorun.brs'].map(readShipped).join('\n'),
 };
 
 /*

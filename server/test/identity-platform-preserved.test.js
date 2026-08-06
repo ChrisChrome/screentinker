@@ -48,8 +48,13 @@ test('the capability baseline survives that register — which is the whole poin
   const bsAfter = resolve({ client_type: 'player', client_version: '1.9.29', platform: 'brightsign', contract_version: 'v4' }, {});
   const bsRow = { platform: bsAfter.platform, client_type: bsAfter.client_type, android_version: null };
   assert.equal(caps.platformFamily(bsRow), 'brightsign');
-  assert.equal(caps.supports(bsRow, 'system.reboot'), true, 'a BrightSign really can reboot');
-  assert.equal(caps.supports(bsRow, 'remote.screenshot'), false, 'and really cannot screenshot');
+  // Reboot needs the BrightScript host bridge, and an UNDECLARED unit is exactly the one we cannot
+  // know has it — a widget pointed at /player by someone else's tooling has no bridge at all. The
+  // point being preserved here is that the row still classifies as brightsign rather than decaying
+  // to `web`, which would have handed it the web baseline's screenshot and volume instead.
+  assert.equal(caps.supports(bsRow, 'system.reboot'), false, 'the baseline cannot assume a host bridge');
+  assert.equal(caps.supports(bsRow, 'remote.screenshot'), false, 'and a canvas cannot read the video plane');
+  assert.equal(caps.supports(bsRow, 'playback.video'), true, 'but it certainly plays video');
 });
 
 test('a register that DOES declare a platform still updates it', () => {
