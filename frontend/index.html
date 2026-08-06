@@ -15,6 +15,11 @@
   <link rel="stylesheet" href="/css/reset.css">
   <link rel="stylesheet" href="/css/main.css">
   <script src="/socket.io/socket.io.js"></script>
+  <!-- #238: the players' own rotation rule (server/lib/orientation-style.js), served under /player
+       because it IS the player's — the dashboard previews of rotated screens went sideways for as
+       long as this side derived its own geometry. Classic script: it publishes window.OrientationStyle
+       for both the player and the ES-module dashboard. -->
+  <script src="/player/orientation-style.js"></script>
   <!-- OAuth providers loaded on-demand by login.js when needed -->
 </head>
 <body>

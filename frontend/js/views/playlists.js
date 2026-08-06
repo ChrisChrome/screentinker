@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { esc, hydrateAuthImages } from '../utils.js';
 import { t, tn } from '../i18n.js';
+import { frameDeviceOutput, displayAspectRatio } from '../lib/device-frame.js';
 
 function formatDate(ts) {
   if (!ts) return '--';
@@ -210,9 +211,13 @@ async function renderDetail(container, playlistId) {
 // /api/playlists/:id/preview-payload and renders with its unmodified renderer, so the
 // preview is byte-identical to what a device shows. Orientation toggle just reloads
 // the iframe with &orientation; the server passes it through.
+// #238: Portrait here had the same fault as the device preview — the iframe was given the
+// as-displayed 9/16 shape AND the player rotated inside it, so the portrait toggle showed sideways
+// content. The stage is the panel's face; the iframe is its landscape framebuffer, turned back by
+// the stand-in for the wall mount.
 function showPlaylistPreview(playlist) {
   let orientation = 'landscape';
-  const aspect = () => (orientation.startsWith('portrait') ? '9 / 16' : '16 / 9');
+  const aspect = () => displayAspectRatio(orientation);
   const frameSrc = () => `/player?preview=1&playlist=${encodeURIComponent(playlist.id)}&orientation=${orientation}&t=${Date.now()}`;
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:10000;padding:16px';
@@ -227,16 +232,21 @@ function showPlaylistPreview(playlist) {
         </div>
       </div>
       <div style="padding:16px;display:flex;align-items:center;justify-content:center;background:#000">
-        <iframe id="pvpFrame" style="height:78vh;max-width:92vw;aspect-ratio:${aspect()};border:0;background:#000" src="${frameSrc()}"></iframe>
+        <div id="pvpStage" style="height:78vh;max-width:92vw;aspect-ratio:${aspect()};background:#000">
+          <iframe id="pvpFrame" style="border:0;background:#000" src="${frameSrc()}"></iframe>
+        </div>
       </div>
     </div>`;
   document.body.appendChild(overlay);
+  const stage = overlay.querySelector('#pvpStage');
   const frame = overlay.querySelector('#pvpFrame');
+  frameDeviceOutput(stage, frame, orientation);
   const btnL = overlay.querySelector('#pvpLandscape');
   const btnP = overlay.querySelector('#pvpPortrait');
   const setOrientation = (o) => {
     orientation = o;
-    frame.style.aspectRatio = aspect();
+    stage.style.aspectRatio = aspect();
+    frameDeviceOutput(stage, frame, orientation);
     frame.src = frameSrc();
     btnL.className = 'btn btn-sm ' + (o === 'landscape' ? 'btn-primary' : 'btn-secondary');
     btnP.className = 'btn btn-sm ' + (o.startsWith('portrait') ? 'btn-primary' : 'btn-secondary');
