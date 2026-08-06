@@ -57,4 +57,49 @@ class PlaylistSelectionTest {
     @Test fun `a single downloaded item loops instead of blanking`() {
         assertEquals(0, PlaylistSelection.nextPlayableIndex(1, 0, readyPredicate(0)))
     }
+
+    // ===== the cold-start re-check: item 1 of the playlist must not be skipped =====
+    //
+    // Observed on the emulator: a freshly paired panel gets its playlist BEFORE the media has
+    // downloaded, so start() finds nothing playable and the 3-second content re-check is what
+    // actually begins playback. updatePlaylist() has already seeded currentIndex = 0, and the
+    // re-check used to advance PAST it — so a 4-item playlist played 1,2,3,0 on its first pass and
+    // a 2-item playlist looked like "only one of the two ever plays".
+
+    @Test fun `a cold-start re-check begins at the seeded index instead of skipping past it`() {
+        // currentIndex seeded to 0, nothing on screen yet, everything now downloaded.
+        assertEquals("item 0 has never played — it must not be skipped", 0,
+            PlaylistSelection.recheckIndex(4, from = 0, hasContentOnScreen = false, isPlayable = readyPredicate(0, 1, 2, 3)))
+    }
+
+    @Test fun `a re-check with content already on screen still advances past the current item`() {
+        // The other half of the rule: a real position has had its turn, so we must move on.
+        assertEquals(1,
+            PlaylistSelection.recheckIndex(4, from = 0, hasContentOnScreen = true, isPlayable = readyPredicate(0, 1, 2, 3)))
+    }
+
+    @Test fun `a cold-start re-check still skips an item whose content is not downloaded`() {
+        // Item 0 is still downloading; the panel starts on the first item it can actually show.
+        assertEquals(2,
+            PlaylistSelection.recheckIndex(4, from = 0, hasContentOnScreen = false, isPlayable = readyPredicate(2, 3)))
+    }
+
+    @Test fun `a cold-start re-check with no position yet starts at the top, not the last item`() {
+        // currentIndex is -1 before updatePlaylist seeds it; wrapping onto the last item here would
+        // start a fresh panel at the END of its playlist.
+        assertEquals(0,
+            PlaylistSelection.recheckIndex(3, from = -1, hasContentOnScreen = false, isPlayable = readyPredicate(0, 1, 2)))
+    }
+
+    @Test fun `a cold-start re-check returns -1 while nothing is downloaded`() {
+        assertEquals(-1,
+            PlaylistSelection.recheckIndex(3, from = 0, hasContentOnScreen = false, isPlayable = readyPredicate()))
+    }
+
+    @Test fun `playableFromIndex is inclusive of its start and wraps`() {
+        assertEquals(1, PlaylistSelection.playableFromIndex(4, 1, readyPredicate(1, 3)))
+        assertEquals(3, PlaylistSelection.playableFromIndex(4, 2, readyPredicate(1, 3)))
+        assertEquals(1, PlaylistSelection.playableFromIndex(4, 3, readyPredicate(1)))  // wraps
+        assertEquals(-1, PlaylistSelection.playableFromIndex(0, 0, readyPredicate(0)))
+    }
 }
