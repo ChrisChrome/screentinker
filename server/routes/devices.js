@@ -46,7 +46,17 @@ router.get('/', (req, res) => {
   // #zone-orphan: lightweight per-device count of playlist items whose zone_id isn't in
   // the device's active layout, so the dashboard can flag screens that need attention.
   const orphanCounts = orphanCountsByDevice(devices.map(d => d.id));
-  res.json(devices.map(d => ({ ...stripDeviceSecretsForList(d), orphan_count: orphanCounts[d.id] || 0 })));
+  // The RESOLVED capability set, the same shape GET /:id returns. The raw column shipped here
+  // before: a JSON *string* ('[]') or null, which every consumer would have had to parse — and
+  // `Array.isArray("[]")` is false, so the dashboard's `can()` helper reads a device that declared
+  // "I can do nothing" as "pre-capability server, show everything". Resolving it here means the
+  // fleet views (device cards, the wall panel list) can hide a control the panel cannot honour
+  // instead of offering it and having the socket drop it.
+  res.json(devices.map(d => ({
+    ...stripDeviceSecretsForList(d),
+    capabilities: playerCapabilities.capabilitiesFor(d),
+    orphan_count: orphanCounts[d.id] || 0,
+  })));
 });
 
 // #106: reorder display tiles (cosmetic, within-section). Writes devices.sort_order

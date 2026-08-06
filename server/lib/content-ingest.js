@@ -22,16 +22,22 @@ function safeFilename(name) {
   return sanitizeString((name || '').normalize('NFC'));
 }
 
-// Process a multer-uploaded file (thumbnail + dimensions + duration) and insert a content
-// row. Returns the content row. Throws on a hard failure (the caller maps to 500);
-// thumbnail/metadata failures are best-effort (logged, non-fatal) exactly as before.
-async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }) {
-  const id = uuidv4();
-  // Content-derived extension + mime. Throws UnsupportedUploadError (and removes the temp
-  // file) when the bytes are not a supported media type; the caller maps that to a 400.
-  const { filepath, mime } = finalizeUpload(file);
+/*
+ * Everything we can learn from the BYTES: thumbnail, display dimensions, duration.
+ *
+ * Extracted so PUT /api/content/:id/replace derives them the same way an upload does. It used
+ * to carry its own shorter copy that handled images only — so replacing a video wiped the row's
+ * duration, dimensions and thumbnail, and replacing a portrait photo re-introduced the EXIF
+ * orientation bug (#170) that the ingest path fixes with imageDisplayDims + .rotate(). A second
+ * copy of this logic is a second place for it to rot; there is now one.
+ *
+ * Best-effort by contract: a missing ffprobe or a sharp failure yields nulls and a warning, never
+ * a throw — the file itself is already stored and is worth more than its metadata.
+ *
+ * @returns {{width:number|null, height:number|null, durationSec:number|null, thumbnailPath:string|null}}
+ */
+async function deriveMediaMetadata(sourcePath, filepath, mime) {
   let width = null, height = null, durationSec = null, thumbnailPath = null;
-
   try {
     // SVG is deliberately NOT handed to sharp: rasterising it goes through librsvg, which
     // is where the outstanding libvips CVEs live, and an SVG is already its own thumbnail.
@@ -39,11 +45,11 @@ async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }
       thumbnailPath = filepath;
     } else if (mime.startsWith('image/')) {
       const sharp = require('sharp');
-      const metadata = await sharp(file.path).metadata();
+      const metadata = await sharp(sourcePath).metadata();
       // #170: honor EXIF orientation so a portrait photo isn't stored as landscape.
       ({ width, height } = imageDisplayDims(metadata));
       thumbnailPath = `thumb_${filepath}`;
-      await sharp(file.path)
+      await sharp(sourcePath)
         .rotate() // #170: auto-orient per EXIF (and strip the tag) so the thumbnail matches
         .resize(config.thumbnailWidth)
         .jpeg({ quality: 70 })
@@ -51,7 +57,7 @@ async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }
     } else if (mime.startsWith('video/')) {
       try {
         const { execFileSync } = require('child_process');
-        const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', file.path],
+        const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', sourcePath],
           { timeout: 15000 }
         ).toString();
         const info = JSON.parse(probe);
@@ -64,7 +70,7 @@ async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }
         }
         thumbnailPath = `thumb_${filepath.replace(/\.[^.]+$/, '.jpg')}`;
         try {
-          execFileSync('ffmpeg', ['-y', '-i', file.path, '-ss', '2', '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbnailPath)],
+          execFileSync('ffmpeg', ['-y', '-i', sourcePath, '-ss', '2', '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbnailPath)],
             { timeout: 15000 }
           );
         } catch { thumbnailPath = null; }
@@ -75,6 +81,18 @@ async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }
   } catch (e) {
     console.warn('Thumbnail/metadata generation failed:', e.message);
   }
+  return { width, height, durationSec, thumbnailPath };
+}
+
+// Process a multer-uploaded file (thumbnail + dimensions + duration) and insert a content
+// row. Returns the content row. Throws on a hard failure (the caller maps to 500);
+// thumbnail/metadata failures are best-effort (logged, non-fatal) exactly as before.
+async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }) {
+  const id = uuidv4();
+  // Content-derived extension + mime. Throws UnsupportedUploadError (and removes the temp
+  // file) when the bytes are not a supported media type; the caller maps that to a 400.
+  const { filepath, mime } = finalizeUpload(file);
+  const { width, height, durationSec, thumbnailPath } = await deriveMediaMetadata(file.path, filepath, mime);
 
   db.prepare(`
     INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height, folder_id)
@@ -84,4 +102,4 @@ async function ingestUploadedFile({ file, userId, workspaceId, folderId = null }
   return db.prepare('SELECT * FROM content WHERE id = ?').get(id);
 }
 
-module.exports = { ingestUploadedFile, safeFilename };
+module.exports = { ingestUploadedFile, safeFilename, deriveMediaMetadata };

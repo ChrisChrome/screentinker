@@ -55,6 +55,42 @@ function captureIdentity(data) {
   };
 }
 
+/*
+ * Absent is not a statement — the same rule applyCapabilities() enforces for the capability column.
+ *
+ * captureIdentity above coerces a MISSING platform to the literal 'unknown', and persistIdentity
+ * used to write that straight over the stored value. One register from a client that doesn't send
+ * the field — an older build after an OTA, a downgrade, anything pre-v4 — permanently erased the
+ * panel's platform.
+ *
+ * That column is load-bearing, not decorative: player-capabilities.platformFamily() reads it to
+ * pick a baseline. An erased Tizen panel falls through to the WEB baseline and is offered a volume
+ * slider the .wgt has no handler for — the exact control BASELINE.tizen exists to hide — while an
+ * erased BrightSign loses screen power and reboot and gains screenshots it cannot take.
+ *
+ * platform and client_type are preserved; client_version and contract_version are NOT. The split is
+ * "physical fact" vs "property of the build currently installed": a panel does not stop being a
+ * Tizen TV or a .wgt player, but its version and protocol level change with every OTA, and there
+ * "we no longer know" is the truthful answer rather than a stale number.
+ *
+ * client_type earns its place because it is the SECOND signal platformFamily() reads ('wgt' => a
+ * Tizen TV): preserving platform while letting client_type decay to 'legacy' would leave a panel
+ * with no identifying signal at all.
+ *
+ * @param {object|null} stored    the identity row currently in the DB
+ * @param {object} incoming       the freshly captured identity (mutated in place and returned)
+ */
+const IDENTITY_PLACEHOLDER = { platform: 'unknown', client_type: 'legacy' };
+function preserveKnownIdentity(stored, incoming) {
+  if (!incoming || !stored) return incoming;
+  for (const [field, placeholder] of Object.entries(IDENTITY_PLACEHOLDER)) {
+    if (incoming[field] === placeholder && stored[field] && stored[field] !== placeholder) {
+      incoming[field] = stored[field];
+    }
+  }
+  return incoming;
+}
+
 // A1 change-detection: has the (already-captured) identity changed vs what's stored? A genuine
 // reconnect with an unchanged identity (the common case) then does NO write. A never-stored device
 // (current null / all-NULL columns) or a real change (e.g. new client_version after an OTA) writes.
@@ -78,4 +114,4 @@ function sanitizeExitReason(reason, detail) {
   return { reason, detail: d };
 }
 
-module.exports = { ackableHeartbeat, deriveLiveness, captureIdentity, identityChanged, sanitizeExitReason, CLIENT_EXIT_REASONS, HEALTHY_HEARTBEAT_MS, DEGRADED_RECONNECTS };
+module.exports = { ackableHeartbeat, deriveLiveness, captureIdentity, identityChanged, preserveKnownIdentity, sanitizeExitReason, CLIENT_EXIT_REASONS, HEALTHY_HEARTBEAT_MS, DEGRADED_RECONNECTS };

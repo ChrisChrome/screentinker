@@ -523,8 +523,11 @@ function persistIdentity(deviceId, data) {
   // read and NO write — no UPDATE, no WAL churn. First provision (stored NULLs) and a real change
   // (e.g. new client_version after an OTA) still write.
   try {
-    const i = liveness.captureIdentity(data);
-    if (!liveness.identityChanged(_identityReadStmt.get(deviceId), i)) return; // unchanged — skip the write
+    const stored = _identityReadStmt.get(deviceId);
+    // ⚠️ A register that does not mention `platform` must not ERASE the one we have — see
+    // liveness.preserveKnownIdentity for why that column is load-bearing.
+    const i = liveness.preserveKnownIdentity(stored, liveness.captureIdentity(data));
+    if (!liveness.identityChanged(stored, i)) return; // unchanged — skip the write
     _persistIdentityStmt.run(i.client_type, i.client_version, i.platform, i.contract_version, deviceId);
   } catch (e) { /* identity capture must never break registration */ }
 }

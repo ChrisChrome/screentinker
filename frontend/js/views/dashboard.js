@@ -102,8 +102,12 @@ function renderDeviceCard(device) {
     : null;
 
   const checked = selectedDeviceIds.has(device.id);
+  // A panel that cannot capture its own screen is not asked to, every 30 seconds, forever. The
+  // list now carries the RESOLVED capability set (routes/devices.js), so a device that declares
+  // nothing still reads as its platform baseline and keeps being polled exactly as today.
+  const canShot = !Array.isArray(device.capabilities) || device.capabilities.includes('remote.screenshot');
   return `
-    <div class="device-card${checked ? ' selected' : ''}" draggable="true" data-device-id="${device.id}" data-device-name="${esc(device.name)}" onclick="window.location.hash='/device/${device.id}'">
+    <div class="device-card${checked ? ' selected' : ''}" draggable="true" data-device-id="${device.id}" data-device-name="${esc(device.name)}" data-can-screenshot="${canShot ? '1' : '0'}" onclick="window.location.hash='/device/${device.id}'">
       <label class="device-card-select" title="${t('dashboard.select_for_wall')}" onclick="event.stopPropagation()">
         <input type="checkbox" class="device-select-cb" data-device-id="${device.id}"${checked ? ' checked' : ''}>
       </label>
@@ -486,18 +490,14 @@ export function render(container) {
     for (const id of playbackByDevice.keys()) renderProgressFor(id);
   }, 1000);
 
-  // Request fresh screenshots on load
-  setTimeout(() => {
-    document.querySelectorAll('.device-card').forEach(card => {
+  // Request fresh screenshots on load — from the panels that can actually take one.
+  const pollScreenshots = () => {
+    document.querySelectorAll('.device-card[data-can-screenshot="1"]').forEach(card => {
       requestScreenshot(card.dataset.deviceId);
     });
-  }, 2000);
-
-  refreshInterval = setInterval(() => {
-    document.querySelectorAll('.device-card').forEach(card => {
-      requestScreenshot(card.dataset.deviceId);
-    });
-  }, 30000);
+  };
+  setTimeout(pollScreenshots, 2000);
+  refreshInterval = setInterval(pollScreenshots, 30000);
 }
 
 function refreshSelectionBar() {
