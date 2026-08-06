@@ -44,6 +44,8 @@ const ROKU_ONLY = [
   ['roUnzip', 'use roBrightPackage — roUnzip is not the reader for a player package'],
   ['roRegistryKey', 'use roRegistrySection'],
   ['roAssociativeArrayEx', 'plain roAssociativeArray'],
+  // roDeviceInfo.GetDeviceUniqueId() is real; a global of that name is not.
+  ['roDataGramSocket', 'not a BrightSign object'],
 ];
 
 for (const [obj, advice] of ROKU_ONLY) {
@@ -59,6 +61,13 @@ const BAD_METHODS = [
   ['PostFromStringWithRetry', 'roUrlTransfer has no retry variant; AsyncPostFromString + roUrlEvent is how a POST body is read'],
   ['.Final(', 'roMessageDigest-era API; roHashGenerator returns the digest from Hash()'],
   ['OpenInputFile', 'no roFileSystem here; read with roByteArray.ReadFile'],
+  // Each of these reads as obviously-correct and is documented NOT to exist on BrightSign.
+  ['SetMessagePort', 'the setter is SetPort(roMessagePort) — SetMessagePort is Roku'],
+  ['.WaitEvent(', 'roMessagePort has WaitMessage(timeout_ms); WaitEvent is Roku'],
+  ['.SetAlgorithm(', 'roHashGenerator takes its algorithm as a CONSTRUCTOR argument'],
+  ['.VerifyPackage(', 'roBrightPackage has no VerifyPackage — hash the bytes yourself'],
+  ['.UnpackAll(', 'roBrightPackage has Unpack(path) and UnpackFile(name, path)'],
+  ['SetOrientation(vm', 'roVideoMode has no SetOrientation — rotation is SetScreenModes()[i].transform'],
 ];
 
 for (const [needle, advice] of BAD_METHODS) {
@@ -224,4 +233,151 @@ test('Str() is never applied to something that is already a string', () => {
         `${f}: Str(${m[1]}) — Str is for numbers; a String needs no conversion`);
     }
   }
+});
+
+/* ---------------------------------------------------------------------------------------------
+ * Rules added after a line-by-line pass against docs.brightsign.biz. Each one is a call that
+ * compiles, reads correctly, and is documented to do something other than what it looks like.
+ * ------------------------------------------------------------------------------------------- */
+
+test('roVideoMode.SetOrientation does not exist — rotation is a SetScreenModes transform', () => {
+  // Zero occurrences of SetOrientation in the roVideoMode reference. Rotation has two documented
+  // routes and neither is a method on roVideoMode: the per-screen `transform` member of
+  // SetScreenModes ("normal"/"90"/"180"/"270"), or roHtmlWidget's `transform` init parameter
+  // ("identity"/"rot90"/"rot180"/"rot270") — note the two use DIFFERENT vocabularies.
+  for (const f of FILES) {
+    for (const m of code(f).matchAll(/(\w+)\.SetOrientation\s*\(/g)) {
+      assert.fail(`${f}: ${m[0]} — roVideoMode has no SetOrientation. Use SetScreenModes()[i].transform`);
+    }
+  }
+});
+
+test('FindMemberFunction is itself feature-gated before it is used as a guard', () => {
+  // "It is only available if roDeviceInfo.HasFeature("FindMemberFunction") returns true." Calling it
+  // on a player without the feature is a runtime error — and both call sites here are reached from
+  // the EVENT LOOP (the boot capability probe, and host telemetry every 60s), so on such a player
+  // the host would die within a minute and take the display with it. The guard needed guarding.
+  for (const f of FILES) {
+    const src = code(f);
+    if (!src.includes('FindMemberFunction(')) continue;
+    assert.match(src, /HasFeature\("FindMemberFunction"\)/,
+      `${f}: FindMemberFunction is only available when roDeviceInfo.HasFeature("FindMemberFunction") is true`);
+    // ...and every call must sit behind that check, not merely somewhere in the same file.
+    for (const m of src.matchAll(/^(?!.*HasFeature).*\bFindMemberFunction\(/gm)) {
+      const line = m[0];
+      assert.ok(/HasFindMember\(\)|HasFeature/.test(src.slice(Math.max(0, src.indexOf(line) - 400), src.indexOf(line))),
+        `${f}: this FindMemberFunction call is not behind a HasFeature guard:\n    ${line.trim()}`);
+    }
+  }
+});
+
+test('GetStorageStatus is never handed a drive string straight from GetStorages()', () => {
+  // The two speak DIFFERENT vocabularies. GetStorages() answers ["USB1:/", "SD:/", "SD2:/", "SSD:/",
+  // "Flash:/"] — trailing slash, USB numbered — while GetStorageStatus() understands "USB:", "SD:",
+  // "SSD:", "SD2:/", "Flash:" and is documented as UNRELIABLE for "USBn:". Feeding the enumerator's
+  // output back in re-creates the bug the static fallback list exists to avoid, and only on the OS
+  // versions that HAVE the enumerator — so it looks fine in testing.
+  for (const f of FILES) {
+    const src = code(f);
+    if (!src.includes('GetStorageStatus')) continue;
+    for (const m of src.matchAll(/GetStorageStatus\(([^)]*)\)/g)) {
+      const arg = m[1].trim();
+      assert.ok(/^"/.test(arg) || /StatusDrive\(/.test(arg),
+        `${f}: ${m[0]} — normalise the drive first (StatusDrive) or pass a literal; GetStorages() speaks a different vocabulary`);
+    }
+  }
+});
+
+test('PostJSMessage keys are lowercase — BrightScript canonicalises them on the way to JS', () => {
+  // BrightScript associative-array keys created with object-literal syntax are case-INSENSITIVE and
+  // arrive lowercased on the JavaScript side. BrightSign's own sample sends
+  // `{serialNumber: ...}` and reads `msg["serialnumber"]`. A camelCase key here is therefore a field
+  // the bridge reads as undefined, silently, with no error anywhere.
+  for (const f of FILES) {
+    for (const m of code(f).matchAll(/PostJSMessage\(\{([\s\S]*?)\}\)/g)) {
+      for (const km of m[1].matchAll(/(?:^|[,\n])\s*([A-Za-z_]\w*)\s*:/g)) {
+        assert.equal(km[1], km[1].toLowerCase(),
+          `${f}: PostJSMessage key "${km[1]}" is not lowercase — it arrives in JavaScript lowercased and the reader sees undefined`);
+      }
+    }
+  }
+});
+
+test('PostJSMessage payloads are flat — nested associative arrays are not supported', () => {
+  // "This method does not support passing nested associative arrays." A nested value is dropped, so
+  // the message arrives looking well-formed and missing the part that mattered.
+  for (const f of FILES) {
+    for (const m of code(f).matchAll(/PostJSMessage\(\{([\s\S]*?)\}\)/g)) {
+      assert.ok(!/:\s*\{/.test(m[1]),
+        `${f}: PostJSMessage carries a nested associative array, which BrightSign drops:\n    ${m[0].slice(0, 160)}`);
+    }
+  }
+});
+
+test('roUrlTransfer.SetPort takes a message port, never a TCP port number', () => {
+  // ifMessagePort.SetPort(port As roMessagePort). There is no integer overload — a TCP port belongs
+  // in the URL string. Passing a number here reads exactly like configuring a port and configures
+  // nothing.
+  for (const f of FILES) {
+    for (const m of code(f).matchAll(/\.SetPort\(([^)]*)\)/g)) {
+      assert.ok(!/^\d+$/.test(m[1].trim()),
+        `${f}: ${m[0]} — SetPort takes an roMessagePort; put a TCP port in the URL`);
+    }
+  }
+});
+
+test('roBrightPackage is constructed with a filename string, not an associative array', () => {
+  // "created with a filename parameter that specifies the name of the .zip file". A password goes
+  // through SetPassword() afterwards. An AA here is the Roku-shaped guess.
+  for (const f of FILES) {
+    for (const m of code(f).matchAll(/CreateObject\("roBrightPackage"\s*,\s*([^)]*)\)/g)) {
+      assert.ok(!m[1].trim().startsWith('{'),
+        `${f}: ${m[0]} — roBrightPackage takes a filename String; use SetPassword() for a password`);
+    }
+  }
+});
+
+test('the widget storage quota is not a string', () => {
+  // "A BrightScript integer is only guaranteed to be able to represent a count of bytes up to 2GB so
+  // avoid using integers... Use float or double instead... (string can also be used but is not
+  // recommended)."
+  const src = code('autorun.brs');
+  assert.ok(!/storage_quota:\s*"/.test(src), 'storage_quota should be a double, not a string');
+  assert.match(src, /storage_quota:\s*\d+\.\d/, 'storage_quota must be a double literal');
+});
+
+test('nodejs_enabled is what gates require("@brightsign/*")', () => {
+  // The bridge is entirely require()-based. brightsign_js_objects_enabled gates the LEGACY GLOBALS
+  // (BSDeviceInfo, BSMessagePort) and not the modules — BrightSign's own cookbook calls
+  // require("@brightsign/bt") with nodejs_enabled alone. Losing nodejs_enabled costs the player its
+  // identity and its restart delegation, silently.
+  const src = code('autorun.brs');
+  assert.match(src, /nodejs_enabled:\s*true/, 'without this there are no @brightsign modules at all');
+});
+
+test('a second widget is never given the first screen\'s rectangle', () => {
+  // roHtmlWidget has NO output selector — not in its init parameters, not in the JavaScript
+  // HtmlWidgetParams. A second output is addressed by building one tall canvas with SetScreenModes
+  // and placing the widget at that output's display_x/display_y. Reusing the full-screen rect puts
+  // both widgets on output ONE, on top of each other, while output two stays dark.
+  const src = code('autorun.brs');
+  if (!/widget2\s*=\s*MakeWidget/.test(src)) return;
+  // Split on TOP-LEVEL commas: the first argument is itself a call (PlayerUrl(cfg, screen2)), and a
+  // naive split lands on its inner comma and inspects the wrong argument — which is how the first
+  // draft of this rule passed against the very source it was written to reject.
+  const call = /widget2\s*=\s*MakeWidget\((.*)\)\s*$/m.exec(src);
+  assert.ok(call, 'could not find the second widget');
+  const args = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of call[1]) {
+    if (ch === '(') depth++;
+    if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) { args.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  args.push(cur.trim());
+  assert.equal(args.length, 4, `unexpected MakeWidget arity: ${call[0]}`);
+  assert.notEqual(args[1], 'rect',
+    'the second widget must be positioned at the second output\'s canvas offset, not at rect');
 });

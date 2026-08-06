@@ -35,7 +35,17 @@
   var MessagePortClass = tryRequire('@brightsign/messageport');
   var RegistryClass = tryRequire('@brightsign/registry');
   var DeviceInfoClass = tryRequire('@brightsign/deviceinfo');
-  var VideoOutputClass = tryRequire('@brightsign/videooutput');
+  /*
+   * ⚠️ @brightsign/videooutput does NOT set a video mode. Its surface is read-only plus power
+   * (getVideoResolution / getEdid / isAttached / setPowerSaveMode / setBackgroundColor); there is
+   * no setMode on it at all. Mode setting lives on @brightsign/videomodeconfiguration, whose
+   * setMode() returns a Promise<{restartRequired}>.
+   *
+   * The two were conflated here, and the cost was not a broken call — the call was guarded — it was
+   * a LIE: a widget with no host bridge declared display.resolution purely because videooutput
+   * resolved, and the dashboard grew a resolution control that could never do anything.
+   */
+  var VideoModeConfigClass = tryRequire('@brightsign/videomodeconfiguration');
   var CecClass = tryRequire('@brightsign/cec');
 
   var port = null;
@@ -243,6 +253,65 @@
    * describes the widget's cache quota, not the disk: a panel can report gigabytes free while the
    * volume holding them is full, and only the host can tell the difference.
    */
+  /*
+   * Host diagnostics arrive BEFORE anyone is listening, and that is not an edge case — it is the
+   * normal order of events and the whole reason they are worth carrying.
+   *
+   * The host buffers its pre-widget boot lines and posts them the moment the page says hello. The
+   * player, correctly, does not subscribe until its socket is connected, because a line forwarded
+   * before that has nowhere to go. Between those two facts every boot line was dropped: the host
+   * spoke into a page with no listener, and the listener arrived after the words had gone. The
+   * player's own comment says wiring earlier "would drop the host's boot report on the floor" —
+   * which was true, and left the report on the floor anyway.
+   *
+   * So the bridge holds them. Messages land in these queues from the moment the file loads, and are
+   * replayed to each consumer as it registers. Bounded, because a host stuck in a reboot loop must
+   * not grow this without limit on a player that runs for months.
+   */
+  var PENDING_MAX = 200;
+  var logSinks = [];
+  var eventSinks = [];
+  var pendingLogs = [];
+  var pendingEvents = [];
+
+  function drain(queue, fn) {
+    // Copied first: fn is free to register another sink, and iterating a live array while it is
+    // being appended to is how a replay turns into a loop.
+    var items = queue.slice();
+    for (var i = 0; i < items.length; i++) {
+      try { fn(items[i]); } catch (e) { /* one bad consumer must not eat the rest of the boot log */ }
+    }
+  }
+
+  function fanout(sinks, queue, payload) {
+    if (sinks.length === 0) {
+      if (queue.length < PENDING_MAX) queue.push(payload);
+      return;
+    }
+    for (var i = 0; i < sinks.length; i++) {
+      try { sinks[i](payload); } catch (e) { /* ignore */ }
+    }
+  }
+
+  listeners.push(function (msg) {
+    if (!msg) return;
+    if (msg.type === 'host-log') {
+      fanout(logSinks, pendingLogs, {
+        tag: String(msg.tag || 'host').slice(0, 64),
+        level: String(msg.level || 'i').slice(0, 8),
+        message: String(msg.message || '').slice(0, 2000)
+      });
+      return;
+    }
+    if (msg.type === 'host-event' && msg.event) {
+      fanout(eventSinks, pendingEvents, {
+        event: String(msg.event),
+        reason: String(msg.reason || '').slice(0, 64),
+        detail: String(msg.detail || '').slice(0, 500)
+      });
+    }
+  });
+
   listeners.push(function (msg) {
     if (msg && msg.type === 'host-telemetry') {
       var keys = ['uptime_seconds', 'local_ip', 'model', 'os_version', 'video_mode',
@@ -327,10 +396,21 @@
      */
     add('playback.transitions'); add('playback.pip');
 
-    // Service-worker content caching. The quota is configured in autorun.brs (storage_path +
-    // storage_quota); without a service worker there is no offline story at all.
+    /*
+     * Service-worker content caching — and this platform does not have it.
+     *
+     * `navigator.serviceWorker` EXISTS on a BrightSign widget and is not usable: our XT245 on alpha
+     * passes this exact check, then never even fetches sw.js. Presence was therefore the one signal
+     * that could not distinguish "caches offline" from "cannot", and it answered yes to both — the
+     * player advertised offline.cache to the whole fleet while being unable to hold a single byte
+     * through an outage. The web player already learned this (it waits for a worker that is in
+     * CONTROL, see declareCapabilities in server/player/index.html); this copy had not.
+     *
+     * A controller is proof, not a promise: something is actually intercepting this page's fetches.
+     */
     try {
-      if (global.navigator && global.navigator.serviceWorker) add('offline.cache');
+      var sw = global.navigator && global.navigator.serviceWorker;
+      if (sw && sw.controller) add('offline.cache');
     } catch (e) { /* no SW in this widget */ }
 
     // ---- needs the host bridge --------------------------------------------------------------
@@ -342,8 +422,8 @@
       add('system.reboot');           // RebootSystem
       add('display.rotation');        // roVideoMode transform — the ONLY way video rotates here
       add('display.resolution');      // roVideoMode SetMode
-    } else if (VideoOutputClass) {
-      // No host, but the JS video-output module resolved: resolution alone is still reachable.
+    } else if (VideoModeConfigClass) {
+      // No host, but the JS mode-configuration module resolved: resolution alone is still reachable.
       add('display.resolution');
     }
 
@@ -420,7 +500,12 @@
     serial: function () {
       if (deviceInfo) {
         try {
-          var s = deviceInfo.serialNumber || (deviceInfo.getDeviceUniqueId && deviceInfo.getDeviceUniqueId());
+          // `serialNumber` is the whole answer. There is no getDeviceUniqueId() on
+          // @brightsign/deviceinfo — that is the BrightScript roDeviceInfo method name, and
+          // BrightSign's own migration note maps it to this attribute. `deviceUniqueId` is the
+          // legacy BSDeviceInfo global's spelling, also an attribute rather than a call, and is
+          // read here only so a very old widget build still answers with something.
+          var s = deviceInfo.serialNumber || deviceInfo.deviceUniqueId;
           if (s) return String(s);
         } catch (e) { /* fall through to the URL */ }
       }
@@ -556,10 +641,17 @@
     },
 
     setVideoMode: function (mode) {
-      if (VideoOutputClass) {
+      if (VideoModeConfigClass) {
         try {
-          var vo = new VideoOutputClass();
-          if (vo && typeof vo.setMode === 'function') { vo.setMode(mode); return true; }
+          var vmc = new VideoModeConfigClass();
+          if (vmc && typeof vmc.setMode === 'function') {
+            // Promise<{restartRequired}>. Nothing here awaits it — a mode change that restarts the
+            // application takes this page with it, so there is no "after" to report into. Rejection
+            // is swallowed rather than left as an unhandled rejection on a signage player.
+            var r = vmc.setMode(mode);
+            if (r && typeof r.catch === 'function') r.catch(function () {});
+            return true;
+          }
         } catch (e) { /* fall back to the host */ }
       }
       return post({ type: 'set-video-mode', mode: mode });
@@ -663,26 +755,14 @@
      */
     onHostLog: function (fn) {
       if (typeof fn !== 'function') return;
-      listeners.push(function (msg) {
-        if (!msg || msg.type !== 'host-log') return;
-        fn({
-          tag: String(msg.tag || 'host').slice(0, 64),
-          level: String(msg.level || 'i').slice(0, 8),
-          message: String(msg.message || '').slice(0, 2000)
-        });
-      });
+      logSinks.push(fn);
+      drain(pendingLogs, fn);
     },
 
     onHostEvent: function (fn) {
       if (typeof fn !== 'function') return;
-      listeners.push(function (msg) {
-        if (!msg || msg.type !== 'host-event' || !msg.event) return;
-        fn({
-          event: String(msg.event),
-          reason: String(msg.reason || '').slice(0, 64),
-          detail: String(msg.detail || '').slice(0, 500)
-        });
-      });
+      eventSinks.push(fn);
+      drain(pendingEvents, fn);
     },
 
     /*

@@ -24,6 +24,46 @@ const bridge = fs.readFileSync(path.join(ROOT, 'brightsign', 'st-bridge.js'), 'u
 const player = fs.readFileSync(path.join(ROOT, 'server', 'player', 'index.html'), 'utf8');
 const code = host.split('\n').filter((l) => !/^\s*'/.test(l)).join('\n');
 
+// Objects built inside the vm carry the vm realm's prototypes, so deepStrictEqual would compare
+// realms rather than values. Round-trip through JSON to compare what actually crossed the bridge.
+const norm = (x) => JSON.parse(JSON.stringify(x));
+
+/*
+ * The bridge half, actually EXECUTED against a fake widget rather than pattern-matched.
+ *
+ * The two source-regex assertions this replaces both passed while the chain was broken end to end,
+ * which is the whole argument for running it: "the file contains onHostLog" is not evidence that a
+ * log line reaches anybody. `deliver` plays the part of roHtmlWidget.PostJSMessage.
+ */
+function loadBridge() {
+  const vm = require('node:vm');
+  const inbound = [];
+  const sandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    navigator: { userAgent: 'BrightSign/9.0.189 (XT245) Chrome/120' },
+    location: { search: '' },
+    setTimeout: () => 1, setInterval: () => 1, clearTimeout: () => {},
+    Promise, Object, Array, Uint8Array, Math, Date, RegExp, String, Number,
+    parseInt, isNaN, isFinite, decodeURIComponent, Error,
+    localStorage: { getItem: () => null, setItem() {} },
+  };
+  sandbox.window = sandbox;
+  sandbox.require = (name) => {
+    if (name === '@brightsign/messageport') {
+      return function () {
+        return {
+          PostBSMessage: () => {},
+          addEventListener: (evt, fn) => { if (evt === 'bsmessage') inbound.push(fn); },
+        };
+      };
+    }
+    throw new Error('no module ' + name);
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(bridge, sandbox);
+  return { api: sandbox.ScreenTinkerBS, deliver: (msg) => inbound.forEach((fn) => fn(msg)) };
+}
+
 test('the host reports its boot story, which happens before there is a page to hear it', () => {
   // The interesting failures all live in this window: the storage probe, a pending package being
   // applied, the video mode being set. A design that could only report after the widget existed
@@ -31,7 +71,7 @@ test('the host reports its boot story, which happens before there is a page to h
   assert.match(code, /Sub LogTo\(buf As Object/, 'a buffer the pre-widget phase can log into');
   assert.match(code, /Sub FlushLog\(widget As Object, buf As Object\)/, 'and a flush once there is a page');
   assert.match(code, /boot = CreateObject\("roArray"/, 'Main must create the buffer');
-  assert.match(code, /FlushLog\(widget, boot\)/, 'and flush it once the widget exists');
+  assert.match(code, /FlushLog\(widget, boot\)/, 'and flush it once a page is listening');
   // The update path is the one that replaces the boot script — its diagnostics are the ones you
   // most want when a player does not come back.
   assert.match(code, /Sub ApplyPendingPackage\(root As String, buf As Object\)/);
@@ -70,12 +110,74 @@ test('the event types the host emits are ones the server actually accepts', () =
 });
 
 test('the bridge carries logs and events without interpreting them', () => {
-  assert.match(bridge, /onHostLog: function/);
-  assert.match(bridge, /onHostEvent: function/);
+  const { api, deliver } = loadBridge();
+  const logs = [];
+  const events = [];
+  api.onHostLog((l) => logs.push(l));
+  api.onHostEvent((e) => events.push(e));
+
+  deliver({ type: 'host-log', tag: 'update', level: 'i', message: 'package applied' });
+  deliver({ type: 'host-event', event: 'crash', reason: 'watchdog', detail: 'no heartbeat for 120s' });
+
+  assert.deepEqual(norm(logs), [{ tag: 'update', level: 'i', message: 'package applied' }]);
+  assert.deepEqual(norm(events), [{ event: 'crash', reason: 'watchdog', detail: 'no heartbeat for 120s' }]);
+
   // Bounded before they reach the wire: the server truncates too, but a host bug should not be
   // able to push a megabyte through the socket every second.
-  assert.match(bridge, /msg\.message \|\| ''\)\.slice\(0, 2000\)/);
-  assert.match(bridge, /msg\.detail \|\| ''\)\.slice\(0, 500\)/);
+  deliver({ type: 'host-log', tag: 'x'.repeat(200), message: 'y'.repeat(5000) });
+  deliver({ type: 'host-event', event: 'app_error', reason: 'r'.repeat(200), detail: 'd'.repeat(5000) });
+  assert.equal(logs[1].message.length, 2000);
+  assert.equal(logs[1].tag.length, 64);
+  assert.equal(events[1].detail.length, 500);
+  assert.equal(events[1].reason.length, 64);
+});
+
+test('THE DROPPED BOOT REPORT: a diagnostic sent before anyone subscribed is still delivered', () => {
+  // The regression this whole file exists to prevent, and it was live. The ordering is not an edge
+  // case, it is the ONLY ordering: the host buffers its pre-widget lines and posts them the instant
+  // the page says hello, while the player deliberately does not subscribe until its socket is up
+  // (forwarding earlier would have nowhere to send them). Between those two correct decisions every
+  // boot line fell on the floor — the host spoke to a page with no listener, and the listener
+  // arrived after the words had gone.
+  //
+  // So the bridge holds them. Nothing else in the chain can: the host has already moved on and the
+  // player cannot subscribe any earlier.
+  const { api, deliver } = loadBridge();
+  deliver({ type: 'host-log', tag: 'boot', level: 'i', message: 'host 1.2.3 from SSD: -> https://s' });
+  deliver({ type: 'host-log', tag: 'update', level: 'i', message: 'package applied — rebooting into it' });
+  deliver({ type: 'host-event', event: 'app_error', reason: 'load-error', detail: 'attempt 1: https://s/player' });
+
+  const logs = [];
+  const events = [];
+  api.onHostLog((l) => logs.push(l));
+  api.onHostEvent((e) => events.push(e));
+
+  assert.deepEqual(logs.map((l) => l.tag), ['boot', 'update'], 'the boot story must survive the gap');
+  assert.deepEqual(events.map((e) => e.event), ['app_error']);
+
+  // ...and delivery keeps working normally afterwards, oldest-first with no duplication.
+  deliver({ type: 'host-log', tag: 'tel', level: 'i', message: 'later' });
+  assert.deepEqual(logs.map((l) => l.tag), ['boot', 'update', 'tel']);
+});
+
+test('a second subscriber gets the same history, and one that throws cannot eat it', () => {
+  const { api, deliver } = loadBridge();
+  deliver({ type: 'host-log', tag: 'boot', level: 'i', message: 'early' });
+
+  api.onHostLog(() => { throw new Error('a consumer blew up'); });
+  const logs = [];
+  api.onHostLog((l) => logs.push(l));
+  assert.deepEqual(logs.map((l) => l.message), ['early'], 'a broken consumer must not swallow the replay');
+});
+
+test('the pending queue is bounded — a reboot loop must not grow it without limit', () => {
+  // This player runs for months. An unbounded buffer fed by a host stuck in a loop is a slow leak
+  // on the one device nobody is watching.
+  const { api, deliver } = loadBridge();
+  for (let i = 0; i < 5000; i++) deliver({ type: 'host-log', tag: 'boot', message: 'line ' + i });
+  const logs = [];
+  api.onHostLog((l) => logs.push(l));
+  assert.ok(logs.length > 0 && logs.length <= 200, `queue must be capped, got ${logs.length}`);
 });
 
 test('host telemetry merges into the snapshot the heartbeat already sends', () => {
@@ -87,12 +189,30 @@ test('host telemetry merges into the snapshot the heartbeat already sends', () =
 });
 
 test('the host telemetry listener is registered at load, not behind the readiness gate', () => {
-  // The host sends its boot report the moment the widget exists. A listener attached after the
+  // The host sends its boot report the moment the page says hello. A listener attached after the
   // bridge finished its own probe would miss precisely the message that says which volume the
   // player came up from and whether a package applied.
-  const seg = bridge.slice(bridge.indexOf('var telemetry = {}'), bridge.indexOf('var telemetry = {}') + 1400);
-  assert.match(seg, /listeners\.push\(function \(msg\)/);
-  assert.ok(!/onReady\(function/.test(seg), 'must not wait on readiness to start listening');
+  //
+  // Executed, not pattern-matched: the previous form asserted that a `listeners.push` appeared
+  // within 1400 characters of a variable declaration, which is a statement about formatting.
+  const { api, deliver } = loadBridge();
+  deliver({ type: 'host-telemetry', boot_volume: 'SSD:', storage_free_mb: 90000, package_version: '1.2.3' });
+  assert.deepEqual(norm(api.telemetrySnapshot()), {
+    boot_volume: 'SSD:', storage_free_mb: 90000, package_version: '1.2.3',
+  });
+});
+
+test('the host holds its boot log until a PAGE answers, not until a widget exists', () => {
+  // Show() only creates the widget: the page has not been fetched, let alone run st-bridge.js, so a
+  // flush there posts into a void. The `probe` message is the first proof that JavaScript is running
+  // on the other end, and is therefore the earliest moment the buffer can actually be delivered.
+  const main = code.slice(code.indexOf('Sub Main()'));
+  const afterShow = main.slice(main.indexOf('widget.Show()'), main.indexOf('widget.Show()') + 400);
+  assert.ok(!/FlushLog\(/.test(afterShow),
+    'flushing straight after Show() posts the boot story to a page that has not loaded yet');
+
+  const probeBranch = main.slice(main.indexOf('m.type = "probe"'), main.indexOf('m.type = "probe"') + 400);
+  assert.match(probeBranch, /FlushLog\(widget, boot\)/, 'flush when the page proves it is listening');
 });
 
 test('the player forwards them, and only where the hooks exist', () => {

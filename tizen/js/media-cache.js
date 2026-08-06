@@ -81,6 +81,9 @@
       e = null;
     }
     if (e && e.complete) return Promise.resolve('done');
+    // A server that offered no validator for this revision cannot be resumed from, and asking again
+    // only re-downloads a chunk we already know we will throw away. See applyChunk.
+    if (e && e.unresumable) return Promise.resolve('stalled');
 
     if (!e) {
       e = this.index[contentId] = { rev: rev, bytes: 0, total: 0, validator: null, complete: false, path: null, uri: null };
@@ -120,7 +123,11 @@
       // WHOLE asset and anything we already hold is wrong.
       this.drop(contentId);
       e = this.index[contentId] = { rev: rev, bytes: 0, total: res.total || 0, validator: res.validator || null, complete: false, path: null, uri: null };
-      return this.commit(contentId, e, res.body, 0, res.total || (res.body && res.body.length) || 0) ? 'done' : 'stalled';
+      if (!this.commit(contentId, e, res.body, 0, res.total || (res.body && res.body.length) || 0)) return 'stalled';
+      // 'done' is a claim about the ASSET, not about the write. A 200 whose body is shorter than
+      // its own Content-Length (a truncated proxy response) wrote successfully and is still
+      // incomplete; reporting 'done' there stopped the sweep on an asset that had more to fetch.
+      return e.complete ? 'done' : 'progress';
     }
 
     if (res.status !== 206) return 'stalled';
@@ -138,7 +145,25 @@
 
     var wrote = this.commit(contentId, e, res.body, e.bytes, res.total);
     if (!wrote) return 'stalled';
-    if (!e.validator && !e.complete) { this.drop(contentId); return 'stalled'; }
+
+    /*
+     * No validator and more to fetch: there is no safe resume. A later attempt could append the
+     * tail of a different asset, so the bytes have to go.
+     *
+     * What matters is that we then STOP asking. Dropping alone left the entry absent, so the next
+     * sweep started from zero, pulled the same first megabyte, dropped it again, and did that every
+     * sweep forever — burning the link this feature exists to be gentle on, permanently, for an
+     * asset it could never finish. A tombstone at the current revision records "we tried, this
+     * server will not let us resume" and costs one skipped item instead. Publishing a new revision
+     * clears it (prune drops anything at a superseded rev), and an asset small enough to arrive in
+     * one chunk is unaffected — it completes before this branch is reached.
+     */
+    if (!e.validator && !e.complete) {
+      this.drop(contentId);
+      this.index[contentId] = { rev: rev, unresumable: true, bytes: 0, total: 0, validator: null, complete: false, path: null, uri: null };
+      this.save();
+      return 'stalled';
+    }
     return e.complete ? 'done' : 'progress';
   };
 
@@ -237,25 +262,51 @@
 
   /* ------------------------------------------------------------------ *
    * The Tizen adapter. No decisions live here — only platform calls.
+   *
+   * ⚠️ EVERY CALL HERE IS THE 5.0 SYNCHRONOUS FileSystemManager, deliberately, and the version
+   * before it used the DEPRECATED callback API in a way that could not work at all:
+   *
+   *   tizen.filesystem.resolve(...)  is declared `void`. It hands the directory to a callback and
+   *     returns undefined — so `var dir = tizen.filesystem.resolve(...)` set dir to undefined,
+   *     available() answered false, MediaCache.create() returned null, and the offline cache did
+   *     not exist on a single panel in the field. It failed CLOSED, which is the only reason this
+   *     never showed up as corruption: the capability was correctly withheld, and the feature was
+   *     simply never there.
+   *   File.openStream(...)           is asynchronous. `written` was read on the line after the
+   *     call, before any callback could have run, so appendPart returned 0 every time.
+   *   File.moveTo(...)               is asynchronous, belongs on the PARENT DIRECTORY, and takes
+   *     (originFullPath, destinationFullPath). It was called on the FILE handle with the
+   *     destination first and a bare name second — three documented errors in one call, each of
+   *     which alone raises IOError.
+   *
+   * The 5.0 API (`openFile` -> FileHandle, `toURI`, `pathExists`) is genuinely synchronous, which
+   * is what the decision layer above actually needs. Tizen 5.0 is the 2019 model year; a 4.0 panel
+   * has none of it and is told so by available() rather than being handed a cache that writes
+   * nothing.
+   *
+   * There is no rename step. `moveFile` is callback-based even in the 5.0 API, and promoting a
+   * finished download by renaming it was only ever belt-and-braces: `localUrl` already refuses to
+   * hand out an entry that is not `complete`, so a partial file at the final name is unreachable.
+   * Removing the rename removes the last asynchronous operation from this adapter.
    * ------------------------------------------------------------------ */
-  function tizenBackend() {
-    var dir = null;
-    try {
-      // Synchronous resolve is deprecated in newer Web APIs but is what the widget runtime on the
-      // shipped panels supports; the async form would force this whole module to be callback-based
-      // for no behavioural gain.
-      dir = tizen.filesystem.resolve('wgt-private', function (d) { dir = d; }, function () { dir = null; }, 'rw');
-    } catch (e) { dir = null; }
+  var DIR = 'wgt-private/st-media';
 
-    function fileFor(name, create) {
-      if (!dir) return null;
-      try { return dir.resolve(name); } catch (e) { /* not there yet */ }
-      if (!create) return null;
-      try { return dir.createFile(name); } catch (e) { return null; }
-    }
+  function tizenBackend() {
+    var fsm = null;
+    try { fsm = (typeof tizen !== 'undefined' && tizen.filesystem) ? tizen.filesystem : null; }
+    catch (e) { fsm = null; }
+
+    // The whole synchronous surface has to be present. Probing one method and assuming the rest is
+    // how a half-supported runtime ends up with a cache that half works.
+    var usable = !!(fsm &&
+      typeof fsm.openFile === 'function' &&
+      typeof fsm.toURI === 'function' &&
+      typeof fsm.pathExists === 'function');
+
+    function pathFor(contentId) { return DIR + '/' + contentId; }
 
     return {
-      available: function () { return !!dir; },
+      available: function () { return usable; },
       loadIndex: function () {
         try { return JSON.parse(localStorage.getItem(INDEX_KEY) || '{}'); } catch (e) { return {}; }
       },
@@ -286,10 +337,21 @@
               body = [];
               for (var i = 0; i < text.length; i++) body.push(text.charCodeAt(i) & 0xff);
             }
+            /*
+             * total comes from Content-Range on a 206 and from Content-Length ONLY on a 200.
+             *
+             * Content-Length on a 206 is the length of the CHUNK, so falling back to it would
+             * report a 1MB first slice of a 50MB video as a 1MB asset — and the decision layer,
+             * correctly trusting its input, would mark it complete and hand the panel a truncated
+             * file to play. It is not hypothetical: a proxy that strips Content-Range, or a CORS
+             * context where the header is simply not readable, produces exactly this. 0 means
+             * "unknown", which the decision layer already treats as a stall.
+             */
+            var isPartial = xhr.status === 206;
             done({
               status: xhr.status,
               start: m ? Number(m[1]) : 0,
-              total: m ? Number(m[3]) : Number(xhr.getResponseHeader('Content-Length') || 0),
+              total: m ? Number(m[3]) : (isPartial ? 0 : Number(xhr.getResponseHeader('Content-Length') || 0)),
               validator: xhr.getResponseHeader('ETag') || xhr.getResponseHeader('Last-Modified') || null,
               body: body
             });
@@ -297,37 +359,55 @@
           try { xhr.send(null); } catch (e) { done(null); }
         });
       },
+      /*
+       * A POSITIONED write, not an append.
+       *
+       * 'a' appends at EOF, so the moment the index and the file disagreed by so much as one chunk
+       * — a power cut between the write and the index save, which is precisely the event this whole
+       * feature exists for — every later chunk landed in the wrong place and the panel promoted a
+       * silently corrupt video. Seeking to the offset makes a repeated write IDEMPOTENT: replaying
+       * a chunk overwrites the same bytes with the same bytes, so the crash window stops mattering
+       * instead of being papered over.
+       */
       appendPart: function (contentId, body, offset) {
-        var f = fileFor(contentId + '.part', true);
-        if (!f) return 0;
-        var written = 0;
-        // 'a' append mode, so a resumed transfer adds to what is already there instead of
-        // truncating it — which would make every attempt start from zero again.
-        f.openStream(offset > 0 ? 'a' : 'w', function (stream) {
-          try { stream.writeBytes(body); written = body.length; } finally { stream.close(); }
-        }, function () { written = 0; });
-        return written;
-      },
-      promotePart: function (contentId) {
-        var part = fileFor(contentId + '.part', false);
-        if (!part) return null;
+        if (!usable || !body || !body.length) return 0;
+        var fh = null;
         try {
-          // Rename rather than copy: an atomic-enough swap, and a copy would need twice the space
-          // for a large video on a panel that may not have it.
-          part.moveTo(part.parent.fullPath + '/' + contentId, contentId, true, function () {}, function () {});
-        } catch (e) { /* fall through and try to resolve it anyway */ }
-        var whole = fileFor(contentId, false);
-        if (!whole) return null;
-        return { path: whole.fullPath, uri: whole.toURI() };
+          // 'w' truncates, which is what a fresh start means; 'rw' keeps what is there to write
+          // into. makeParents:true creates wgt-private/st-media on first use.
+          fh = fsm.openFile(pathFor(contentId), offset > 0 ? 'rw' : 'w', true);
+          if (!fh) return 0;
+          if (offset > 0) fh.seek(offset, 'BEGIN');
+          fh.writeData(new Uint8Array(body));
+          if (typeof fh.flush === 'function') fh.flush();
+          return body.length;
+        } catch (e) {
+          return 0;                       // no space, no permission, no file — all "did not write"
+        } finally {
+          if (fh) { try { fh.close(); } catch (e2) { /* already gone */ } }
+        }
+      },
+      /*
+       * Nothing to promote — the bytes have been written to their final name all along. This just
+       * answers with the URI, and only once the file is really there.
+       */
+      promotePart: function (contentId) {
+        if (!usable) return null;
+        var p = pathFor(contentId);
+        try {
+          if (!fsm.pathExists(p)) return null;
+          return { path: p, uri: fsm.toURI(p) };
+        } catch (e) { return null; }
       },
       remove: function (contentId) {
-        if (!dir) return;
-        [contentId, contentId + '.part'].forEach(function (name) {
-          try {
-            var f = dir.resolve(name);
-            if (f) dir.deleteFile(f.fullPath, function () {}, function () {});
-          } catch (e) { /* not present */ }
-        });
+        if (!usable) return;
+        var p = pathFor(contentId);
+        try {
+          if (!fsm.pathExists(p)) return;
+          // Still callback-based even in the 5.0 API, and best-effort by design: a delete that
+          // fails costs disk, while blocking on it would cost playback.
+          fsm.deleteFile(p, function () {}, function () {});
+        } catch (e) { /* not present, or refused */ }
       }
     };
   }
