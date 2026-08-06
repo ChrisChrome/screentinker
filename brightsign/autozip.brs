@@ -30,7 +30,7 @@
 Function SourceRoot() As String
     volumes = ["USB1:", "SD:", "SD2:", "SSD:", "FLASH:"]
     for each v in volumes
-        if FileExists(v + "/", "autorun.zip") then return v
+        if FileExists(v + "/autorun.zip") then return v
     end for
     return ""
 End Function
@@ -47,14 +47,14 @@ Sub Main()
 
     print "[st-autozip] volume "; root$
 
-    if not FileExists(extractPath$, "autorun.zip") then
+    if not FileExists(extractPath$ + "autorun.zip") then
         print "[st-autozip] no autorun.zip at "; zipPath$; " — nothing to do"
         return
     end if
 
     ' Idempotence. Without this the player extracts, reboots, extracts again, reboots again —
     ' a boot loop that looks like a hardware fault.
-    if FileExists(extractPath$, "autorun.zip.done") then
+    if FileExists(extractPath$ + "autorun.zip.done") then
         print "[st-autozip] already unpacked (autorun.zip.done present) — leaving it alone"
         return
     end if
@@ -74,7 +74,7 @@ Sub Main()
     ' anything: the file we came here to install is now on the card.
     package.Unpack(extractPath$)
 
-    if not FileExists(extractPath$, "autorun.brs") then
+    if not FileExists(extractPath$ + "autorun.brs") then
         print "[st-autozip] ERROR: unpack produced no autorun.brs — leaving the archive for a retry"
         return
     end if
@@ -94,17 +94,18 @@ Sub Main()
     RebootSystem()
 End Sub
 
-' Does [name] exist in directory [dir]?
+' Does [path] exist?
 '
-' THE BUG THIS FIXES. The previous version passed a full path as BOTH arguments of MatchFiles.
-' MatchFiles takes a DIRECTORY plus a pattern, and the documentation is explicit: "you will get no
-' results if the pattern contains a directory separator". So it returned an empty list every time,
-' for every file, on every player — and this script reported "no autorun.zip on any volume" while a
-' `dir SD:` sat there listing autorun.zip. Reported from a real deployment on an HD1026.
+' roReadFile + a type() check — the idiom BrightSign's own boilerplate uses (CheckFile in their
+' published autozip.brs). It takes a FULL PATH, which is what every call site naturally has.
 '
-' Two arguments rather than one path, so there is no string-splitting to get wrong.
-Function FileExists(dir As String, name As String) As Boolean
-    files = MatchFiles(dir, name)
-    if files = invalid then return false
-    return files.Count() > 0
+' MatchFiles is deliberately not used here. It is for LISTING a directory: it takes a directory plus
+' a pattern, returns nothing when the pattern contains a separator, and — as this player
+' demonstrated — does not reliably answer for a volume root like "SSD:/". The first version of this
+' function passed a path as both arguments and could never return true at all; the second passed a
+' directory and a bare name and still answered "no" for a file sitting right there. An existence
+' check that is subtly wrong is worse than none, because every guard built on it silently opens.
+Function FileExists(path As String) As Boolean
+    f = CreateObject("roReadFile", path)
+    return type(f) = "roReadFile"
 End Function

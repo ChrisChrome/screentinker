@@ -437,17 +437,20 @@ Function PackageVersion() As String
     return "0.0.0-dev"   ' ST_PACKAGE_VERSION (stamped at build time — do not edit by hand)
 End Function
 
-' Does [name] exist in directory [dir]?
+' Does [path] exist?
 '
-' MatchFiles takes a DIRECTORY plus a pattern, and returns nothing when the pattern contains a
-' separator. The previous version passed a full path as both arguments, so it answered "no" for
-' every file on every player — which silently disabled this entire self-update path: the pending
-' package was never seen, the .part file was never cleaned up, and the .done marker was never
-' noticed. Two arguments, so there is no path-splitting to get wrong.
-Function FileExists(dir As String, name As String) As Boolean
-    files = MatchFiles(dir, name)
-    if files = invalid then return false
-    return files.Count() > 0
+' roReadFile + a type() check — the idiom BrightSign's own boilerplate uses (CheckFile in their
+' published autozip.brs). It takes a FULL PATH, which is what every call site naturally has.
+'
+' MatchFiles is deliberately not used here. It is for LISTING a directory: it takes a directory plus
+' a pattern, returns nothing when the pattern contains a separator, and — as this player
+' demonstrated — does not reliably answer for a volume root like "SSD:/". The first version of this
+' function passed a path as both arguments and could never return true at all; the second passed a
+' directory and a bare name and still answered "no" for a file sitting right there. An existence
+' check that is subtly wrong is worse than none, because every guard built on it silently opens.
+Function FileExists(path As String) As Boolean
+    f = CreateObject("roReadFile", path)
+    return type(f) = "roReadFile"
 End Function
 
 ' Unpack a package that is sitting on storage waiting to be applied. Runs BEFORE the widget so a
@@ -464,8 +467,8 @@ Sub ApplyPendingPackage(root As String)
     badPath$ = root + "/autorun.zip.bad"
     stage$ = root + "/st-staging"
 
-    if not FileExists(dir$, "autorun.zip") then return
-    if FileExists(dir$, "autorun.zip.done") then return  ' already unpacked; again is the boot loop
+    if not FileExists(dir$ + "autorun.zip") then return
+    if FileExists(dir$ + "autorun.zip.done") then return  ' already unpacked; again is the boot loop
 
     print "[st-update] unpacking pending package"
 
@@ -488,7 +491,7 @@ Sub ApplyPendingPackage(root As String)
 
     ' Unpack() returns Void, so success is proven by looking for what should now exist rather than
     ' by testing a return value that was never there.
-    if not FileExists(stage$ + "/", "autorun.brs") then
+    if not FileExists(stage$ + "/autorun.brs") then
         print "[st-update] ERROR: extract produced no autorun.brs — parking it as .bad"
         MoveFile(zipPath$, badPath$)
         return
@@ -523,6 +526,15 @@ End Sub
 Sub CheckPackageUpdate(cfg As Object, root As String)
     if cfg.server_url = "" then return
 
+    ' A package already staged and waiting for its apply-reboot is not a reason to fetch another.
+    ' Observed on hardware: the periodic check fired in the gap between staging and rebooting and
+    ' pulled the whole archive down a second time. Harmless here; on a metered or marginal link it
+    ' is the same waste this product spent a release eliminating everywhere else.
+    if FileExists(root + "/autorun.zip") then
+        print "[st-update] a package is already staged — waiting for it to apply"
+        return
+    end if
+
     partPath$ = root + "/autorun.zip.part"
     reg = CreateObject("roRegistrySection", "screentinker")
     attempts% = 0
@@ -551,7 +563,7 @@ Sub CheckPackageUpdate(cfg As Object, root As String)
 
     ' Any earlier partial is deleted first: resuming into an existing file would concatenate two
     ' downloads into something that hashes to neither.
-    if FileExists(root + "/", "autorun.zip.part") then DeleteFile(partPath$)
+    if FileExists(root + "/autorun.zip.part") then DeleteFile(partPath$)
 
     dl = CreateObject("roUrlTransfer")
     if dl = invalid then return
@@ -573,8 +585,8 @@ Sub CheckPackageUpdate(cfg As Object, root As String)
     end if
 
     ' Promote. Marker first — see the ordering note above.
-    if FileExists(root + "/", "autorun.zip.done") then DeleteFile(root + "/autorun.zip.done")
-    if FileExists(root + "/", "autorun.zip") then DeleteFile(root + "/autorun.zip")
+    if FileExists(root + "/autorun.zip.done") then DeleteFile(root + "/autorun.zip.done")
+    if FileExists(root + "/autorun.zip") then DeleteFile(root + "/autorun.zip")
     if not MoveFile(partPath$, root + "/autorun.zip") then
         print "[st-update] ERROR: could not stage the package — staying put"
         RecordPackageAttempt(reg, attempts% + 1)

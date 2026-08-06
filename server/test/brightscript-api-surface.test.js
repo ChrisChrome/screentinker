@@ -198,3 +198,18 @@ test('every string literal on a line is closed', () => {
     });
   }
 });
+
+test('file existence is tested with roReadFile, not MatchFiles', () => {
+  // MatchFiles is for LISTING a directory. Used as an existence check it has burned us twice: once
+  // passing a full path as both arguments (never true for anything), and once passing a directory
+  // plus a bare name, which STILL answered "no" for a file sitting in a volume root on a real
+  // XT245 — silently skipping a staged update on every boot. BrightSign's own boilerplate uses
+  // roReadFile + type(); so do we.
+  for (const f of FILES) {
+    const src = code(f);
+    const helper = src.slice(src.indexOf('Function FileExists'));
+    if (!helper) continue;
+    assert.match(helper.slice(0, 300), /roReadFile/,
+      `${f}: FileExists must use roReadFile — MatchFiles does not answer reliably for a volume root`);
+  }
+});
