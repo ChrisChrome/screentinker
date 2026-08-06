@@ -30,7 +30,25 @@
 ' So ask the filesystem instead of assuming: whichever volume holds this script is the volume
 ' that holds everything else beside it.
 Function StorageRoot() As String
+    ' Which volume are we actually running from? Everything else is derived from this — the offline
+    ' page, the widget's storage directory, the self-update paths — so getting it wrong points the
+    ' whole player at a volume that may not physically exist.
+    '
+    ' Probed in the order the OS itself searches for an autorun script (roStorageHotplug.GetStorages()
+    ' documents ["USB1:/", "SD:/", "SD2:/", "SSD:/", "FLASH:/"]), so the answer matches the volume the
+    ' player actually booted from. FLASH is last because it is the fallback of last resort: the unit
+    ' this was developed on has a dead card slot and boots from internal flash, and an earlier version
+    ' of this function knew only FLASH and SD — so fitting real storage to that player and moving the
+    ' files onto it would have silently resolved every path to "SD:", a slot with nothing in it.
+    '
+    ' ReadFile rather than a MatchFiles existence check: MatchFiles takes a DIRECTORY plus a pattern
+    ' and returns nothing when the pattern contains a separator, which is why the helper further down
+    ' this file never finds anything.
     ba = CreateObject("roByteArray")
+    if ba.ReadFile("USB1:/autorun.brs") then return "USB1:"
+    if ba.ReadFile("SSD:/autorun.brs") then return "SSD:"
+    if ba.ReadFile("SD:/autorun.brs") then return "SD:"
+    if ba.ReadFile("SD2:/autorun.brs") then return "SD2:"
     if ba.ReadFile("FLASH:/autorun.brs") then return "FLASH:"
     return "SD:"
 End Function
@@ -115,7 +133,12 @@ Function MakeWidget(url As String, rect As Object, port As Object, cfg As Object
         javascript_enabled: true
         security_params: { websecurity: true }
         hwz_default: "on"                       ' hardware z-order — video on its own plane
-        storage_path: "/cache"                  ' DIRECTORY NAME for the local storage cache
+        ' An ABSOLUTE path on the volume we booted from. "/cache" carries no BrightSign drive
+        ' specifier, so it resolves outside the writable volumes and the widget's local storage —
+        ' the backing store a service worker, the Cache API and IndexedDB all need — has nowhere to
+        ' persist to. The XT245 on alpha exposes navigator.serviceWorker and then refuses to
+        ' register one, which is exactly what a widget with no usable storage would do.
+        storage_path: StorageRoot() + "/cache"  ' local storage, on the volume we booted from
         storage_quota: "1073741824"             ' 1GB, as a STRING — service-worker offline cache
         port: port
         mouse_enabled: false
