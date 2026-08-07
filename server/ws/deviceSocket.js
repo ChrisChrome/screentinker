@@ -1170,8 +1170,8 @@ module.exports = function setupDeviceSocket(io) {
       if (telemetry && deviceExists(device_id)) {
         db.prepare(`
           INSERT INTO device_telemetry (device_id, battery_level, battery_charging, storage_free_mb, storage_total_mb,
-            ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds, local_ip, temperature_c)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds, local_ip, local_ip6, temperature_c)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           device_id,
           telemetry.battery_level ?? null,
@@ -1187,6 +1187,9 @@ module.exports = function setupDeviceSocket(io) {
           // Device-supplied text headed for a column the dashboard renders: trim and cap it.
           // 45 chars is the longest legitimate value (a full IPv6 address).
           typeof telemetry.local_ip === 'string' ? telemetry.local_ip.trim().slice(0, 45) || null : null,
+          // Same treatment for the v6 address. 45 is still the cap: it is the longest legitimate
+          // IPv6 text form (an IPv4-mapped one, `::ffff:255.255.255.255`).
+          typeof telemetry.local_ip6 === 'string' ? telemetry.local_ip6.trim().slice(0, 45) || null : null,
           // Only a finite number is a reading. A panel with no sensor sends nothing, and NaN or
           // Infinity from a flaky one must land as "no reading" rather than poisoning the column.
           typeof telemetry.temperature_c === 'number' && Number.isFinite(telemetry.temperature_c)

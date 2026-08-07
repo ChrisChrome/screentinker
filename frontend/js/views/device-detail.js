@@ -366,6 +366,15 @@ async function loadDevice(deviceId, activeTab = null) {
             <div class="info-card-label">${t('device.info.local_ip')}</div>
             <div class="info-card-value small" id="telLocalIp">${device.local_ip || '--'}</div>
           </div>
+          ${device.local_ip6 ? `
+          <div class="info-card">
+            <!-- Rendered only when the panel actually has one. A v6 address is long, and showing an
+                 empty row for the overwhelmingly v4 fleet would cost every operator screen space to
+                 tell them nothing. A dual-stack panel shows both cards; a v6-only panel used to
+                 show a dash here and nothing else, because the player only ever collected v4. -->
+            <div class="info-card-label">${t('device.info.local_ip6')}</div>
+            <div class="info-card-value small" id="telLocalIp6">${device.local_ip6}</div>
+          </div>` : ''}
           ${device.android_version && !device.android_version.startsWith('Web/') ? `
           <div class="info-card">
             <div class="info-card-label">${t('device.info.battery')}</div>
@@ -1084,10 +1093,16 @@ function setupActions(device) {
 
   document.getElementById('devicePreviewBtn')?.addEventListener('click', () => showDevicePreview(device));
 
-  // Screenshot button
+  // Screenshot button — pass a callback so the server's verdict surfaces as a toast
+  // instead of the request silently going nowhere (offline device, or a player type
+  // that can't capture at all, e.g. BrightSign).
   document.getElementById('screenshotBtn')?.addEventListener('click', () => {
-    requestScreenshot(device.id);
-    showToast(t('device.toast.screenshot_requested'), 'info');
+    requestScreenshot(device.id, (ack) => {
+      if (ack?.delivered) showToast(t('device.toast.screenshot_requested'), 'info');
+      else if (ack?.reason === 'unsupported') showToast(t('device.toast.screenshot_unsupported'), 'warning');
+      else if (ack?.reason === 'offline') showToast(t('device.toast.screenshot_offline'), 'warning');
+      else showToast(t('device.toast.screenshot_failed'), 'error');
+    });
   });
 
   // Rename
@@ -2070,6 +2085,9 @@ function updateTelemetryDisplay(telemetry) {
   if (telemetry.storage_free_mb) update('telStorage', t('device.info.size_free', { size: formatBytes(telemetry.storage_free_mb) }));
   if (telemetry.wifi_ssid !== undefined) update('telWifi', ssidLabel(telemetry.wifi_ssid));
   if (telemetry.local_ip) update('telLocalIp', telemetry.local_ip);
+  // update() no-ops when the card is absent, which is the case for a v4-only panel — a screen that
+  // acquires a v6 address mid-session picks the card up on the next full render, not this path.
+  if (telemetry.local_ip6) update('telLocalIp6', telemetry.local_ip6);
   if (telemetry.wifi_rssi) update('telRssi', telemetry.wifi_rssi + ' dBm');
   if (telemetry.uptime_seconds) update('telUptime', formatUptime(telemetry.uptime_seconds));
   if (telemetry.ram_free_mb) update('telRam', t('device.info.size_free', { size: formatBytes(telemetry.ram_free_mb) }));

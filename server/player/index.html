@@ -126,6 +126,26 @@
   <title>ScreenTinker Player</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /*
+     * ONE KNOB for every pre-playback screen (setup, pairing, status, the audio prompt).
+     *
+     * A signage panel is read from across a room, so the thing that has to stay constant is
+     * ANGULAR size, not pixel size — and a CSS pixel covers a quarter of the screen area on a 4K
+     * panel that it does on 1080p, a sixteenth on 8K. A 72px pairing code that fills the wall on a
+     * 1080p screen is a smudge on an 8K one, which is exactly the complaint this fixes.
+     *
+     * So every size on those screens is a rem against this root: 1rem = 10px at 1080p, 20px at 4K,
+     * 40px at 8K — the same apparent size at the same viewing distance, at any panel resolution.
+     *
+     * vmin rather than vw, because portrait-mounted panels are common here and vw would render a
+     * 1080x1920 screen at half size. Clamped at both ends so a dashboard preview iframe or a
+     * laptop window stays legible instead of microscopic, and an ultrawide does not get silly.
+     *
+     * Nothing outside these screens uses rem, so this cannot reach playback content — zones,
+     * images and video are laid out in % and px by the layout engine and are untouched.
+     */
+    html { font-size: clamp(7px, 0.926vmin, 56px); }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: -apple-system, sans-serif; }
 
     /* Setup Screen */
@@ -133,23 +153,25 @@
       position: fixed; inset: 0; background: #111827; display: flex; flex-direction: column;
       align-items: center; justify-content: center; z-index: 1000; color: #f1f5f9;
     }
-    #setupScreen h1 { font-size: 36px; color: #3b82f6; margin-bottom: 8px; }
-    #setupScreen .subtitle { color: #94a3b8; font-size: 16px; margin-bottom: 48px; }
-    #setupScreen .form { width: 400px; max-width: 90vw; }
-    #setupScreen label { display: block; font-size: 14px; color: #94a3b8; margin-bottom: 8px; }
-    #setupScreen input { width: 100%; padding: 12px; background: #0f172a; border: 1px solid #334155;
-      border-radius: 8px; color: #f1f5f9; font-size: 16px; margin-bottom: 24px; outline: none; }
+    #setupScreen h1 { font-size: 3.6rem; color: #3b82f6; margin-bottom: 0.8rem; }
+    #setupScreen .subtitle { color: #94a3b8; font-size: 1.6rem; margin-bottom: 4.8rem; }
+    #setupScreen .form { width: 40rem; max-width: 90vw; }
+    #setupScreen label { display: block; font-size: 1.4rem; color: #94a3b8; margin-bottom: 0.8rem; }
+    #setupScreen input { width: 100%; padding: 1.2rem; background: #0f172a; border: 0.1rem solid #334155;
+      border-radius: 0.8rem; color: #f1f5f9; font-size: 1.6rem; margin-bottom: 2.4rem; outline: none; }
     #setupScreen input:focus { border-color: #3b82f6; }
-    #setupScreen button { width: 100%; padding: 12px; background: #3b82f6; color: white;
-      border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; }
+    #setupScreen button { width: 100%; padding: 1.2rem; background: #3b82f6; color: white;
+      border: none; border-radius: 0.8rem; font-size: 1.6rem; font-weight: 600; cursor: pointer; }
     #setupScreen button:hover { background: #2563eb; }
     #setupScreen button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .pairing-code { font-size: 72px; font-weight: 700; color: #3b82f6; font-family: monospace;
-      letter-spacing: 12px; margin: 24px 0; }
-    .pairing-hint { color: #64748b; font-size: 14px; }
-    .status-msg { color: #94a3b8; font-size: 14px; margin-top: 16px; }
-    .spinner { width: 40px; height: 40px; border: 3px solid #334155; border-top-color: #3b82f6;
-      border-radius: 50%; animation: spin 1s linear infinite; margin: 24px auto; }
+    /* The number someone is squinting at from the far side of a shop. It gets the most room the
+       screen can give it, which is why it is the largest multiple here. */
+    .pairing-code { font-size: 7.2rem; font-weight: 700; color: #3b82f6; font-family: monospace;
+      letter-spacing: 1.2rem; margin: 2.4rem 0; }
+    .pairing-hint { color: #64748b; font-size: 1.4rem; }
+    .status-msg { color: #94a3b8; font-size: 1.4rem; margin-top: 1.6rem; }
+    .spinner { width: 4rem; height: 4rem; border: 0.3rem solid #334155; border-top-color: #3b82f6;
+      border-radius: 50%; animation: spin 1s linear infinite; margin: 2.4rem auto; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Player */
@@ -201,8 +223,8 @@
       position: fixed; inset: 0; background: #000; display: flex; flex-direction: column;
       align-items: center; justify-content: center; color: #94a3b8; z-index: 500;
     }
-    #statusOverlay h2 { color: #3b82f6; font-size: 28px; margin-bottom: 8px; }
-    #statusOverlay p { font-size: 16px; }
+    #statusOverlay h2 { color: #3b82f6; font-size: 2.8rem; margin-bottom: 0.8rem; }
+    #statusOverlay p { font-size: 1.6rem; }
   </style>
 </head>
 <body>
@@ -841,8 +863,8 @@
       if (document.getElementById('enableAudioPrompt')) return;
       const ov = document.createElement('div');
       ov.id = 'enableAudioPrompt';
-      ov.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.88);color:#fff;padding:12px 22px;border-radius:8px;cursor:pointer;z-index:10000;font-size:14px;display:flex;gap:10px;align-items:center;box-shadow:0 4px 16px rgba(0,0,0,0.4)';
-      ov.innerHTML = '<span style="font-size:20px">&#128263;</span><span>Tap to enable audio</span>';
+      ov.style.cssText = 'position:fixed;bottom:2.4rem;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.88);color:#fff;padding:1.2rem 2.2rem;border-radius:0.8rem;cursor:pointer;z-index:10000;font-size:1.4rem;display:flex;gap:1rem;align-items:center;box-shadow:0 0.4rem 1.6rem rgba(0,0,0,0.4)';
+      ov.innerHTML = '<span style="font-size:2rem">&#128263;</span><span>Tap to enable audio</span>';
       ov.addEventListener('click', () => {
         unlockAudioContext();
         tryUnmuteLeader();
@@ -1030,9 +1052,9 @@
         const tapOverlay = document.createElement('div');
         tapOverlay.style.cssText = 'position:fixed;inset:0;background:#111827;z-index:2000;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer';
         tapOverlay.innerHTML = `
-          <h1 style="color:#3b82f6;font-size:36px;font-family:sans-serif;margin-bottom:12px">ScreenTinker</h1>
-          <p style="color:#94a3b8;font-size:18px;font-family:sans-serif">Tap anywhere to start</p>
-          <p style="color:#64748b;font-size:13px;font-family:sans-serif;margin-top:24px">Audio requires user interaction</p>
+          <h1 style="color:#3b82f6;font-size:3.6rem;font-family:sans-serif;margin-bottom:1.2rem">ScreenTinker</h1>
+          <p style="color:#94a3b8;font-size:1.8rem;font-family:sans-serif">Tap anywhere to start</p>
+          <p style="color:#64748b;font-size:1.3rem;font-family:sans-serif;margin-top:2.4rem">Audio requires user interaction</p>
         `;
         tapOverlay.onclick = () => {
           unlockAudio();

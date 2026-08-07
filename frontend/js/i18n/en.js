@@ -476,6 +476,7 @@ export default {
   'device.info.status': 'Status',
   'device.info.ip_address': 'IP Address',
   'device.info.local_ip': 'Local IP',
+  'device.info.local_ip6': 'Local IPv6',
   'device.info.wifi_needs_location': 'Needs location permission',
   'device.info.battery': 'Battery',
   'device.info.storage': 'Storage',
@@ -648,6 +649,9 @@ export default {
   'device.assign.kiosk_widget_name': 'Kiosk: {name}',
   // Toasts
   'device.toast.screenshot_requested': 'Screenshot requested',
+  'device.toast.screenshot_unsupported': 'This display\'s player can\'t take screenshots',
+  'device.toast.screenshot_offline': 'Display is offline — screenshot not requested',
+  'device.toast.screenshot_failed': 'Screenshot request failed — no response from server',
   'device.toast.renamed': 'Display renamed',
   'device.toast.removing': 'Removing...',
   'device.toast.removed': 'Display removed',

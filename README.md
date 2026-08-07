@@ -505,6 +505,28 @@ server {
 }
 ```
 
+#### Don't add security headers at the proxy
+
+The app already sets `X-Frame-Options`, `Strict-Transport-Security`, `Content-Security-Policy`,
+`X-Content-Type-Options`, etc. via [helmet](https://helmetjs.github.io/), and manages them
+**per route**: widget/kiosk renders and the device preview deliberately remove or relax
+`X-Frame-Options` so they can be framed, while the dashboard keeps the strict policy.
+
+A proxy-level header block (nginx `add_header X-Frame-Options DENY;`, a Caddy
+`header { ... }` snippet, or a "security headers" preset) *adds a second copy* of these
+headers on top of the app's. Browsers treat conflicting duplicate `X-Frame-Options`
+values as `deny`, which breaks the dashboard's device Preview (a same-origin iframe of
+`/player`) and widget previews with console errors like:
+
+```
+Refused to display 'https://…' in a frame because it set multiple
+'X-Frame-Options' headers with conflicting values ('DENY, SAMEORIGIN').
+Falling back to 'deny'.
+```
+
+Let the proxy handle TLS, compression, and body-size limits only, and leave security
+headers to the app.
+
 ### Updating
 
 To update a running instance to the latest version:

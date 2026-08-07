@@ -78,7 +78,7 @@ test('openapi: the spec version tracks the shipped release', () => {
 // GET /devices, so both must be documented and must not be described interchangeably.
 test('openapi: a device documents its WAN and LAN addresses distinctly', () => {
   const props = spec.components.schemas.Device.properties;
-  for (const field of ['ip_address', 'local_ip']) {
+  for (const field of ['ip_address', 'local_ip', 'local_ip6']) {
     assert.ok(props[field], `Device.${field} is returned by GET /devices but is not documented`);
     assert.ok(
       props[field].type.includes('null'),
@@ -88,6 +88,11 @@ test('openapi: a device documents its WAN and LAN addresses distinctly', () => {
   }
   assert.match(props.ip_address.description, /WAN|public/i);
   assert.match(props.local_ip.description, /local network|LAN/i);
+  assert.match(props.local_ip6.description, /local network|LAN/i);
+  // The two LAN fields are a pair, not alternatives — a dual-stack panel reports both, so the
+  // spec must not let an integrator read one as a fallback for the other.
+  assert.match(props.local_ip.description, /IPv4/i);
+  assert.match(props.local_ip6.description, /IPv6/i);
 });
 
 // "permission" is a sentinel, not a network name: Android 10+ withholds the SSID without a
