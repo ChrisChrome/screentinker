@@ -22,8 +22,13 @@
 // Dependency-free UMD: Node (require) + browser/Tizen (window.ScheduleEval).
 
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.ScheduleEval = factory();
+  // BOTH, not either/or: a BrightSign widget runs with Node integration, so `module` exists in
+  // page scope and an `else` left root.ScheduleEval undefined there. The player falls back to
+  // "always active" when it is missing — i.e. per-item DAYPARTING silently stopped applying on
+  // that platform, and scheduled content played outside its window with nothing in any log.
+  var api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.ScheduleEval = api;
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 

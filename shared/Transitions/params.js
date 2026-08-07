@@ -69,8 +69,16 @@ const VERTEX = `attribute vec2 aPos;
 varying vec2 vUv;
 void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`;
 
+// Export to BOTH, never either/or. A BrightSign roHtmlWidget is created with
+// `nodejs_enabled: true`, which puts Node's `module` into the page's classic-script scope — so an
+// `else` here means the browser branch never runs on that platform and `self.TransitionParams` is
+// simply never set. The player's transitionRuntimeReady() is a presence check on exactly that
+// global, so transitions were dark on every BrightSign, and the failure looked like a GPU problem
+// rather than a module-format one. Anything a browser is meant to see must be assigned
+// unconditionally.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { parseParams, resolveParams, PREAMBLE, EPILOGUE, VERTEX };
-} else if (typeof self !== 'undefined') {
+}
+if (typeof self !== 'undefined') {
   self.TransitionParams = { parseParams, resolveParams, PREAMBLE, EPILOGUE, VERTEX }; // browser (player/demo)
 }

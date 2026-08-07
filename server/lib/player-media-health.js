@@ -13,8 +13,11 @@
 //
 // Dependency-free UMD: Node (require) + browser/Tizen (window.PlayerMediaHealth).
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.PlayerMediaHealth = factory();
+  // BOTH, not either/or — see schedule-eval.js. Node integration in a BrightSign widget made the
+  // browser branch unreachable, so the player ran without its media-health decision there.
+  var api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.PlayerMediaHealth = api;
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
