@@ -1116,6 +1116,40 @@ function pruneTelemetry(deviceId) {
   _delTelemetry.run(deviceId, config.statusLogPruneBatch);
 }
 
+// #240: the per-heartbeat cap above is the only thing that ever trimmed device_telemetry,
+// and it only trims the device whose heartbeat is being handled — so a device that STOPS
+// reporting (decommissioned, swapped, seasonally dark) leaves its rows behind forever and
+// the table only ever grows. This is the matching age sweep, mirroring pruneStatusLog:
+// per-device so it rides idx_telemetry_device(device_id, reported_at DESC) instead of
+// scanning, chunked so a backlog trims across many bounded DELETEs, and yielding between
+// devices so it can never own the loop.
+//
+// The retention default is deliberately LOOSER than the per-device cap (6000 rows ~= 25h
+// for a device reporting every 15s) and matches the uptime report's default 30-day window,
+// so this sweep cannot change a report that the row cap wasn't already truncating.
+const _nextTelemetryDevice = db.prepare('SELECT device_id FROM device_telemetry WHERE device_id > ? ORDER BY device_id LIMIT 1');
+const _delTelemetryOld = db.prepare('DELETE FROM device_telemetry WHERE rowid IN (SELECT rowid FROM device_telemetry WHERE device_id = ? AND reported_at < ? LIMIT ?)');
+let _telemetryPruneRunning = false;
+async function pruneTelemetryRetention(opts = {}) {
+  if (_telemetryPruneRunning) return 0;
+  if (opts.bandGate && config.maintenanceBandGateEnabled && currentBand() !== 'normal') return 0;
+  _telemetryPruneRunning = true;
+  try {
+    const batch = config.statusLogPruneBatch;
+    const cutoff = Math.floor(Date.now() / 1000) - Math.round(config.telemetryRetentionDays * 86400);
+    let total = 0, lastDev = '';
+    for (;;) {
+      const row = _nextTelemetryDevice.get(lastDev);   // O(log n) seek to the next distinct device_id
+      if (!row) break;
+      lastDev = row.device_id;
+      total += (await chunkedDelete((lim) => _delTelemetryOld.run(lastDev, cutoff, lim).changes, { batch })).deleted;
+      await yieldTick();                                // breathe between devices
+    }
+    if (total > 0) console.log(`[telemetry] pruned ${total} row(s) older than ${config.telemetryRetentionDays}d (per-device, batches of ${batch})`);
+    return total;
+  } catch (_) { return 0; } finally { _telemetryPruneRunning = false; }
+}
+
 // Prune old screenshots (keep only latest per device)
 function pruneScreenshots(deviceId) {
   const old = db.prepare(`
@@ -1176,4 +1210,4 @@ try {
 const { verifyAndRepairSchema } = require('../lib/schema-check');
 verifyAndRepairSchema(db);
 
-module.exports = { db, pruneTelemetry, pruneScreenshots, pruneStatusLog, getMaintenanceStats };
+module.exports = { db, pruneTelemetry, pruneTelemetryRetention, pruneScreenshots, pruneStatusLog, getMaintenanceStats };

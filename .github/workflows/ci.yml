@@ -25,6 +25,15 @@ jobs:
         working-directory: server
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The player-parity baselines judge a claim against the SHIPPED source
+          # (`git show <latest tag>:…`), because a baseline describes what an
+          # UN-UPDATED display can do. The default shallow checkout has no tags, so
+          # the suite silently fell back to the working tree and the biconditionals
+          # inverted: fixing a player's payload bug made CI demand a baseline change
+          # for displays that cannot possibly have the fix yet. Green locally, red
+          # here, for a reason found nowhere in the diff.
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: '20'

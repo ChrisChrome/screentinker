@@ -41,16 +41,31 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
  * displays that cannot possibly have the fix yet. A baseline entry should move when a fix SHIPS, not
  * when it is written.
  *
- * Falls back to the working tree when the tags are not available (a shallow CI clone), because a
- * missing tag is a worse reason to fail a build than a slightly-early assertion.
+ * Falls back to the working tree when the tags are not available (a shallow CI clone) — but the
+ * BICONDITIONAL tests below then SKIP rather than assert, because that fallback is not a
+ * slightly-early assertion, it is an inverted one. It cost a red build to learn: with no tags, CI
+ * judged the baselines against a working tree in which a player's payload bug had just been fixed,
+ * so the matrix was told to move a baseline for displays that cannot possibly have the fix yet.
+ * Green locally, red in CI, for a reason visible nowhere in the diff. A skipped assertion announces
+ * itself; a wrong one does not. (ci.yml now checks out with fetch-depth: 0 so this stays a backstop.)
  */
+let shippedFromTag = false;
 function readShipped(rel) {
   try {
     const tag = execSync("git tag --list 'v*' --sort=-v:refname | head -1", { cwd: ROOT, encoding: 'utf8' }).trim();
-    if (tag) return execSync(`git show ${tag}:${rel}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 26 });
+    if (tag) {
+      const src = execSync(`git show ${tag}:${rel}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 26 });
+      shippedFromTag = true;
+      return src;
+    }
   } catch (e) { /* no tags, or the path did not exist in that release */ }
   return read(rel);
 }
+
+// A biconditional compares a baseline against the SHIPPED player. Without a tag there is no
+// shipped player to compare against, and the working tree is the wrong answer, not a close one.
+const needsShippedSource = (t) =>
+  shippedFromTag ? false : (t.skip('no release tag available — cannot judge a baseline against shipped source'), true);
 
 const SRC = {
   web: readShipped('server/player/index.html'),
@@ -158,7 +173,8 @@ test('the capture bootstrap is not gated on the capability it creates', () => {
 
 /* ---- baselines, pinned to the players ------------------------------------------------------- */
 
-test('BICONDITIONAL: audio.volume in a baseline iff that player reads the payload the dashboard sends', () => {
+test('BICONDITIONAL: audio.volume in a baseline iff that player reads the payload the dashboard sends', (t) => {
+  if (needsShippedSource(t)) return;
   /*
    * frontend/js/views/device-detail.js sends set_volume as `{ level: 0..1 }`. Android reads
    * payload.level. The web player reads `payload?.value ?? data.value` and Tizen reads
@@ -195,7 +211,8 @@ test('audio.mute is real on all four, unlike its neighbour', () => {
   }
 });
 
-test('BICONDITIONAL: offline.cache in a baseline iff that player has a media cache', () => {
+test('BICONDITIONAL: offline.cache in a baseline iff that player has a media cache', (t) => {
+  if (needsShippedSource(t)) return;
   // Tizen's media cache is a NEW file — it was not in v1.9.28 — so the baseline must not claim it
   // even though HEAD's capabilities.js declares it at runtime. BrightSign's widget is not known to
   // permit a service worker at all.

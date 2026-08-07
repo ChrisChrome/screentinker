@@ -226,6 +226,11 @@ module.exports = {
   // is LOWER than the old hardcoded 7 days (the reporter's bloat happened under 7d);
   // 2-3 days is plenty for the dashboard's 24h uptime view + diagnostics.
   statusLogRetentionDays: parseFloat(process.env.STATUS_LOG_RETENTION_DAYS) || 3,
+  // #240 device_telemetry age retention (pruneTelemetryRetention in db/database.js). The
+  // per-heartbeat row cap only trims devices that are still reporting; this closes the
+  // rows left behind by ones that stopped. 30d matches the uptime report's default window,
+  // so it can only remove rows the report would not have shown anyway.
+  telemetryRetentionDays: parseFloat(process.env.TELEMETRY_RETENTION_DAYS) || 30,
   // #146 HARD per-device row-count ceiling on device_status_log, enforced by the
   // global sweep alongside the age delete above. Age-based retention can't bound a
   // write storm (rows are all younger than the window), so a reconnect storm grew
@@ -303,6 +308,24 @@ module.exports = {
   // ...or escalate if the WAL grew across this many consecutive PASSIVE runs (PASSIVE not
   // keeping up even below the high-water). Belt-and-suspenders with the MB bound above.
   walCheckpointStarvationRuns: parseInt(process.env.WAL_CHECKPOINT_STARVATION_RUNS) || 3,
+  // #240: ...but growth alone is NOT starvation. Any sustained write burst — a fleet
+  // powering on in the morning — grows the WAL across several consecutive PASSIVE runs
+  // while it is still tiny. Escalating there buys nothing (there is nothing to reclaim)
+  // and costs a lot: TRUNCATE is the BLOCKING form, and it blocks across connections, so
+  // every main-thread statement issued during it sits in SQLite's busy handler (5s by
+  // default in better-sqlite3) — a multi-second loop stall at exactly the moment the
+  // fleet is reconnecting. So the growth signal may only escalate once the WAL is big
+  // enough for a blocking checkpoint to be worth it. The high-water mark above is
+  // unchanged and remains the hard backstop, so the WAL still cannot grow unbounded.
+  // Set at half the high-water mark: a WAL still in the lower half is not worth blocking
+  // for, and anything in the upper half is close enough to the backstop to be worth it.
+  walCheckpointStarvationFloorMB: parseFloat(process.env.WAL_CHECKPOINT_STARVATION_FLOOR_MB) || 8,
+  // #240: the floor alone is not enough — a WAL that already sits above it (Bold's was
+  // 6.2MB against a 16MB high-water) would still escalate on every burst. So the growth
+  // path is ALSO rate-limited: however long the write pressure lasts, our own maintenance
+  // may stall the loop at most once per this window. The high-water escalation is
+  // deliberately EXEMPT — that one is the runaway-WAL backstop and must never be delayed.
+  walCheckpointEscalateCooldownMs: parseInt(process.env.WAL_CHECKPOINT_ESCALATE_COOLDOWN_MS) || 300000,
   // Worker-death handling: with autocheckpoint=0 a dead worker means nothing checkpoints and
   // the WAL grows until the disk fills. An unexpectedly-dead worker is respawned up to
   // RespawnMax times per RespawnWindowMs (with a small backoff); if that's exhausted we
