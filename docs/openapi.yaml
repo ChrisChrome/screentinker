@@ -122,9 +122,19 @@ components:
         local_ip:
           type: [string, "null"]
           description: |
-            The device's **own address on its local network** (e.g. `192.168.1.42`), as
+            The device's **own IPv4 address on its local network** (e.g. `192.168.1.42`), as
             reported by the player itself. This is the one to use to reach a panel directly on
-            site. Null on players that do not report it, or where the platform withholds it.
+            site. Null on players that do not report it, where the platform withholds it, or on
+            a panel with no IPv4 address at all — see `local_ip6`.
+        local_ip6:
+          type: [string, "null"]
+          description: |
+            The device's **own IPv6 address on its local network**, reported alongside
+            `local_ip` rather than instead of it: a dual-stack panel has both and either may be
+            the one you need. Link-local addresses (`fe80::/10`) are deliberately excluded —
+            every interface has one and none can be reached without also knowing the zone
+            index, so this carries a global or unique-local address or nothing. Null on players
+            that do not report it and on IPv4-only panels.
 
         # --- Latest telemetry --------------------------------------------------------------
         # Flattened from the most recent telemetry report. All null for a device that has
