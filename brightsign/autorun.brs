@@ -100,6 +100,41 @@ Function LoadConfig() As Object
     return cfg
 End Function
 
+Function SnapshotDir() As String
+    ' DWS writes to ITS primary storage, which is not necessarily the volume the presentation
+    ' booted from — so probe rather than assume, in the same order StorageRoot() does.
+    for each v in ["USB1:", "SSD:", "SD:", "SD2:", "FLASH:"]
+        d$ = v + "/remote_snapshots"
+        files = MatchFiles(d$, "*.jpg")
+        if files <> invalid and files.Count() > 0 then return d$
+    end for
+    return ""
+End Function
+
+Function NewestFile(dir As String, pattern As String) As String
+    ' DWS names captures img-YYYY-MM-DD-HH-MM-SS.jpg, so the lexicographic maximum IS the newest.
+    best$ = ""
+    files = MatchFiles(dir, pattern)
+    if files = invalid then return ""
+    for each f in files
+        if f > best$ then best$ = f
+    end for
+    return best$
+End Function
+
+Function DwsPort() As String
+    ' Which port the local Diagnostic Web Server answers on. Read from the same registry the
+    ' DWS itself is configured from, so a player moved off port 80 still gets framebuffer
+    ' captures instead of silently degrading to the canvas path.
+    port$ = "80"
+    reg = CreateObject("roRegistrySection", "networking")
+    if reg <> invalid and reg.Exists("http_server") then
+        v$ = reg.Read("http_server").Trim()
+        if v$ <> "" then port$ = v$
+    end if
+    return port$
+End Function
+
 Sub SaveRegistry(key As String, value As String)
     reg = CreateObject("roRegistrySection", "screentinker")
     reg.Write(key, value)
@@ -218,56 +253,67 @@ Sub TakeSnapshot(widget As Object, req As Object)
         return
     end if
 
-    ut.SetUrl("http://localhost/api/v1/snapshot/")
+    ' The DWS port is NOT always 80. It is configurable and BSN/Supervisor-provisioned players
+    ' are commonly moved off it — the unit this was found on serves DWS on 8080 with nothing
+    ' listening on 80 at all. Hardcoding 80 meant every host snapshot failed to connect, fell
+    ' through to the in-page canvas, and the canvas cannot read the hardware video plane, so the
+    ' operator got a card reading "Video is playing on the hardware plane and cannot be captured"
+    ' while the very same capture worked perfectly from the DWS Snapshots tab.
+    '
+    ' The port lives in the networking registry section as http_server; absent means the default.
+    ' 127.0.0.1, NOT "localhost". A name has to be resolved, and on this platform that resolution
+    ' is not ours to rely on: if it answers ::1 first the connection goes to an address the DWS is
+    ' not listening on and the transfer sits there until something times out — which is exactly the
+    ' shape of the failure this chased (the page gave up at 15s having heard nothing at all, not
+    ' even this Sub's own timeout). A literal address cannot be resolved wrongly.
+    ut.SetUrl("http://127.0.0.1:" + DwsPort() + "/api/v1/snapshot/")
     ut.SetUserAndPassword("admin", serial$)
     ut.AddHeader("Content-Type", "application/json")
 
-    ' PostFromStringWithRetry does not exist — calling it raised "Member function not found" from
-    ' inside the event loop, i.e. a snapshot request took the whole player down. And the synchronous
-    ' PostFromString() is no use either: it returns only a response CODE and discards the body, which
-    ' is where the thumbnail is. The documented way to read a POST response is asynchronous, on a
-    ' message port.
-    port = CreateObject("roMessagePort")
-    ut.SetPort(port)
-    if not ut.AsyncPostFromString(body$) then
-        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "could not reach the local DWS" })
+    ' SYNCHRONOUS, deliberately — and this is the whole fix.
+    '
+    ' PostFromStringWithRetry does not exist (calling it raised "Member function not found" from
+    ' inside the event loop, i.e. a snapshot request took the whole player down). The obvious
+    ' alternative, AsyncPostFromString + Wait on a private port, is the documented way to read a
+    ' POST body — and on this hardware its roUrlEvent NEVER ARRIVES. The Sub simply sat in Wait
+    ' while st-bridge.js gave up at 15s, so the page reported "host did not answer in time" and
+    ' fell back to the canvas, which cannot read the hardware video plane. Every other transfer in
+    ' this file is synchronous (GetToString for the package check, GetToFile for the download) and
+    ' every one of them works, including the self-update that replaced this very script.
+    '
+    ' PostFromString returns only the response CODE and discards the body — which would normally
+    ' lose the thumbnail. It does not matter here: DWS WRITES THE CAPTURE TO PRIMARY STORAGE before
+    ' it answers (the body carries a `filename` pointing at it), so the file is on disk by the time
+    ' the call returns and can simply be read back.
+    code% = ut.PostFromString(body$)
+    if code% <> 200 then
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "DWS refused the capture (HTTP " + Stri(code%).Trim() + " on port " + DwsPort() + ")" })
         return
     end if
 
-    ' Bounded: a capture that never answers must not wedge the event loop that drives playback.
-    ev = Wait(20000, port)
-    if type(ev) <> "roUrlEvent" then
-        ut.AsyncCancel()
-        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "the local DWS did not answer" })
+    dir$ = SnapshotDir()
+    if dir$ = "" then
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "DWS wrote no capture to any volume" })
         return
     end if
 
-    resp$ = ev.GetString()
-    if resp$ = "" then
-        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "no response from the local DWS" })
+    newest$ = NewestFile(dir$, "*.jpg")
+    if newest$ = "" then
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "no capture found in " + dir$ })
         return
     end if
 
-    json = ParseJson(resp$)
-    if json = invalid or json.data = invalid then
-        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "unparseable DWS response" })
+    ba2 = CreateObject("roByteArray")
+    if not ba2.ReadFile(dir$ + "/" + newest$) then
+        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "could not read " + newest$ })
         return
     end if
 
-    if json.data.error <> invalid then
-        ' e.g. "No primary storage found." — pass the player's own words through; inventing a
-        ' friendlier message here would hide the one fact that explains the failure.
-        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: json.data.error.message })
-        return
-    end if
-
-    r = json.data.result
-    if r = invalid or r.remotesnapshotthumbnail = invalid then
-        widget.PostJSMessage({ type: "snapshot-result", ok: false, error: "DWS returned no thumbnail" })
-        return
-    end if
-
-    widget.PostJSMessage({ type: "snapshot-result", ok: true, image: r.remotesnapshotthumbnail })
+    ' Read, hand over, then remove: DWS appends a new file per capture and nothing else prunes
+    ' them, so a 1fps remote-control stream would otherwise fill the volume.
+    img$ = "data:image/jpeg;base64," + ba2.ToBase64String()
+    DeleteFile(dir$ + "/" + newest$)
+    widget.PostJSMessage({ type: "snapshot-result", ok: true, image: img$ })
 End Sub
 
 ' Rotate the OUTPUT, not the DOM.

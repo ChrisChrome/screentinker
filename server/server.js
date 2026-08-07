@@ -379,6 +379,58 @@ app.get('/api/brightsign/package/download', async (req, res) => {
   res.send(pkg.buffer);
 });
 
+// ---------------------------------------------------------------------------------------------
+// BrightSign framebuffer capture: the host COLLECTS the request, then POSTS the image back.
+//
+// Inverted on purpose. Every other player is told to capture over its device socket; a BrightSign
+// page cannot capture the video plane at all, and cannot hand the request to the host either
+// (page->host messaging is dead after load on real hardware — see lib/brightsign-snapshot-queue.js
+// for the evidence). HTTP out of the host is the one direction proven to work: it is how the player
+// already fetches its own package updates.
+//
+// Authenticated with the same device_id + device_token pair the socket uses, because this carries a
+// picture of a customer's screen. Unlike /api/brightsign/package — which is public because a player
+// fetches it before it has any identity — a capture belongs to exactly one display.
+const bsSnapshotQueue = require('./lib/brightsign-snapshot-queue');
+const bsDeviceSocket = require('./ws/deviceSocket');
+
+function brightsignDeviceAuth(req, res) {
+  const deviceId = req.query.device_id || req.get('X-Device-Id');
+  const token = req.query.token || req.get('X-Device-Token');
+  if (!bsDeviceSocket.validateDeviceToken(deviceId, token)) {
+    res.status(401).json({ error: 'device authentication failed' });
+    return null;
+  }
+  return deviceId;
+}
+
+// Polled by autorun.brs on the loop it already runs. Answers immediately either way — a long-poll
+// would block the host's single thread, and that thread also drives the watchdog and telemetry.
+app.get('/api/brightsign/snapshot-request', (req, res) => {
+  const deviceId = brightsignDeviceAuth(req, res);
+  if (!deviceId) return;
+  res.setHeader('Cache-Control', 'no-cache');
+  const pending = bsSnapshotQueue.take(deviceId);
+  if (!pending) return res.json({ pending: false });
+  res.json({ pending: true, width: pending.width, height: pending.height });
+});
+
+// The captured frame, straight from the host. Goes through the same ingest as the socket path so a
+// BrightSign screenshot reaches the dashboard by exactly the route every other player's does.
+app.post('/api/brightsign/snapshot', express.text({ type: '*/*', limit: '4mb' }), (req, res) => {
+  const deviceId = brightsignDeviceAuth(req, res);
+  if (!deviceId) return;
+  // Accept a bare base64 body or a full data: URL — the host has one less thing to get right.
+  let b64 = String(req.body || '').trim();
+  const comma = b64.indexOf(',');
+  if (b64.startsWith('data:') && comma > 0) b64 = b64.slice(comma + 1);
+  if (b64.length < 100) return res.status(400).json({ error: 'no image' });
+  if (b64.length > 2 * 1024 * 1024) return res.status(413).json({ error: 'image too large' });
+  const ok = bsDeviceSocket.ingestScreenshot(deviceId, b64);
+  if (!ok) return res.status(503).json({ error: 'sockets not ready' });
+  res.json({ ok: true, bytes: b64.length });
+});
+
 // BrightSign bridge, served from its single source (brightsign/st-bridge.js) so the copy the
 // player loads can never drift from the one sitting on the SD card next to autorun.brs — the two
 // are halves of one messageport contract, and a skew between them is exactly what would leave a

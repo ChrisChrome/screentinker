@@ -5,6 +5,7 @@ const { accessContext, accessibleWorkspaceIds } = require('../lib/tenancy');
 const { workspaceRoom } = require('../lib/socket-rooms');
 const { protectSocket } = require('../lib/safe-socket');
 const playerCapabilities = require('../lib/player-capabilities');
+const bsSnapshotQueue = require('../lib/brightsign-snapshot-queue');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -102,6 +103,17 @@ module.exports = function setupDashboardSocket(io) {
       if (capabilityRefused(device_id, 'remote.screenshot', ack)) return;
       const conn = heartbeat.getConnection(device_id);
       if (conn) deviceNs.to(device_id).emit('device:screenshot-request', {});
+      // BrightSign additionally leaves the request where its HOST can collect it. The page there
+      // can capture only the graphics plane — video lives on a hardware plane the DOM cannot read —
+      // and it cannot forward the request to the host either, because page->host messaging is dead
+      // after load on that platform. So the host polls for this over HTTP, the one direction that
+      // works. See lib/brightsign-snapshot-queue.js.
+      try {
+        const row = db.prepare('SELECT platform FROM devices WHERE id = ?').get(device_id);
+        if (row && String(row.platform || '').toLowerCase() === 'brightsign') {
+          bsSnapshotQueue.request(device_id, { width: 960, height: 540 });
+        }
+      } catch (e) { /* the socket path already fired; queueing is the bonus, never the blocker */ }
       if (typeof ack === 'function') ack({ delivered: !!conn, reason: conn ? undefined : 'offline' });
     });
 
