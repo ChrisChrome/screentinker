@@ -123,10 +123,14 @@ test('the baseline describes a FIELDED player, not the one we are about to ship'
   // working controls disappear from every legacy Tizen display.
   const tizen = { platform: 'Tizen 6.5' };
   assert.equal(caps.supports(tizen, 'audio.volume'), false, 'the slider is dead on a fielded panel');
-  // Same answer on web and BrightSign, for a second and separate reason: those players read
-  // payload.value while the dashboard sends payload.level, so even HEAD's handler never fires.
-  assert.equal(caps.supports({ android_version: 'Web/Chrome' }, 'audio.volume'), false);
-  assert.equal(caps.supports({ platform: 'brightsign' }, 'audio.volume'), false);
+  // Web and BrightSign used to answer false here too, on the grounds that those players read
+  // payload.value while the dashboard sends payload.level. 1.9.31 fixed the payload AND, more to
+  // the point, those two players are SERVED BY THIS SERVER — an undeclared browser panel runs
+  // whatever build is answering it, so there is no fielded-vs-shipping gap to describe. Tizen keeps
+  // the old answer precisely because it does have one: its .wgt sits on the panel until someone
+  // updates it, and the fix reaching this repo put nothing on any screen.
+  assert.ok(caps.supports({ android_version: 'Web/Chrome' }, 'audio.volume'), 'the web player this build serves reads payload.level');
+  assert.ok(caps.supports({ platform: 'brightsign' }, 'audio.volume'), 'BrightSign runs that same served player');
   assert.ok(caps.supports({ client_type: 'apk' }, 'audio.volume'), 'Android reads the payload it is sent');
   assert.ok(caps.supports(tizen, 'audio.mute'), 'mute does work');
   assert.ok(caps.supports(tizen, 'remote.screenshot'), 'captureAndSend exists in the shipped player');
