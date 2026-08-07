@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.9.31
+
+A patch off 1.9.30 carrying the video-wall and playlist-preview work, a QA sweep that drove real
+browsers and real panels rather than reading code, and the fix for a loop stall our own maintenance
+was inflicting on a customer's fleet every morning.
 
 ### Fixed — a wall of portrait panels had to be built backwards (#236)
 The wall canvas was secretly framebuffer space, not the wall as you see it. That is invisible while
@@ -8,25 +12,132 @@ every panel is the normal way up, and actively misleading the moment one isn't: 
 panels standing side by side had to be **stacked vertically** in the editor, with a pre-rotated copy
 of every video, before the output came out right. It worked, but only after trial and error, and it
 meant a portrait wall could never reuse existing content.
-
 Each panel now carries a mounting rotation (0/90/180/270), the canvas means the physical wall, and
 the player works out the mapping — so side by side is drawn side by side and landscape content plays
 across portrait panels unmodified. Applied on the web, Tizen and Android players.
-
 **Existing walls are untouched and need no migration.** Every wall in the field is rotation 0, which
 takes the original code path verbatim — an operator who upgrades will not find a wall that was
 aligned yesterday has moved. Rebuilding an existing portrait wall the natural way round is an opt-in
 change the operator makes when they choose to.
-
 While a display is a member of a wall, its per-panel rotation replaces its own Orientation setting:
 the two describe the same physical fact, and honouring both turned the content twice.
-
 ### Added — a wall no longer hides its own screens (#235)
 Grouping displays into a wall replaced their individual cards, so one dead panel of a four-panel
 wall was invisible from the dashboard, and inspecting a single screen meant pulling it out of the
 wall (re-syncing the live wall) and putting it back. The wall screen now lists its panels with live
 online state and a link straight to each device's page, and the wall card on the dashboard shows a
 per-member status chip. A screenshot can be requested per panel without disturbing playback.
+
+### Fixed — the checkpointer was stalling the event loop for seconds at a time (#240)
+Reported as loop lag that grew with uptime and reset on restart, with a distinctive signature: mean,
+p50, p99 and max identical to two decimal places. That signature is not a fixed cost paid on every
+cycle. It is what a `perf_hooks` histogram reports when a window recorded **exactly one** delay —
+the mean is the raw value and every percentile returns the bucket ceiling above it. Reproducible
+against the reported figures to the decimal (`record(1329070000)` gives mean 1329.07, p50/p99/max
+1329.59). So the loop took one long turn that swallowed the whole sampling second, episodically.
+
+The long turn was ours, and it is measured rather than argued. Running the real checkpointer worker
+against a real WAL with one reader mid-transaction: a single main-thread write blocked for
+**4,936 ms**, and the checkpoint that blocked it reported `WAL 8.8MB -> 8.8MB` — it reclaimed
+nothing. `wal_checkpoint(TRUNCATE)` is the blocking form and its locks are held across
+*connections*, so moving it to a worker thread in 1.9.2-patch3 took the fsync off the loop but not
+the lock. It also does not throw when it cannot get those locks: it returns `busy=1` after sitting
+on SQLite's five-second busy timeout. Five seconds of stalled loop for no benefit, reported as a
+success.
+
+It was reached far too easily. The rule was "escalate if the WAL grew across three consecutive 15s
+runs", which **any sustained 45-second write burst** satisfies — a fleet powering on in the morning
+does it daily. Escalation now needs the WAL to be in the upper half of its budget
+(`WAL_CHECKPOINT_STARVATION_FLOOR_MB`, default 8) **and** to be outside a cooldown
+(`WAL_CHECKPOINT_ESCALATE_COOLDOWN_MS`, default 5 min). Both gates are needed: a size floor alone
+does nothing for a server whose WAL already sits above it, which was exactly the reported case.
+
+The 16 MB high-water escalation bypasses both gates and is untouched, so *the WAL still cannot grow
+unbounded*. A checkpoint that reclaimed nothing now says so in the log instead of reading like a
+success.
+
+Also softened the recovery path: when the checkpointer worker is declared unrecoverable, inline
+autocheckpoint is re-armed on the main connection — a state that lasts the life of the process, and
+therefore looks exactly like "degrades with uptime, a restart fixes it". It used to also run an
+unconditional blocking checkpoint on the main thread on the way in; that now happens only above the
+high-water mark, and the fallback state is served on `/api/status` rather than being inferable only
+from a log line that may have rolled.
+
+### Added — loop-lag telemetry that can be read correctly (#240)
+The reported numbers were interpreted, reasonably, as a per-cycle cost, because nothing in them said
+how many samples they were made of. `/api/status` now carries `samples` alongside the percentiles
+(around 50 in a healthy second, 1 when a single turn swallowed it), `tick_gap_ms` measured on the
+wall clock independently of the histogram, and `worst_tick_gap_ms` / `worst_tick_at` — monotone, so
+five-minute polling can no longer miss an episode entirely. The `debug` block adds the checkpointer's
+worker, fallback and respawn state.
+
+Band semantics are deliberately unchanged: a one-sample window during a real stall is the correct
+trigger for the shed valve, and suppressing it would blind the protection at the moment it is needed.
+
+### Fixed — `device_telemetry` grew forever for any display that stopped reporting
+The only trim was a per-device row cap applied on that device's own heartbeat, so a decommissioned,
+swapped or seasonally-dark panel left its rows behind permanently. There is now a matching age sweep
+(`TELEMETRY_RETENTION_DAYS`, default 30), per-device so it rides the existing index rather than
+scanning, chunked and yielding like the status-log sweep. The default matches the uptime report's own
+default window, so it cannot remove rows that report would have shown.
+
+### Added — a playlist preview you can skip through (#239)
+Reviewing item 8 of a playlist cost seven durations of waiting. The preview takes a skip/next
+control.
+
+### Added — a video playlist item defaults to the clip's own length (#237)
+Rather than the generic default duration, which had to be corrected by hand for every video.
+
+### Fixed — the dashboard preview of a rotated display (#238)
+A display rotated 90°/270° was previewed the way its framebuffer is laid out rather than the way
+people see it. It now matches what the wall shows.
+
+### Fixed — three controls that did nothing, and a parity matrix that said otherwise
+An audit of all four players against their shipped sources found controls a customer can press today
+that change nothing. The volume slider worked on Android only: the dashboard sends
+`set_volume { level: 0..1 }`, while the web player read `payload.value` and divided by 100 and Tizen
+read `payload.value ?? payload.volume` — three complete, working volume implementations that could
+not be driven. Correcting only the key would have been worse than leaving it broken, since
+`level: 0.5` would have become 0.5%: the scale is now chosen by which key arrived, not by the
+magnitude of the number.
+
+Tizen's offline media cache could never have worked on a panel — its adapter used the deprecated
+Filesystem API in three ways the IDL rules out, so `MediaCache.create()` returned null on every panel
+in the fleet. BrightSign carried calls that compile and are documented to do something else. Every
+fix cites the vendor document that proves it, and the linter now fails on each next time.
+
+Four dashboard→device socket handlers had no capability gate, and a re-register could erase a panel's
+recorded platform. The parity matrix and the capability baselines are now tested against the players'
+**shipped** sources in both directions, so a baseline that over-claims and a player that gains a
+handler without its baseline moving both fail the build.
+
+### Fixed — a fresh panel skipped the first item of its playlist
+A newly paired panel always learns its playlist before the media arrives, so the 3-second content
+re-check is what really begins playback — and it advanced *past* the index already seeded for a
+playlist that had not started. The first pass ran 1, 2, 3, 0, and item 1 appeared only after the list
+wrapped. Reproduced on the emulator on every fresh pair.
+
+### Fixed — a rotated wall panel screenshotted as a black rectangle
+The mounting rotation introduced with #236 is the first real rotation on an ancestor of the video
+surface, and the screenshot compositor pasted the frame with an axis-aligned rectangle — so on a
+rotated panel it landed outside the capture bitmap and the dashboard received plain black. A panel
+that looks dead while it is playing perfectly is the worst thing a diagnostic can say.
+
+### Fixed — the service worker claimed credit for offline widgets it never sees
+`sw.js` said its cache-first widget branch was what kept a widget rendering with the network gone. It
+is not: the player mounts
+widgets in an iframe sandboxed without `allow-same-origin`, making it an opaque-origin client that a
+service worker does not control. Measured, not reasoned — five mounts over 25 seconds of real
+playback left zero widget entries in the cache.
+
+### Fixed — CI judged the capability baselines against the wrong source
+The baselines describe what an un-updated display can do, so they are checked against the shipped
+source via the latest tag. The default shallow checkout has no tags, so the lookup found nothing and
+the suite silently fell back to the working tree — where a player's payload bug had just been fixed,
+making the build demand a baseline change for displays that cannot possibly have the fix yet. Green
+locally, red in CI, for a reason visible nowhere in the diff. The test job now fetches tags, and the
+bidirectional assertions skip rather than invert when there are none.
+
 ## 1.9.30
 
 A patch off 1.9.29 carrying two fixes for faults that are live and silent. Both were found by a QA
