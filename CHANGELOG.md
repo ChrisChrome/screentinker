@@ -1,5 +1,87 @@
 # Changelog
 
+## 1.9.32
+
+A patch off 1.9.31. The headline is that a BrightSign can finally photograph its own screen; the
+rest is a thumbnail library that heals itself, a Raspberry Pi installer that asks the operator
+rather than the pipe, IPv6 on the dashboard, and a pairing code you can read from across a room.
+
+### Fixed — a BrightSign can now screenshot itself, video included
+That platform has never managed it. Video decodes onto a hardware plane the DOM cannot read, so the
+player's in-page canvas composite came back with the content missing, and the panel truthfully but
+uselessly reported *"Video is playing on the hardware plane and cannot be captured"* while playing
+perfectly.
+
+It now uses **BrightSign's own `@brightsign/screenshot` API**, which composites the video and
+graphics layers — exactly the thing a canvas cannot do. The capture is written to RAM rather than
+the boot flash: the remote-control view asks for one every second, and a screenshot per second
+written to flash wears it out for nothing, since the file is read back and deleted immediately.
+
+Remote control gets it for free — the live view and the screenshot button share one capture path,
+so the live view now shows real video instead of a card explaining why it can't.
+
+The long way round is kept as a fallback for firmware without the module, and its own bug is fixed
+on the way: the host asked the player's diagnostic web server on a hardcoded port 80, while that
+port is configurable and commonly moved (the unit this was found on serves it on 8080 with nothing
+on 80 at all). It now reads the port from the registry the server is configured from.
+
+### Fixed — per-item dayparting was silently dead on BrightSign
+A BrightSign widget runs with Node integration, which puts `module` into the page's scope. Every
+shared module that exported with an `else` therefore took the CommonJS branch and never assigned
+its browser global — and every consumer has a silent fallback, so nothing ever complained.
+
+The visible casualty was the transition engine, which is gated on exactly those globals and so
+never initialised. The costly one was `schedule-eval`: without it the player falls back to "always
+active", so **scheduled content played outside its window** on that platform, with nothing in any
+log. Modules now export to both targets.
+
+### Fixed — thumbnails that never appear, and never retry
+Thumbnail generation is best-effort by contract, and three gaps made its failures invisible and
+permanent: ffmpeg is a system dependency nothing surfaced (and the Docker image did not install
+it), a row that missed generation was never retried, and a failed image thumbnail stored a path to
+a file that was never written — which the dashboard then requested forever as a broken image.
+
+There is now a `[MEDIA]` startup diagnostic, a once-per-boot backfill that heals old rows, ffmpeg in
+the runtime image, and the phantom path is gone. Video probing moved off the synchronous spawn it
+had always used: two subprocess calls with a 15-second timeout each, run synchronously, stop the
+whole server for their duration — survivable for one human-initiated upload, not for a sweep
+walking an entire library unattended.
+
+### Fixed — Raspberry Pi 5 installer (#245)
+`curl … | sudo bash` makes stdin the *script*, and bash has consumed it by the time any prompt
+runs — so the mode menu answered itself and Player-Only could not be reached through the documented
+install at all. Prompts now read the terminal.
+
+Pi 5 on Bookworm defaults to Wayland, where `xset`, `unclutter` and `xrandr` are no-ops that log an
+error and do nothing: those Pis had no blanking suppression and no cursor hiding while appearing
+configured. The launcher now detects the session and branches. Chromium is told not to ask for a
+keyring password no kiosk can answer, and the crash-restore surface that put a white page over the
+player on every boot but the first is cleared properly. The login banner also spelled the product
+name wrong.
+
+### Added — a display's IPv6 address on the dashboard
+The player only ever collected IPv4, so a v6-only panel reported no address at all and the dashboard
+showed a dash for a perfectly reachable screen. Both are now reported, in their own fields, because
+a dual-stack panel has both and either may be the one you need. Link-local addresses are excluded —
+every interface has one and none can be dialled without a zone index.
+
+### Fixed — the pairing code was unreadable on 4K and 8K panels
+Every size on the player's setup screens was a hard-coded pixel value. A CSS pixel covers a quarter
+of the screen area on a 4K panel that it does on 1080p, and a sixteenth on 8K, so the code that
+fills a 1080p screen was a smudge on the wall it was installed on. Sizing is now proportional to the
+viewport: identical at 1080p, twice the size at 4K, four times at 8K.
+
+### Fixed — the screenshot button lied when it could not work
+The server already answered `offline` or `unsupported`, but no dashboard sender listened, so
+clicking Screenshot on an offline display showed "Screenshot requested" and did nothing. The verdict
+now surfaces as a toast. Thanks to @a10kiloham for this and for the thumbnail work above.
+
+### Fixed — CI judged the capability baselines against the wrong source
+The baselines describe what an un-updated display can do, so they are checked against the shipped
+source via a release tag. A shallow checkout has no tags, so the check silently fell back to the
+working tree — and a release commit made the newest tag HEAD, flipping every assertion at once.
+Both are fixed; the matrix is judged against the previous release.
+
 ## 1.9.31
 
 A patch off 1.9.30 carrying the video-wall and playlist-preview work, a QA sweep that drove real
