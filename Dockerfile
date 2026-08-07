@@ -18,6 +18,11 @@ RUN npm ci --omit=dev
 
 # --- runtime ---
 FROM node:20-slim
+# ffmpeg (ships ffprobe) powers video thumbnails + duration extraction at upload.
+# Without it videos still upload and play, but arrive with no thumbnail or duration.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 # Relocate all state onto the volume (config.js reads DATA_DIR; unset would use
 # the in-repo paths, which we do not want in a container).
