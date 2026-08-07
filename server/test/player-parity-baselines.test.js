@@ -49,16 +49,37 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
  * Green locally, red in CI, for a reason visible nowhere in the diff. A skipped assertion announces
  * itself; a wrong one does not. (ci.yml now checks out with fetch-depth: 0 so this stays a backstop.)
  */
-let shippedFromTag = false;
+/*
+ * "Shipped" means the newest release that is NOT the one being cut. Taking the newest tag outright
+ * is wrong at exactly one moment, and it is a moment that happens every time: on the release commit
+ * the newest tag IS HEAD, so shipped source becomes the working tree, every biconditional inverts,
+ * and the build demands a baseline claim a capability that no fielded display can have until this
+ * release reaches it. Found by cutting 1.9.31 — the tag turned a green tree red.
+ *
+ * A baseline entry moves when the fix reaches displays, which is the release AFTER the one carrying
+ * it. So skip any tag pointing at HEAD and judge against its predecessor.
+ */
+function previousReleaseTag() {
+  const head = execSync('git rev-parse HEAD', { cwd: ROOT, encoding: 'utf8' }).trim();
+  const tags = execSync("git tag --list 'v*' --sort=-v:refname", { cwd: ROOT, encoding: 'utf8' })
+    .split('\n').map((t) => t.trim()).filter(Boolean);
+  for (const t of tags) {
+    const at = execSync(`git rev-list -n1 ${t}`, { cwd: ROOT, encoding: 'utf8' }).trim();
+    if (at !== head) return t;
+  }
+  return null;
+}
+
+let SHIPPED_TAG = null;
+try { SHIPPED_TAG = previousReleaseTag(); } catch (e) { /* no git, or no tags */ }
+const shippedFromTag = !!SHIPPED_TAG;
+
 function readShipped(rel) {
-  try {
-    const tag = execSync("git tag --list 'v*' --sort=-v:refname | head -1", { cwd: ROOT, encoding: 'utf8' }).trim();
-    if (tag) {
-      const src = execSync(`git show ${tag}:${rel}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 26 });
-      shippedFromTag = true;
-      return src;
-    }
-  } catch (e) { /* no tags, or the path did not exist in that release */ }
+  if (SHIPPED_TAG) {
+    try {
+      return execSync(`git show ${SHIPPED_TAG}:${rel}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 26 });
+    } catch (e) { /* the path did not exist in that release — fall through */ }
+  }
   return read(rel);
 }
 
