@@ -669,6 +669,89 @@
      * DWS writes the full capture to disk before returning a thumbnail), the caller gets a reason
      * it can show instead of a spinner that never resolves.
      */
+    /*
+     * Capture the screen using BrightSign's OWN screenshot API — the composite of the video and
+     * graphics layers, which is the whole point: an in-page canvas cannot read the hardware video
+     * plane, so a DOM composite returns a frame with the content missing.
+     *
+     * Entirely page-side, and that is what makes it work here. The obvious route was to ask the
+     * host (BrightScript) to capture via the player's DWS, but page->host messaging is dead after
+     * load on this platform, so the request never arrived. `@brightsign/screenshot` needs no host,
+     * no DWS, no messageport — just the Node `require` the widget already has (the same one that
+     * makes `module` visible to classic scripts).
+     *
+     * The API writes a FILE rather than returning bytes, so it is read straight back with Node's
+     * fs — available for exactly the same reason require() is.
+     */
+    captureScreen: function (opts) {
+      var o = opts || {};
+      return new Promise(function (resolve, reject) {
+        var ScreenshotClass = tryRequire('@brightsign/screenshot');
+        var fs = tryRequire('fs');
+        if (!ScreenshotClass) { reject(new Error('no @brightsign/screenshot module')); return; }
+        if (!fs) { reject(new Error('no fs module')); return; }
+
+        // RAM FIRST, deliberately. The remote-control view drives this once a second, and a
+        // screenshot per second written to the boot flash is a wear-out mechanism with no upside —
+        // the file is read back and deleted microseconds later, so it never needs to be durable.
+        // BrightSign exposes tmp as a RAM volume alongside the storage ones. Real storage is only
+        // a fallback for a unit that does not present tmp, and the directory must already exist or
+        // the capture fails, so each candidate is checked rather than assumed.
+        var dirs = ['/storage/tmp', '/tmp', '/storage/ssd', '/storage/usb1', '/storage/sd', '/storage/flash'];
+        var dir = null;
+        for (var i = 0; i < dirs.length; i++) {
+          try { if (fs.existsSync(dirs[i])) { dir = dirs[i]; break; } } catch (e) { /* keep looking */ }
+        }
+        if (!dir) { reject(new Error('no writable volume for the capture')); return; }
+
+        var path = dir + '/st-capture.jpg';
+        try { fs.unlinkSync(path); } catch (e) { /* first run, or already gone */ }
+
+        var params = {
+          destinationFileName: path,
+          fileName: path,                 // deprecated alias, still honoured on older firmware
+          fileType: 'JPEG',
+          width: o.width || 960,
+          height: o.height || 540,
+          quality: o.quality || 70,
+          rotation: 0,
+        };
+
+        var shot;
+        try { shot = new ScreenshotClass(); } catch (e) { reject(new Error('screenshot object: ' + e.message)); return; }
+
+        try {
+          // syncCapture may interrupt on-screen operations, which the docs flag as a debugging
+          // trait — but it guarantees the file exists when it returns, and an operator asking for
+          // one screenshot is worth a single frame of interruption. The stream path uses async.
+          if (o.async && typeof shot.asyncCapture === 'function') shot.asyncCapture(params);
+          else if (typeof shot.syncCapture === 'function') shot.syncCapture(params);
+          else if (typeof shot.asyncCapture === 'function') shot.asyncCapture(params);
+          else { reject(new Error('screenshot object exposes neither capture method')); return; }
+        } catch (e) { reject(new Error('capture failed: ' + e.message)); return; }
+
+        // Poll for the file rather than trusting a return value: sync and async differ, and the
+        // documented contract is "a file appears", not "a promise settles".
+        var waited = 0;
+        var tick = function () {
+          var st = null;
+          try { st = fs.statSync(path); } catch (e) { st = null; }
+          if (st && st.size > 512) {
+            var b64;
+            try { b64 = fs.readFileSync(path).toString('base64'); }
+            catch (e) { reject(new Error('could not read the capture: ' + e.message)); return; }
+            try { fs.unlinkSync(path); } catch (e) { /* best-effort: never let cleanup fail a good capture */ }
+            resolve('data:image/jpeg;base64,' + b64);
+            return;
+          }
+          waited += 150;
+          if (waited > (o.timeoutMs || 8000)) { reject(new Error('capture produced no file in ' + waited + 'ms')); return; }
+          global.setTimeout(tick, 150);
+        };
+        global.setTimeout(tick, 150);
+      });
+    },
+
     requestSnapshot: function (opts) {
       var o = opts || {};
       return new Promise(function (resolve, reject) {
