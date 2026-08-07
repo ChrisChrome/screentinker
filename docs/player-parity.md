@@ -37,16 +37,18 @@ el?.addEventListener('change', () => sendCommand(device.id, cmd, { level: parseI
 | player | what the handler reads | result |
 |---|---|---|
 | Android | `payload.optDouble("level", -1.0)` | ✅ works |
-| web | `data.payload?.value ?? data.value` | 💀 `undefined` → `isFinite` fails → silent no-op |
-| Tizen | `payload.value ?? payload.volume` | 💀 `undefined` → logs `no usable value in payload` |
-| BrightSign | (the web player) | 💀 as web |
+| web | `payload.level` (fraction), `value` still read as a percentage | ✅ **fixed in 1.9.31** |
+| Tizen | `payload.level` (fraction) | ✅ fixed in 1.9.31 — but see the note below on when the baseline may move |
+| BrightSign | (the web player) | ✅ as web |
 
-Three of the four players have a complete, working volume implementation that cannot be driven,
-because nobody checked the payload key against the sender. **Fix: one line in
-`server/player/index.html` and one in `tizen/js/app.js` — accept `level` (0..1) as well.** Until
-then `audio.volume` has been removed from the `web` and `brightsign` baselines, and
-`test/player-parity-baselines.test.js` holds that as a **biconditional**: fix the player and the
-test fails, telling you to put the baseline entry back.
+Three of the four players had a complete, working volume implementation that could not be driven,
+because nobody checked the payload key against the sender. Fixed in 1.9.31: the fraction is now
+canonical everywhere, and the scale is chosen by WHICH KEY arrived rather than by the magnitude of
+the number (`1` is legal under both conventions, so guessing from the value is wrong for somebody).
+
+`audio.volume` is back in the `web` and `brightsign` baselines as of 1.9.31, and **not** in the
+`tizen` one. That asymmetry is the model, not an oversight — see
+[When a baseline may move](#when-a-baseline-may-move).
 
 ### 2. Every #161 Tier-2 command was refused for the entire fleet — FIXED here
 
@@ -98,7 +100,7 @@ describe content rendering. They are informational, and shown to the operator in
 | capability | Android | Web | Tizen | BrightSign |
 |---|---|---|---|---|
 | `audio.mute` | ✅ `device:mute-changed` → `setVideoMuted`, incl. YouTube via the IFrame bridge | ✅ | ✅ incl. YouTube via `postMessage` | ✅ as web |
-| `audio.volume` | ✅ `set_volume` reads `payload.level` | 💀 reads `payload.value`; dashboard sends `level` | 💀 handler exists (`applyVolume`, incl. `tizen.tvaudiocontrol`) and reads `payload.value` | 💀 as web |
+| `audio.volume` | ✅ `set_volume` reads `payload.level` | ✅ reads `payload.level` (1.9.31) | ✅ `applyVolume` reads `payload.level` (1.9.31, incl. `tizen.tvaudiocontrol`) | ✅ as web |
 
 ## Display
 
@@ -250,8 +252,37 @@ declares anything, every display reading a baseline is running **v1.9.28 or olde
 | `android` | **removed `display.power`** | v1.9.28 `MainActivity`: `"screen_on" -> Log.w("no privileged wake path on a non-rooted panel — no-op")`. The ON half is dead on 100% of fielded panels, and one capability renders **both** buttons. |
 | `android` | **removed `system.reboot`** | `STPolicy.reboot()` requires device owner; off-owner v1.9.28 shows the accessibility power *dialog* — which on the accessibility-enabled panels common in this fleet paints that dialog **over the signage**. Owner provisioning is unreleased (#161 / PR #168 still open), so "device owner AND pre-1.9.29" is effectively an empty set. |
 | `tizen` | **added `display.power`** | v1.9.28 `app.js` implements both halves with no signing and no panel API: `showScreenOff()` / `clearScreenOff()` + `keepAwake()`. Unlike Android, neither half is privilege-gated. Withholding it hid a working control on every Tizen panel. |
-| `web` | **removed `audio.volume`** | v1.9.28 `index.html` contains the string `set_volume` **zero** times, and HEAD's handler reads the wrong payload key. |
-| `brightsign` | **removed `audio.volume`, `display.power`, `system.reboot`, `system.restart_player`, `offline.cache`** | All five need a host bridge (`hasHost()`) or a service worker that a Supervisor-built widget refuses. `system.restart_player` is the 2026-07-28 panel-blackout path. `offline.cache` is the documented lie this whole model exists to stop. |
+| `web` | **removed `audio.volume`, then RESTORED it in 1.9.31** | Removed when v1.9.28 `index.html` contained the string `set_volume` zero times. Restored once the handler landed — this player is served by the server, so there is no fielded build to lag behind. |
+| `brightsign` | **removed `display.power`, `system.reboot`, `system.restart_player`, `offline.cache`** (and `audio.volume`, restored in 1.9.31 with `web`) | All five need a host bridge (`hasHost()`) or a service worker that a Supervisor-built widget refuses. `system.restart_player` is the 2026-07-28 panel-blackout path. `offline.cache` is the documented lie this whole model exists to stop. |
+
+### When a baseline may move
+
+A baseline describes what an **un-updated** display can do, so the question "has this shipped?"
+has two different answers depending on how the player reaches the screen.
+
+**Served by the server — `web`, `brightsign`.** The player is a document this server hands out. A
+display running against this build *is* running this build's player; there is no such thing as a
+browser panel stuck on last release's. So the baseline moves the moment the server ships the fix,
+and holding it back hides a control that already works. `test/player-parity-baselines.test.js`
+judges these two against the working tree, in **both** directions.
+
+**Shipped as a device artifact — `android`, `tizen`.** The player is an APK or a `.wgt` sitting on
+the panel. Cutting a release puts nothing on any screen; a panel updates when somebody updates it,
+and this repo cannot know how many are still back on which build. These are judged against the
+**previous release**, and only in the over-claim direction: "the baseline claims it, so the shipped
+player had better implement it" is always worth failing on, while "HEAD gained the handler, so add
+it to the baseline" is a guess about the fleet, not a fact about it. A panel that HAS updated
+declares its own capabilities and never reads the baseline at all.
+
+The cost of the one-directional rule is that a stale entry can sit here after the artifact really
+has reached the fleet. That is a judgement call about panels, so a person makes it in
+`server/lib/player-capabilities.js` and records why — which is what the Tizen `audio.volume` note
+there is doing right now.
+
+> This distinction was learned the hard way. The test used to read "shipped" as *the newest tag*,
+> which is HEAD on a release commit — so tagging 1.9.31 flipped every biconditional at once and
+> demanded a baseline change for displays that could not possibly have the fix yet. The build went
+> red naming a baseline, with nothing in the diff to explain it.
 
 ### Consequence, deliberately accepted
 
@@ -267,7 +298,7 @@ declares `system.reboot` for itself and is unaffected.
 |---|---|---|---|---|
 | `playback.*` (all 7) | ✅ | ✅ | ✅ | ✅ |
 | `audio.mute` | ✅ | ✅ | ✅ | ✅ |
-| `audio.volume` | ✅ | ❌ no handler in v1.9.28 | ❌ payload | ❌ no handler in v1.9.28 |
+| `audio.volume` | ✅ | ❌ the fielded `.wgt` has no handler | ✅ since 1.9.31 (runs the served player) | ✅ since 1.9.31 |
 | `display.rotation` | ✅ | ✅ | ⚠️ graphics only | ✅ |
 | `display.power` | ❌ `screen_on` is a no-op | ✅ | ❌ needs host | ❌ |
 | `display.brightness` | ✅ Tier 0, since v1.9.10 | ❌ | ❌ | ❌ |

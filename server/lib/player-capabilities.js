@@ -167,6 +167,14 @@ const BASELINE = {
     // gated on it, so the entry describes content rendering rather than offering a button.
     'display.rotation',
     'remote.input',
+    // RESTORED in 1.9.31 with BASELINE.web, and for the same reason plus one of its own: a
+    // BrightSign runs the web player we serve, so it gets the fixed handler the moment the server
+    // does. The unit-specific question is whether the media element is even reachable on a player
+    // that puts video on a hardware plane — and that question is already settled by `audio.mute`
+    // above, which this baseline has always claimed: set_volume reaches setMediaVolume() and
+    // device:mute-changed reaches `currentVideoEl.muted`, the same element by the same path. If hwz
+    // silently swallowed one it would swallow both, so volume is exactly as honest as mute here.
+    'audio.volume',
     'sync.clock',
     // NOT offline.cache. This is the documented case, not a hypothetical: the XT245 on alpha has
     // navigator.serviceWorker, passes every presence check, and then never fetches sw.js because
@@ -182,9 +190,9 @@ const BASELINE = {
     // NOT system.reboot / display.power / display.resolution / system.self_update: all four are
     // BrightScript calls through a bridge this unit is not known to have.
     //
-    // NOT audio.volume / remote.screenshot / remote.stream: see BASELINE.web — the volume payload
-    // never lands, and a canvas capture on a hwz player cannot read the video plane, so it returns
-    // a frame with a hole where the content is.
+    // NOT remote.screenshot / remote.stream: a canvas capture on a hwz player cannot read the video
+    // plane, so it returns a frame with a hole where the content is. (audio.volume moved INTO the
+    // list above in 1.9.31 — the payload it was waiting on now lands.)
   ],
   // A browser tab. Deliberately the smallest set: it cannot reboot its host, rotate a panel, or
   // capture anything outside its own document.
@@ -195,16 +203,22 @@ const BASELINE = {
     'display.rotation',
     'remote.screenshot', 'remote.stream', 'remote.input',
     'system.restart_player',
+    // RESTORED in 1.9.31, having been removed by the audit that found the slider dead. Both of the
+    // reasons it was removed have expired, and the second one was reasoning from the wrong artifact:
+    //   1. It read `data.payload?.value ?? data.value` while the dashboard sends `{ level: 0..1 }`,
+    //      so the number was undefined and the handler declined. Fixed in 1.9.31 — index.html now
+    //      takes the fraction as canonical (volumeLevelFromCommand) and set_volume reaches
+    //      setMediaVolume().
+    //   2. The removal cited `git show v1.9.28:server/player/index.html` having no handler at all.
+    //      But this player is SERVED BY THE SERVER: a browser panel loads it from whatever build is
+    //      running, not from the release its row was created under. There is no such thing as a
+    //      browser panel stuck on the v1.9.28 player once the server moves — which is the whole
+    //      difference between this baseline and the Android/Tizen ones below, where an un-updated
+    //      panel really is running an old artifact.
+    // So the moment the server ships the fix, an undeclared web display can be driven, and holding
+    // the entry back would hide a control that works. Released and live on prod 2026-08-06.
+    'audio.volume',
     'sync.clock', 'offline.cache',
-    // NOT audio.volume, removed after audit, and for two independent reasons:
-    //   1. `git show v1.9.28:server/player/index.html` has no set_volume handler at all — zero
-    //      occurrences of the string. The fielded browser player ignores the command outright.
-    //   2. Even at HEAD the slider cannot work: index.html reads `data.payload?.value ?? data.value`
-    //      and tizen/js/app.js reads `payload.value ?? payload.volume`, while the dashboard sends
-    //      `{ level: 0..1 }` (frontend/js/views/device-detail.js bindLevel). Only the Android
-    //      handler reads `level`. Fixing that is one line in each player, and
-    //      test/player-parity-baselines.test.js is written as a BICONDITIONAL: the moment a player
-    //      accepts `level`, the test fails and tells you to put the baseline entry back.
   ],
 };
 

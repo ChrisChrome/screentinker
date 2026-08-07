@@ -88,16 +88,56 @@ function readShipped(rel) {
 const needsShippedSource = (t) =>
   shippedFromTag ? false : (t.skip('no release tag available — cannot judge a baseline against shipped source'), true);
 
+/*
+ * The two families of player update by completely different physics, and a baseline that ignores
+ * the difference is wrong for half the fleet:
+ *
+ *   SERVER-SERVED (web, brightsign) — the player is a document this server hands out. A display
+ *   running against this build IS running this build's player; there is no such thing as a browser
+ *   panel stuck on an old one. So the baseline moves the moment the server ships, and the WORKING
+ *   TREE is the honest source. Anything else hides a control that already works.
+ *
+ *   DEVICE ARTIFACT (android, tizen) — the player is an APK or a .wgt sitting on the panel.
+ *   Releasing puts nothing on anything; a panel updates when someone updates it, and the repo has
+ *   no way to know how many are still back on which build. Judged against the PREVIOUS release,
+ *   and only in the over-claim direction (see below).
+ *
+ * Conflating them is what made this file demand BASELINE.web gain audio.volume at the exact moment
+ * 1.9.31 was tagged — correct conclusion, arrived at by accident, and it would have dragged Tizen
+ * along with it onto panels that have no such fix.
+ */
+const SERVER_SERVED = new Set(['web', 'brightsign']);
+
 const SRC = {
-  web: readShipped('server/player/index.html'),
+  web: read('server/player/index.html'),
   android: [
     'android/app/src/main/java/com/remotedisplay/player/MainActivity.kt',
     'android/app/src/main/java/com/remotedisplay/player/service/WebSocketService.kt',
     'android/app/src/main/java/com/remotedisplay/player/telemetry/PlayerCapabilities.kt',
   ].map(read).join('\n'),
   tizen: ['tizen/js/app.js', 'tizen/js/device-control.js', 'tizen/js/capabilities.js'].map(readShipped).join('\n'),
-  brightsign: ['brightsign/st-bridge.js', 'brightsign/autorun.brs'].map(readShipped).join('\n'),
+  brightsign: ['brightsign/st-bridge.js', 'brightsign/autorun.brs'].map(read).join('\n'),
 };
+
+/*
+ * Assert a baseline entry against what its player can actually do.
+ *
+ * Server-served: BOTH directions. Over-claiming is a dead button; under-claiming hides a working
+ * one, and both are decidable right here from the tree we are about to serve.
+ *
+ * Device artifact: the OVER-CLAIM direction only. "The baseline claims it, so the shipped player
+ * had better implement it" is always true and always worth failing on. The reverse — "HEAD gained
+ * the handler, so put it in the baseline" — is not a fact about the fleet, it is a guess about how
+ * many panels have updated, and the honest answer for an undeclared panel is the floor. A panel
+ * that HAS updated declares its own capabilities and never reads the baseline at all. The cost is
+ * that a stale entry can sit here after the artifact really has reached the fleet; that is a
+ * judgement call, so it is made by a person in player-capabilities.js and noted there.
+ */
+function assertBaseline(family, capability, playerCan, { claimedMsg, missingMsg }) {
+  const claimed = caps.BASELINE[family].includes(capability);
+  if (claimed) { assert.ok(playerCan, claimedMsg); return; }
+  if (SERVER_SERVED.has(family)) assert.ok(!playerCan, missingMsg);
+}
 
 /*
  * Which command names each player has a branch for. A command a player never names is a dead
@@ -213,11 +253,10 @@ test('BICONDITIONAL: audio.volume in a baseline iff that player reads the payloa
   readsLevel.brightsign = readsLevel.web;   // BrightSign runs the web player
 
   for (const family of ['android', 'web', 'tizen', 'brightsign']) {
-    const claimed = caps.BASELINE[family].includes('audio.volume');
-    assert.equal(claimed, readsLevel[family],
-      claimed
-        ? `BASELINE.${family} claims audio.volume but that player never reads payload.level — the slider is dead`
-        : `the ${family} player now reads payload.level: restore 'audio.volume' to BASELINE.${family}`);
+    assertBaseline(family, 'audio.volume', readsLevel[family], {
+      claimedMsg: `BASELINE.${family} claims audio.volume but that player never reads payload.level — the slider is dead`,
+      missingMsg: `the ${family} player now reads payload.level: restore 'audio.volume' to BASELINE.${family}`,
+    });
   }
 });
 
@@ -232,8 +271,9 @@ test('audio.mute is real on all four, unlike its neighbour', () => {
   }
 });
 
-test('BICONDITIONAL: offline.cache in a baseline iff that player has a media cache', (t) => {
-  if (needsShippedSource(t)) return;
+test('BICONDITIONAL: offline.cache in a baseline iff that player has a media cache', () => {
+  // No shipped-source guard here: this one settles every family by hand below rather than by
+  // grepping a tag, so a tagless clone loses nothing by running it.
   // Tizen's media cache is a NEW file — it was not in v1.9.28 — so the baseline must not claim it
   // even though HEAD's capabilities.js declares it at runtime. BrightSign's widget is not known to
   // permit a service worker at all.
