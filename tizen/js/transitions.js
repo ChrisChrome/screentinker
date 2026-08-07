@@ -69,9 +69,11 @@ const VERTEX = `attribute vec2 aPos;
 varying vec2 vUv;
 void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`;
 
+// Hand-committed copy of shared/Transitions — keep the both-targets export in step with it.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { parseParams, resolveParams, PREAMBLE, EPILOGUE, VERTEX };
-} else if (typeof self !== 'undefined') {
+}
+if (typeof self !== 'undefined') {
   self.TransitionParams = { parseParams, resolveParams, PREAMBLE, EPILOGUE, VERTEX }; // browser (player/demo)
 }
 
@@ -87,8 +89,9 @@ if (typeof module !== 'undefined' && module.exports) {
 // Never-blank teeth live here too: on `webglcontextlost` the renderer flips `lost` and calls
 // opts.onContextLost so the player can hard-cut to a plain <img> instead of showing black.
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory();
-  else root.TransitionRenderer = factory();
+  var api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.TransitionRenderer = api;
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 

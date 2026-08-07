@@ -8,9 +8,13 @@
 //
 // Never-blank teeth live here too: on `webglcontextlost` the renderer flips `lost` and calls
 // opts.onContextLost so the player can hard-cut to a plain <img> instead of showing black.
+// Exports to BOTH targets — see the note in params.js. On BrightSign (`nodejs_enabled: true`)
+// `module` exists in page scope, so an `else` leaves root.TransitionRenderer undefined and the
+// whole transition runtime silently absent.
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory();
-  else root.TransitionRenderer = factory();
+  var api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.TransitionRenderer = api;
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 

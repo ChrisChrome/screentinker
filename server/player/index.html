@@ -3152,12 +3152,36 @@
     // the frame on screen now, as a texturable (CORS-clean) source: the live <img>, or — so a wipe can
     // start FROM a playing clip — a snapshot canvas of the outgoing <video>'s current frame. Returns null
     // if nothing on screen is texturable yet (first item after boot, un-decoded, or tainted) -> hard cut.
+    // Does a <video> on THIS platform actually yield pixels to a canvas?
+    //
+    // On a hardware video plane (BrightSign hwz, Tizen AVPlay) the answer is no, and the failure is
+    // silent: drawImage() succeeds, throws nothing, and paints a fully TRANSPARENT frame. The
+    // transition then runs with a blank `from` or `to` texture — a wipe from nothing, behind a video
+    // plane that is still lit. isMediaReadable() cannot catch it: it answers "am I ALLOWED to read
+    // this" (CORS), which is a different question from "did any pixels arrive".
+    //
+    // videoFrameIsCapturable() already asks the right question (a 16x16 ALPHA probe, so a genuine
+    // fade-to-black still reads as captured) but was only ever wired into the screenshot path.
+    // Cached because the answer is a property of the platform, not of the clip.
+    let _videoCompositingOk = null;
+    function videoCompositingAvailable(v) {
+      if (_videoCompositingOk !== null) return _videoCompositingOk;
+      if (!v || v.readyState < 2 || !v.videoWidth) return true;   // undecided — don't cache a guess
+      _videoCompositingOk = videoFrameIsCapturable(v);
+      if (!_videoCompositingOk) {
+        console.log('[transition] video frames are not readable on this platform (hardware plane) — ' +
+                    'transitions involving video will hard-cut; image-to-image still wipes');
+      }
+      return _videoCompositingOk;
+    }
+
     function currentTexturableFrame() {
       const c = document.getElementById('playerContainer');
       if (!c) return null;
       const img = c.querySelector('img');
       if (img && img.complete && img.naturalWidth > 0 && isMediaReadable(img)) return img;
       const v = c.querySelector('video');
+      if (v && !videoCompositingAvailable(v)) return null;   // hardware plane -> no from-frame -> hard cut
       if (v && v.readyState >= 2 && v.videoWidth > 0 && isMediaReadable(v)) {
         try {
           const r = c.getBoundingClientRect();
@@ -3456,7 +3480,12 @@
         && item.mime_type.startsWith('video/') && item.mime_type !== 'video/youtube'
         && !item.widget_id && !wallConfig && !isZones && !groupSync
         && item.transition && Array.isArray(item.transition.effects) && item.transition.effects.length
-        && transitionRuntimeReady();
+        && transitionRuntimeReady()
+        // A platform whose video sits on a hardware plane cannot supply the incoming frame either:
+        // the warm-play snapshot comes back transparent, so the wipe would fade in from nothing.
+        // `null` means "not yet determined" and is treated as available — the probe needs a
+        // playing video, and the first one on a fresh player has not run yet.
+        && _videoCompositingOk !== false;
       if (isVideoBufferable) {
         renderVideoBuffered(item);
         return;
