@@ -4001,6 +4001,34 @@
       // Falls through to the canvas path on ANY failure (no host, no primary storage, timeout):
       // a partial screenshot showing images and widgets beats none, and the probe makes the
       // video's absence explicit rather than silent.
+      // BrightSign's OWN capture API first: it composites the video and graphics layers, which is
+      // the one thing this player cannot do for itself — a canvas cannot read the hardware video
+      // plane, so a DOM composite comes back with the content missing. It needs no host bridge at
+      // all, which is what makes it work where the host route does not: page->host messaging is
+      // dead after load on that platform, so a request relayed through BrightScript never arrives.
+      if (BS && typeof BS.captureScreen === 'function') {
+        BS.captureScreen({ width: 960, height: 540 })
+          .then((dataUrl) => {
+            const base64 = String(dataUrl).split(',')[1];
+            if (base64 && base64.length > 100) {
+              socket.emit('device:screenshot', { device_id: config.deviceId, image_b64: base64 });
+              console.log('[bs] native screenshot sent:', base64.length, 'chars');
+            } else { captureAndSendCanvas(); }
+          })
+          .catch((err) => {
+            console.warn('[bs] native capture unavailable (' + err.message + ') — trying the host');
+            hostSnapshotOrCanvas();
+          });
+        return;
+      }
+
+      hostSnapshotOrCanvas();
+    }
+
+    // The older route: ask the HOST to capture through the player's DWS. Kept as a fallback for
+    // firmware where the native module is absent, though on the hardware this was debugged against
+    // the request never reaches the host at all.
+    function hostSnapshotOrCanvas() {
       if (BS && typeof BS.requestSnapshot === 'function' && BS.hasHost()) {
         BS.requestSnapshot({ width: 960, height: 540 })
           .then((dataUrl) => {
