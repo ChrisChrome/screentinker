@@ -112,9 +112,22 @@ function emit(event, data) {
   if (cbs) cbs.forEach(cb => cb(data));
 }
 
-export function requestScreenshot(deviceId) {
+// Optional callback receives the server-side ack: { delivered, reason, capability }.
+// reason is 'offline' (no live connection) or 'unsupported' (this player type can't
+// take screenshots). Callers without a callback keep firing-and-forgetting — the
+// dashboard grid and the device-detail 5s poll stay silent; only the explicit
+// Screenshot button asks for the verdict.
+export function requestScreenshot(deviceId, callback) {
   console.log('requestScreenshot:', deviceId, 'socket connected:', dashboardSocket?.connected);
-  if (dashboardSocket) dashboardSocket.emit('dashboard:request-screenshot', { device_id: deviceId });
+  if (!dashboardSocket) return;
+  if (typeof callback === 'function') {
+    dashboardSocket.timeout(5000).emit('dashboard:request-screenshot', { device_id: deviceId }, (err, ack) => {
+      if (err) callback({ delivered: false, reason: 'no_ack' });
+      else callback(ack || { delivered: false, reason: 'no_ack' });
+    });
+  } else {
+    dashboardSocket.emit('dashboard:request-screenshot', { device_id: deviceId });
+  }
 }
 
 export function startRemote(deviceId) {
