@@ -33,6 +33,11 @@ let shellHandler = null;
 let diagPollTimer = null; // polls a diag-smoothness widget's reported frame stats while the page is open
 let screenshotInterval = null;
 let remoteActive = false;
+// Mirrors the Debug-logging checkbox so cleanup() can switch the device's stream back off.
+// Without this, leaving the screen left the panel streaming into nothing: the device kept
+// emitting, the dashboard kept relaying, and nobody was listening. The player carries its own
+// auto-off as the backstop for the case this can't cover -- a tab that is killed, not closed.
+let debugStreamOn = false;
 
 // Belt for the orphaned-stream fix: if the tab is hidden/closed/backgrounded while a Remote session
 // is live, stop it (the server also auto-stops on socket drop, but bfcache keeps the socket alive).
@@ -189,6 +194,12 @@ export function render(container, deviceId) {
     const line = document.createElement('div');
     const time = new Date(data.ts || Date.now()).toLocaleTimeString();
     line.textContent = `${time} [${data.tag || ''}] ${data.message || ''}`;
+    // Every player sends a level and the panel used to render all four identically, so the one
+    // line that explains the fault sat in a wall of grey. Errors and warnings are why the
+    // operator opened this.
+    const LEVEL_COLOR = { e: '#f87171', w: '#fbbf24', d: '#64748b' };
+    const tone = LEVEL_COLOR[(data.level || '').toLowerCase()];
+    if (tone) line.style.color = tone;
     panel.appendChild(line);
     while (panel.childElementCount > 500) panel.removeChild(panel.firstChild);
     panel.scrollTop = panel.scrollHeight;
@@ -1150,6 +1161,7 @@ function setupActions(device) {
     const enabled = e.target.checked;
     const panel = document.getElementById('debugLogPanel');
     if (panel) panel.style.display = enabled ? 'block' : 'none';
+    debugStreamOn = enabled;
     sendCommand(device.id, 'set_debug', { enabled });
   });
 
@@ -2171,6 +2183,10 @@ export function cleanup() {
   if (shellHandler) off('shell-result', shellHandler);   // #161 owner-tools listener
   if (screenshotInterval) clearInterval(screenshotInterval);
   if (remoteActive && currentDevice) stopRemote(currentDevice.id);
+  // Same reasoning as stopRemote above: an operator who navigates away has stopped watching, so
+  // the display should stop talking. Must run BEFORE currentDevice is cleared.
+  if (debugStreamOn && currentDevice) sendCommand(currentDevice.id, 'set_debug', { enabled: false });
+  debugStreamOn = false;
   remoteActive = false;
   currentDevice = null;
   window._sendKey = null;

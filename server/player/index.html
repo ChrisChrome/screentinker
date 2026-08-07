@@ -24,6 +24,12 @@
         try { return Date.now(); } catch (e) { return new Date().getTime(); }
       }
 
+      // Live subscribers (the player's set_debug sink). Kept HERE rather than in the player
+      // script so entries recorded during boot -- before the player has even parsed -- reach a
+      // subscriber that registers later, via the backlog in window.__debugLog.
+      var subs = [];
+      var notifying = false;
+
       function pushLog(entry) {
         try {
           entry.t = nowMs();
@@ -32,8 +38,22 @@
             window.__debugLog.splice(0, window.__debugLog.length - MAX_LOG);
           }
         } catch (e) { /* we are the safety net; do not crash */ }
+        // Reentrancy guard, and it is not theoretical: this runs inside the console wrapper
+        // below, so a subscriber that logs anything at all -- directly, or through a library --
+        // would call back in here and recurse until the stack gave out. The player would die of
+        // its own diagnostics.
+        if (notifying) return;
+        notifying = true;
+        try {
+          for (var s = 0; s < subs.length; s++) {
+            try { subs[s](entry); } catch (e) { /* one bad subscriber must not eat the rest */ }
+          }
+        } finally { notifying = false; }
       }
       window.__debugLog_push = pushLog; // shared pusher for debug-overlay.js
+      window.__debugLog_subscribe = function (fn) {
+        try { if (typeof fn === 'function') subs.push(fn); } catch (e) {}
+      };
 
       pushLog({
         type: 'init',
@@ -542,7 +562,12 @@
         if (!BS || typeof BS.onHostLog !== 'function') return;
         BS.onHostLog((line) => {
           try {
-            if (socket?.connected && config.deviceId) {
+            // While the live stream is ON the console.log below already reaches the dashboard
+            // through the debug sink, so emitting here too would show every host line twice.
+            // Host lines still go out unconditionally when it is OFF: the boot story is the one
+            // diagnostic nobody can ask for in advance, because it is over before the operator
+            // has a device to open.
+            if (!remoteDebug && socket?.connected && config.deviceId) {
               socket.emit('device:log', {
                 device_id: config.deviceId,
                 tag: line.tag, level: line.level, message: line.message
@@ -553,6 +578,171 @@
         });
         BS.onHostEvent((ev) => emitDeviceEvent(ev.event, ev.reason, ev.detail));
       } catch (e) { /* a bridge that throws here must not stop the player starting */ }
+    }
+
+    /* ==================== Live remote debug (`set_debug`) ====================
+     *
+     * The dashboard's per-device "Debug logging" checkbox sends a `set_debug` command and opens a
+     * live panel. The Android player has honoured it for a long time -- DebugLog.* mirrors its
+     * tagged lines to the dashboard while the box is ticked. The WEB player never implemented the
+     * command at all, so the panel opened, streamed nothing, and read as a display with nothing to
+     * say. In a browser that barely mattered: press F12. On a BrightSign it is the whole story --
+     * there is no console, no adb, no logcat, and this panel is the only way to watch what the
+     * player thinks it is doing.
+     *
+     * Rather than hand-instrument eighty-odd call sites to match Android's tag-by-tag, this streams
+     * the ring buffer the error trap at the top of <head> has always filled: every console.log/
+     * warn/error, every uncaught error with file:line and stack, every unhandled rejection, every
+     * failed resource load, plus the host's own boot report on BrightSign. Turning the stream on
+     * also FLUSHES that backlog, so the operator sees the failure that happened BEFORE they opened
+     * the screen -- which is the case they actually came to investigate, and which tailing a log
+     * cannot give them.
+     */
+    let remoteDebug = false;              // is the stream on right now
+    let debugSubscribed = false;          // ring-buffer subscription is permanent once made
+    let debugAutoOffTimer = null;
+    let debugWindowAt = 0, debugWindowCount = 0, debugSuppressed = 0;
+
+    // Fed by console.*, so the ceiling has to assume the worst: a video that fails to decode and is
+    // retried every frame turns a diagnostic aid into a flood down the same socket as playback.
+    const DEBUG_MAX_LINES_PER_SEC = 40;
+    // Ticking the box and walking away must not leave a panel streaming for the rest of the week.
+    // The dashboard turns it off on teardown, but a closed laptop or a killed tab never sends that,
+    // and the device is the only party in a position to be sure.
+    const DEBUG_AUTO_OFF_MS = 30 * 60 * 1000;
+
+    function debugSend(tag, level, message) {
+      if (!socket?.connected || !config.deviceId) return;
+      try {
+        socket.emit('device:log', {
+          device_id: config.deviceId,
+          tag: String(tag || 'player').slice(0, 64),
+          level: String(level || 'i').slice(0, 8),
+          message: String(message == null ? '' : message).slice(0, 2000),
+        });
+      } catch (e) { /* a diagnostic that throws is worse than one that is missing */ }
+    }
+
+    /*
+     * One live line, rate-limited. Over the cap the lines are COUNTED, not queued -- an operator
+     * needs to know output was dropped far more than they need the four hundredth copy of one
+     * message, and a queue would go on replaying the flood after it stopped.
+     */
+    function debugEmitLine(tag, level, message) {
+      if (!remoteDebug) return;
+      const now = Date.now();
+      if (now - debugWindowAt >= 1000) {
+        debugWindowAt = now;
+        const dropped = debugSuppressed;
+        debugWindowCount = 0;
+        debugSuppressed = 0;
+        if (dropped > 0) {
+          debugWindowCount++;
+          debugSend('debug', 'w', `${dropped} line(s) suppressed — rate limit`);
+        }
+      }
+      if (debugWindowCount >= DEBUG_MAX_LINES_PER_SEC) { debugSuppressed++; return; }
+      debugWindowCount++;
+      debugSend(tag, level, message);
+    }
+
+    // The player already prefixes most of its console lines with [wall], [bs], [group-sync] and so
+    // on -- the same shape Android's tags have -- so lift that into the tag column and the panel
+    // reads the same on both platforms instead of being one long undifferentiated column.
+    const DEBUG_TAG_RE = /^\s*\[([a-zA-Z0-9/_.-]{1,24})\]\s*/;
+    function debugTagFor(entry) {
+      if (entry.tag) return String(entry.tag);
+      const m = DEBUG_TAG_RE.exec(entry.message || '');
+      if (m) return m[1];
+      if (entry.type === 'error' || entry.type === 'rejection') return 'error';
+      if (entry.type === 'timing' || entry.type === 'init') return entry.type;
+      return 'player';
+    }
+
+    function debugLevelFor(entry) {
+      if (entry.level) return entry.level;
+      if (entry.type === 'console.error' || entry.type === 'error' || entry.type === 'rejection') return 'e';
+      if (entry.type === 'console.warn') return 'w';
+      return 'i';
+    }
+
+    // The non-console entry types carry structured fields rather than a message, and they are the
+    // valuable ones -- an uncaught error is worth nothing without its file, line and stack.
+    function debugMessageFor(entry) {
+      let msg = entry.message || '';
+      if (entry.type === 'init') {
+        msg = `page ${entry.url || '?'} — screen ${entry.sw || '?'}x${entry.sh || '?'} — ${entry.ua || ''}`;
+      } else if (entry.type === 'timing') {
+        msg = `${entry.event} +${entry.sinceInit}ms`;
+      } else if (entry.type === 'error' || entry.type === 'rejection') {
+        if (entry.source) msg += ` @${entry.source}:${entry.line || 0}:${entry.col || 0}`;
+        if (entry.stack) msg += ` | ${String(entry.stack).replace(/\s+/g, ' ').slice(0, 400)}`;
+      } else if (!msg) {
+        msg = entry.type || '';
+      }
+      return msg.replace(DEBUG_TAG_RE, '');   // already lifted into the tag column
+    }
+
+    function debugSink(entry) {
+      if (!remoteDebug || !entry || entry.__stSent) return;
+      entry.__stSent = true;
+      debugEmitLine(debugTagFor(entry), debugLevelFor(entry), debugMessageFor(entry));
+    }
+
+    // What the operator needs before the first line means anything: which player this is, how big
+    // the screen really is, and -- on BrightSign -- that they are talking to the host at all.
+    function debugPlatformLine() {
+      const bits = [];
+      try { bits.push(`screen ${screen.width}x${screen.height}@${window.devicePixelRatio || 1}x`); } catch (e) {}
+      try { if (BS && BS.isBrightSign && BS.isBrightSign()) bits.push('BrightSign'); } catch (e) {}
+      try { bits.push(navigator.userAgent); } catch (e) {}
+      return bits.join(' — ');
+    }
+
+    /*
+     * Replay what is already in the buffer. Deliberately bypasses the per-second cap: it is a
+     * one-shot burst bounded by the ring buffer itself (200 entries), and throttling it would drop
+     * exactly the history the operator turned the stream on to read.
+     */
+    function debugFlushBacklog() {
+      let buf = [];
+      try { buf = (window.__debugLog || []).filter((e) => e && !e.__stSent); } catch (e) { return; }
+      debugSend('debug', 'i', `--- replaying ${buf.length} buffered line(s) from before the stream opened ---`);
+      const now = Date.now();
+      for (const entry of buf) {
+        entry.__stSent = true;
+        // The dashboard timestamps each line on arrival, so a replayed line would claim to have
+        // happened just now. Carry the real age in the text instead of quietly lying about when
+        // the crash was.
+        const age = entry.t ? `(-${((now - entry.t) / 1000).toFixed(1)}s) ` : '';
+        debugSend(debugTagFor(entry), debugLevelFor(entry), age + debugMessageFor(entry));
+      }
+      debugSend('debug', 'i', '--- end of backlog, now live ---');
+    }
+
+    function setRemoteDebug(on) {
+      if (debugAutoOffTimer) { clearTimeout(debugAutoOffTimer); debugAutoOffTimer = null; }
+      if (!on) {
+        if (remoteDebug) debugEmitLine('debug', 'i', 'Remote debug logging OFF');
+        remoteDebug = false;
+        return;
+      }
+      const wasOn = remoteDebug;
+      remoteDebug = true;
+      debugWindowAt = 0; debugWindowCount = 0; debugSuppressed = 0;
+      if (!debugSubscribed) {
+        debugSubscribed = true;
+        try { window.__debugLog_subscribe?.(debugSink); } catch (e) {}
+      }
+      if (!wasOn) {
+        debugSend('debug', 'i', `Remote debug logging ON — ${debugPlatformLine()}`);
+        debugFlushBacklog();
+      }
+      debugAutoOffTimer = setTimeout(() => {
+        debugAutoOffTimer = null;
+        debugEmitLine('debug', 'w', `Remote debug logging auto-disabled after ${Math.round(DEBUG_AUTO_OFF_MS / 60000)} min`);
+        remoteDebug = false;
+      }, DEBUG_AUTO_OFF_MS);
     }
 
     function emitDeviceEvent(type, reason, detail) {
@@ -1705,6 +1895,10 @@
           if (v === null) console.warn('[volume] set_volume with no usable level/value:', JSON.stringify(data));
           else setMediaVolume(v);
         }
+        // The dashboard's "Debug logging" checkbox. Accepts the flag at either depth: the command
+        // relay wraps it in `payload`, but the queued-command replay path and the public API have
+        // both been seen to deliver it flat.
+        if (data.type === 'set_debug') setRemoteDebug(!!(data.payload?.enabled ?? data.enabled));
       });
 
       // #129: real-time mute. Apply immediately if the toggled item is the one playing now;
