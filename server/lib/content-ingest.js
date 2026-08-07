@@ -60,10 +60,23 @@ async function deriveMediaMetadata(sourcePath, filepath, mime) {
       thumbnailPath = thumbName;
     } else if (mime.startsWith('video/')) {
       try {
-        const { execFileSync } = require('child_process');
-        const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', sourcePath],
+        // execFile, NOT execFileSync. These two spawns each carry a 15s timeout, and run
+        // synchronously they block the event loop for their whole duration — nothing else on
+        // the server runs, including heartbeats and socket traffic. That was survivable while
+        // the only caller was a human-initiated upload; it stopped being survivable the moment
+        // a boot-time sweep started walking a whole library of them unattended, which is the
+        // #240 failure mode exactly (blocked loop -> missed heartbeats -> panels marked
+        // offline -> reconnect churn) arriving from our own maintenance.
+        //
+        // deriveMediaMetadata is already async and both callers already await it, so awaiting
+        // the subprocess instead of blocking on it is invisible to them.
+        const { execFile } = require('child_process');
+        const { promisify } = require('util');
+        const execFileAsync = promisify(execFile);
+        const { stdout: probe } = await execFileAsync('ffprobe',
+          ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', sourcePath],
           { timeout: 15000 }
-        ).toString();
+        );
         const info = JSON.parse(probe);
         if (info.format?.duration) durationSec = parseFloat(info.format.duration);
         const videoStream = info.streams?.find(s => s.codec_type === 'video');
@@ -72,11 +85,15 @@ async function deriveMediaMetadata(sourcePath, filepath, mime) {
           // (ffmpeg auto-rotates the thumbnail below by default, so only the dims need fixing.)
           ({ width, height } = videoDisplayDims(videoStream));
         }
-        thumbnailPath = `thumb_${filepath.replace(/\.[^.]+$/, '.jpg')}`;
+        // Same phantom-path discipline as the image branch above: name it only once the
+        // file exists, so a failed encode cannot leave the row claiming a thumbnail.
+        const thumbName = `thumb_${filepath.replace(/\.[^.]+$/, '.jpg')}`;
         try {
-          execFileSync('ffmpeg', ['-y', '-i', sourcePath, '-ss', '2', '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbnailPath)],
+          await execFileAsync('ffmpeg',
+            ['-y', '-i', sourcePath, '-ss', '2', '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbName)],
             { timeout: 15000 }
           );
+          thumbnailPath = thumbName;
         } catch { thumbnailPath = null; }
       } catch (e) {
         console.warn('ffprobe failed:', e.message);
