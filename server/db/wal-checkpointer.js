@@ -121,7 +121,17 @@ function startWalCheckpointer(db, dbPath) {
   try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) { /* best-effort */ }
 
   worker = spawnWorker();
-  console.log(`[wal-checkpoint] off-thread checkpointer started (every ${config.walCheckpointIntervalMs}ms; escalate >${config.walCheckpointHighWaterMB}MB or ${config.walCheckpointStarvationRuns} growing runs; respawn max ${config.walCheckpointRespawnMax}/${config.walCheckpointRespawnWindowMs}ms)`);
+  // #240: this line is where an operator learns the escalation policy, so it must state ALL of
+  // it. It advertised only "3 growing runs" after the size floor and the cooldown were added,
+  // which is the half that no longer holds on its own — and reading it during an incident would
+  // send you looking for a checkpoint that the gates had in fact suppressed.
+  console.log(
+    `[wal-checkpoint] off-thread checkpointer started (PASSIVE every ${config.walCheckpointIntervalMs}ms; ` +
+    `blocking TRUNCATE when the WAL exceeds ${config.walCheckpointHighWaterMB}MB, ` +
+    `or after ${config.walCheckpointStarvationRuns} growing runs but only at >=${config.walCheckpointStarvationFloorMB}MB ` +
+    `and at most once per ${Math.round(config.walCheckpointEscalateCooldownMs / 1000)}s; ` +
+    `respawn max ${config.walCheckpointRespawnMax}/${config.walCheckpointRespawnWindowMs}ms)`
+  );
   return worker;
 }
 

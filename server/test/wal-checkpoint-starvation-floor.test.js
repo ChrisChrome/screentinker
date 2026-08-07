@@ -108,6 +108,28 @@ test('#240: the worker actually applies the floor it is handed', () => {
 // Measured, not assumed: with a single reader mid-transaction, TRUNCATE returns busy=1
 // after sitting on its 5s busy timeout and reclaims nothing (probe: WAL 8.8MB -> 8.8MB,
 // worst main-thread write 4,936ms). That outcome must not be logged as a success.
+// The startup line is where an operator learns the policy. It went stale the moment the gates were
+// added — it still promised "3 growing runs" with no mention of the floor or the cooldown, so it
+// described a checkpointer that no longer existed. A log line that states a rule has to state the
+// whole rule, and nothing but a test keeps the two in step.
+test('#240: the startup line states the WHOLE escalation policy', () => {
+  const ctl = fs.readFileSync(path.join(__dirname, '..', 'db', 'wal-checkpointer.js'), 'utf8');
+  // Anchor forward from the message text, not back to `return worker;` — the idempotence guard at
+  // the top of startWalCheckpointer() returns first, so slicing to it yields nothing at all.
+  const start = ctl.indexOf('off-thread checkpointer started');
+  assert.ok(start > 0, 'the startup line is gone entirely');
+  const line = ctl.slice(start, start + 800);
+  for (const knob of [
+    'walCheckpointIntervalMs',
+    'walCheckpointHighWaterMB',
+    'walCheckpointStarvationRuns',
+    'walCheckpointStarvationFloorMB',
+    'walCheckpointEscalateCooldownMs',
+  ]) {
+    assert.ok(line.includes(knob), `the startup line must report ${knob} — an operator reads it as the policy`);
+  }
+});
+
 test('#240: a TRUNCATE that reclaimed nothing says so', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'db', 'wal-checkpointer-worker.js'), 'utf8');
   assert.match(src, /busy === 1/, 'worker must inspect the checkpoint result');
