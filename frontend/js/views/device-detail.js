@@ -1084,10 +1084,16 @@ function setupActions(device) {
 
   document.getElementById('devicePreviewBtn')?.addEventListener('click', () => showDevicePreview(device));
 
-  // Screenshot button
+  // Screenshot button — pass a callback so the server's verdict surfaces as a toast
+  // instead of the request silently going nowhere (offline device, or a player type
+  // that can't capture at all, e.g. BrightSign).
   document.getElementById('screenshotBtn')?.addEventListener('click', () => {
-    requestScreenshot(device.id);
-    showToast(t('device.toast.screenshot_requested'), 'info');
+    requestScreenshot(device.id, (ack) => {
+      if (ack?.delivered) showToast(t('device.toast.screenshot_requested'), 'info');
+      else if (ack?.reason === 'unsupported') showToast(t('device.toast.screenshot_unsupported'), 'warning');
+      else if (ack?.reason === 'offline') showToast(t('device.toast.screenshot_offline'), 'warning');
+      else showToast(t('device.toast.screenshot_failed'), 'error');
+    });
   });
 
   // Rename

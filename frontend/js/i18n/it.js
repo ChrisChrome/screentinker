@@ -371,6 +371,9 @@ export default {
   'device.assign.kiosk_widget_name': 'Chiosco: {name}',
   // Toasts
   'device.toast.screenshot_requested': 'Richiesta screenshot inviata',
+  'device.toast.screenshot_unsupported': 'Il player di questo schermo non supporta gli screenshot',
+  'device.toast.screenshot_offline': 'Lo schermo è offline — screenshot non richiesto',
+  'device.toast.screenshot_failed': 'Richiesta screenshot non riuscita — nessuna risposta dal server',
   'device.toast.renamed': 'Schermo rinominato',
   'device.toast.removing': 'Rimozione in corso...',
   'device.toast.removed': 'Schermo rimosso',
