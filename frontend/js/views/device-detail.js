@@ -350,6 +350,57 @@ async function loadDevice(deviceId, activeTab = null) {
       <!-- Info Tab -->
       <div class="tab-content" id="tab-info">
         ${diagWidget ? renderDiagPanel(diagWidget) : ''}
+
+        <!-- The actions an operator opens this page to take. They used to sit below the info
+             grid, the reboot schedule and the debug log panel, which on a phone meant scrolling
+             past everything to reach the one button you came for. Kept as a single wrapping row
+             so a narrow screen reflows rather than clipping, and each button still renders only
+             where the display can honour it. -->
+        <div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap">
+          ${can('system.reboot') ? `
+          <button class="btn btn-secondary btn-sm" id="rebootBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+            ${t('device.ctl.reboot_device')}
+          </button>` : ''}
+          ${can('display.power') ? `
+          <button class="btn btn-secondary btn-sm" id="screenOffBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+            ${t('device.ctl.screen_off')}
+          </button>` : ''}
+          ${can('display.power') ? `
+          <button class="btn btn-secondary btn-sm" id="screenOnBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+            ${t('device.ctl.screen_on')}
+          </button>` : ''}
+          ${can('system.restart_player') ? `
+          <button class="btn btn-secondary btn-sm" id="launchAppBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            ${t('device.ctl.launch_player')}
+          </button>` : ''}
+          ${can('system.self_update') ? `
+          <button class="btn btn-secondary btn-sm" id="forceUpdateBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            ${t('device.ctl.force_update')}
+          </button>` : ''}
+          ${can('system.reboot') ? `
+          <button class="btn btn-danger btn-sm" id="shutdownBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
+            </svg>
+            ${t('device.ctl.shutdown')}
+          </button>` : ''}
+        </div>
+
         <div class="info-grid">
           <div class="info-card">
             <div class="info-card-label">${t('device.info.status')}</div>
@@ -576,50 +627,6 @@ async function loadDevice(deviceId, activeTab = null) {
           <div id="debugLogPanel" style="display:none;margin-top:8px;background:#0b0f1a;border:1px solid var(--border);border-radius:6px;padding:8px;height:220px;overflow-y:auto;font-family:monospace;font-size:11px;line-height:1.45;color:#cbd5e1"></div>
         </div>
 
-        <div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap">
-          ${can('system.reboot') ? `
-          <button class="btn btn-secondary btn-sm" id="rebootBtn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-            ${t('device.ctl.reboot_device')}
-          </button>` : ''}
-          ${can('display.power') ? `
-          <button class="btn btn-secondary btn-sm" id="screenOffBtn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-            </svg>
-            ${t('device.ctl.screen_off')}
-          </button>` : ''}
-          ${can('display.power') ? `
-          <button class="btn btn-secondary btn-sm" id="screenOnBtn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-            </svg>
-            ${t('device.ctl.screen_on')}
-          </button>` : ''}
-          ${can('system.restart_player') ? `
-          <button class="btn btn-secondary btn-sm" id="launchAppBtn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polygon points="5 3 19 12 5 21 5 3"/>
-            </svg>
-            ${t('device.ctl.launch_player')}
-          </button>` : ''}
-          ${can('system.self_update') ? `
-          <button class="btn btn-secondary btn-sm" id="forceUpdateBtn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            ${t('device.ctl.force_update')}
-          </button>` : ''}
-          ${can('system.reboot') ? `
-          <button class="btn btn-danger btn-sm" id="shutdownBtn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
-            </svg>
-            ${t('device.ctl.shutdown')}
-          </button>` : ''}
-        </div>
 
         <!-- #109: PiP overlay tester. Pushes device:pip-show/clear via POST /api/pip
              (real triggers are external via the API token; this is for testing). -->
