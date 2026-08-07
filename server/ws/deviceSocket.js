@@ -532,6 +532,37 @@ function persistIdentity(deviceId, data) {
   } catch (e) { /* identity capture must never break registration */ }
 }
 
+/*
+ * One ingest for a screenshot, whatever carried it.
+ *
+ * The socket path is how every self-capturing player delivers. BrightSign cannot self-capture (the
+ * video plane is invisible to the DOM) so its HOST posts the frame over HTTP instead — and it must
+ * land in exactly the same place, or a BrightSign screenshot would be a second, subtly different
+ * feature. Returns false only when the sockets are not up yet.
+ */
+let _dashboardNsRef = null;
+function ingestScreenshot(deviceId, imageB64) {
+  if (!deviceId || !imageB64) return false;
+  // Same cap as the socket path enforced: max 2MB base64 (~1.5MB image).
+  if (imageB64.length > 2 * 1024 * 1024) return false;
+  if (!_dashboardNsRef) return false;
+
+  if (!lastScreenshots) lastScreenshots = {};
+  lastScreenshots[deviceId] = imageB64;
+
+  try {
+    emitToDeviceWorkspace(_dashboardNsRef, deviceId, 'dashboard:screenshot-ready', {
+      device_id: deviceId,
+      image_data: `data:image/jpeg;base64,${imageB64}`,
+      timestamp: Date.now(),
+    });
+  } catch (err) {
+    console.error('Screenshot relay error:', err);
+  }
+  return true;
+}
+
+
 module.exports = function setupDeviceSocket(io) {
   // Expose helpers for use by route handlers
   module.exports.lastScreenshots = lastScreenshots;
@@ -539,6 +570,7 @@ module.exports = function setupDeviceSocket(io) {
   module.exports.assemblePayload = assemblePayload;
   module.exports.generateDeviceToken = generateDeviceToken;
   const deviceNs = io.of('/device');
+  _dashboardNsRef = io.of('/dashboard');   // so ingestScreenshot() can relay from an HTTP route too
   const dashboardNs = io.of('/dashboard');
 
   // Disconnect any existing socket that is currently registered for this device_id.
@@ -1218,23 +1250,7 @@ module.exports = function setupDeviceSocket(io) {
       if (!requireDeviceAuth()) return;
       const { device_id, image_b64 } = data;
       if (!device_id || device_id !== currentDeviceId || !image_b64) return;
-      // Validate screenshot size (max 2MB base64 ≈ 1.5MB image)
-      if (image_b64.length > 2 * 1024 * 1024) return;
-
-      // Store latest screenshot in memory (for Now Playing preview and offline snapshot)
-      if (!lastScreenshots) lastScreenshots = {};
-      lastScreenshots[device_id] = image_b64;
-
-      // Relay directly to dashboard - no disk write
-      try {
-        emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:screenshot-ready', {
-          device_id,
-          image_data: `data:image/jpeg;base64,${image_b64}`,
-          timestamp: Date.now()
-        });
-      } catch (err) {
-        console.error('Screenshot save error:', err);
-      }
+      ingestScreenshot(device_id, image_b64);
     });
 
     // #161 device-owner tooling: relay a remote-shell result back to the operator's dashboard.
@@ -1633,6 +1649,10 @@ module.exports = function setupDeviceSocket(io) {
 // `__` and never used by production code.
 // Test-only, same convention as the handles below: the COALESCE semantics are the whole point of
 // this function and are not reachable through a socket handshake in a unit test.
+// Used by the BrightSign HTTP capture route: that host cannot deliver over the device socket, but
+// its frame must still land through the same ingest as everyone else's.
+module.exports.ingestScreenshot = ingestScreenshot;
+module.exports.validateDeviceToken = validateDeviceToken;
 module.exports.__applyHardwareIdentity = applyHardwareIdentity;
 module.exports.__hasPendingOffline = (deviceId) => pendingOfflines.has(deviceId);
 module.exports.__pendingOfflineCount = () => pendingOfflines.size;
