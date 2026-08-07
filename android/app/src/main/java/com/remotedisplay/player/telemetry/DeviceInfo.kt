@@ -35,6 +35,10 @@ class DeviceInfo(private val context: Context) {
             // ISP's address as their screen's IP. Needs no permission — read straight off the
             // interfaces, so it works on Ethernet panels too, not just Wi-Fi.
             put("local_ip", getLocalIp() ?: JSONObject.NULL)
+            // Both stacks, not one: getLocalIp() filters to Inet4Address, so a v6-only panel
+            // reported NOTHING and the dashboard showed a dash for a screen that had a perfectly
+            // good address. A dual-stack panel now shows both.
+            put("local_ip6", getLocalIp6() ?: JSONObject.NULL)
             put("wifi_rssi", getWifiRSSI())
             put("uptime_seconds", getUptimeSeconds())
             // #74/#75: OS timezone + UTC clock (effective-tz resolution + dashboard skew indicator)
@@ -216,6 +220,41 @@ class DeviceInfo(private val context: Context) {
             while (addrs.hasMoreElements()) {
                 val addr = addrs.nextElement()
                 if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) { found = addr.hostAddress; break }
+            }
+        }
+        found
+    } catch (e: Throwable) { null }
+
+    /**
+     * The panel's own IPv6 address, reported alongside the v4 one rather than instead of it —
+     * a dual-stack screen has both and an operator may need either.
+     *
+     * Deliberately NOT link-local (fe80::/10). Every interface has one, they are the addresses
+     * most likely to be enumerated first, and none of them can be dialled without also knowing
+     * the zone index — so putting one in the dashboard would fill the field with a string that
+     * cannot be pasted anywhere useful and hide the address that can. A global or unique-local
+     * address is the one someone reaching the panel on site actually needs.
+     *
+     * The scope check also drops multicast and the unspecified address; what survives is a
+     * routable unicast address. `hostAddress` can carry a %iface suffix on some builds, so it is
+     * trimmed — the field is for humans and for pasting into a browser.
+     */
+    private fun getLocalIp6(): String? = try {
+        var found: String? = null
+        val ifaces = java.net.NetworkInterface.getNetworkInterfaces()
+        while (ifaces != null && ifaces.hasMoreElements() && found == null) {
+            val iface = ifaces.nextElement()
+            if (!iface.isUp || iface.isLoopback) continue
+            val addrs = iface.inetAddresses
+            while (addrs.hasMoreElements()) {
+                val addr = addrs.nextElement()
+                if (addr is java.net.Inet6Address &&
+                    !addr.isLoopbackAddress && !addr.isLinkLocalAddress &&
+                    !addr.isAnyLocalAddress && !addr.isMulticastAddress
+                ) {
+                    found = addr.hostAddress?.substringBefore('%')
+                    break
+                }
             }
         }
         found

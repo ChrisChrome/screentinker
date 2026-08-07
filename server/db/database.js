@@ -382,6 +382,12 @@ const migrations = [
   // the PUBLIC address the server sees the connection arrive from — both are useful and they are
   // not the same thing. A customer reading the public IP as "my screen's IP" prompted this.
   "ALTER TABLE device_telemetry ADD COLUMN local_ip TEXT",
+  // ...and its IPv6 one, in its own column rather than sharing the above. The player's collector
+  // filtered to Inet4Address, so a v6-only panel reported no address at all and the dashboard
+  // showed a dash for a screen that had a perfectly reachable address. Separate columns because a
+  // dual-stack panel genuinely has both and an operator may need either — collapsing them would
+  // make the field mean "whichever we happened to enumerate first".
+  "ALTER TABLE device_telemetry ADD COLUMN local_ip6 TEXT",
   // Panel temperature in Celsius. REAL because the sensor reports fractions, and nullable because
   // only some hardware exposes one — Android and the browser players send nothing and must keep
   // reading as "no sensor" rather than "0 degrees", which is why every read site treats null as

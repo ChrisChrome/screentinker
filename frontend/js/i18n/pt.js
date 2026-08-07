@@ -260,6 +260,7 @@ export default {
   'device.info.status': 'Status',
   'device.info.ip_address': 'Endereço IP',
   'device.info.local_ip': 'IP local',
+  'device.info.local_ip6': 'IPv6 local',
   'device.info.wifi_needs_location': 'Requer permissão de localização',
   'device.info.battery': 'Bateria',
   'device.info.storage': 'Armazenamento',
