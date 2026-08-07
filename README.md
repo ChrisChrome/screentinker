@@ -114,6 +114,11 @@ self-update — new versions are installed the same way the first one was.
 - Node.js **20.6+** (the npm scripts use the built-in `--env-file-if-exists` flag, added in 20.6)
 - Linux, macOS, or Windows
 - SQLite (bundled via `better-sqlite3`; no separate install needed — `npm install` handles the native bindings)
+- **ffmpeg** (optional but recommended) — powers video thumbnails and duration extraction
+  (`sudo apt-get install ffmpeg` / `brew install ffmpeg`). Without it, videos upload and
+  play fine but show no thumbnail in the content library. The Docker image includes it.
+  The server logs a `[MEDIA]` line at startup telling you whether it was found, and
+  backfills missing thumbnails automatically once ffmpeg appears after a restart.
 
 ### Quick Start
 
@@ -425,7 +430,8 @@ sudo useradd -r -s /bin/false screentinker
 sudo cp -r . /opt/screentinker
 sudo chown -R screentinker:screentinker /opt/screentinker
 
-# Install dependencies
+# Install dependencies (ffmpeg is for video thumbnails + durations — see Requirements)
+sudo apt-get install -y ffmpeg
 cd /opt/screentinker/server && npm install --production
 
 # Create a systemd service
