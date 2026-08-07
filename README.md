@@ -662,12 +662,55 @@ keytool -genkey -v -keystore android/release-key.jks -keyalg RSA -keysize 2048 -
 2. Go to **Displays** and click **Add Display**
 3. Install the ScreenTinker app on your device:
    - **Android TV / tablets**: Download the APK from your instance (`/download/apk`) or build it from source (see above)
-   - **Raspberry Pi**: `curl -sSL https://your-instance/scripts/raspberry-pi-setup.sh | bash`
+   - **Raspberry Pi**: `curl -sSL https://your-instance/scripts/raspberry-pi-setup.sh | sudo bash` (see [Raspberry Pi notes](#raspberry-pi-notes))
    - **Debian 13 (headless)**: `curl -sSL https://your-instance/scripts/debian-13-setup.sh | sudo bash`
    - **Windows**: Run the setup script from `scripts/windows-setup.bat`
    - **Samsung Tizen TV / signage**: point the TV's URL Launcher (or browser) at `https://your-instance/player` - no signing needed. For an installed native app, see [tizen/README.md](tizen/README.md)
    - **Any browser**: Open `https://your-instance/player` in kiosk/fullscreen mode
 4. Enter the pairing code shown on the device
+
+### Raspberry Pi notes
+
+**Run it with `sudo`.** The script installs packages and writes systemd units, so it refuses to
+run otherwise. Piping is fine — prompts are read from your terminal, not from the pipe:
+
+```bash
+curl -sSL https://your-instance/scripts/raspberry-pi-setup.sh | sudo bash
+```
+
+To pick Player-Only without being asked:
+
+```bash
+curl -sSL https://your-instance/scripts/raspberry-pi-setup.sh | sudo bash -s -- --player-only https://your-server
+```
+
+**Pi 5 / Bookworm runs Wayland by default.** The kiosk launcher detects the session and does the
+right thing on either: `xset`/`unclutter` are X11-only and are skipped on Wayland (where they are
+no-ops that log an error and silently do nothing), Chromium is given `--ozone-platform=wayland`,
+and `--password-store=basic` stops it asking for a keyring password no kiosk has anyone to answer.
+
+Blanking and cursor-hiding belong to the compositor on Wayland. The launcher calls `wlopm` when it
+is present; if your image does not ship it, set the equivalent in your compositor's config
+(`~/.config/wayfire.ini` `[idle]` for wayfire, or the labwc equivalent).
+
+**A white page on every boot but the first** was Chromium restoring a session it believed crashed —
+a kiosk is killed by shutdown and never exits cleanly, so it came back with a restore surface on
+top of the player. The launcher now clears the stored session as well as the clean-exit flag.
+
+#### Read-only root (Overlay FS) on a Pi that loses power
+
+Worth enabling for **Player-Only** installs, where the Pi holds no state you cannot recreate: the
+overlay absorbs writes into RAM, so a power cut cannot corrupt the card and the flash does not wear
+out. Re-run the setup script (or `raspi-config` → Performance → Overlay File System) *after* the
+install, and remember that pairing is stored on the device — re-pair once with the overlay
+disabled, then enable it, or the pairing is lost at every reboot.
+
+**Do not enable it on an All-in-One install without moving the data first.** That Pi *is* the
+server: the SQLite database, uploaded media and the JWT secret live under `/opt/screentinker`, and
+an overlay discards every write at reboot — so content you upload and displays you pair vanish on
+the next power cycle. If you want both, put `DATA_DIR` on a writable partition or an external
+drive that is excluded from the overlay, and confirm the database file is genuinely outside it
+before trusting the setup.
 
 On the Android player, the setup screen lists the permissions it wants and lets you revisit any of
 them later — each row stays visible once granted and turns into **Manage**, so you can check or
