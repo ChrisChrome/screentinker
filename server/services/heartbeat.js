@@ -1,4 +1,4 @@
-const { db, pruneStatusLog } = require('../db/database');
+const { db, pruneStatusLog, pruneTelemetryRetention } = require('../db/database');
 const config = require('../config');
 const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
 const statusLogWriter = require('../lib/status-log-writer');
@@ -173,6 +173,7 @@ async function runMaintenance() {
     await pruneProvisioningDevices();
     await prunePlayLogs();
     await pruneStatusLog({ bandGate: true });   // per-device chunked; own re-entrancy
+    await pruneTelemetryRetention({ bandGate: true });   // #240 device_telemetry age sweep (per-device chunked)
     await pruneDeviceEvents();                   // offline-cause log: incident-feed age retention (chunked)
     await capDeviceEvents();                     // offline-cause log: per-device incident row cap
     await pruneUsageDaily();                     // #146 BILLING rollup retention (chunked)

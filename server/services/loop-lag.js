@@ -29,7 +29,23 @@ const LEVEL = { normal: 0, elevated: 1, critical: 2 };
 let histogram = null;
 let band = 'normal';
 let calmSamples = 0;
-let current = { mean_ms: 0, p50_ms: 0, p99_ms: 0, max_ms: 0, band: 'normal', sampled_at: 0 };
+// #240: `samples` and the tick-gap fields exist to make ONE window's numbers
+// interpretable. An IntervalHistogram window that recorded a single delay reports
+// mean = p50 = p99 = max (the mean is the raw value, the percentiles are the bucket
+// ceiling above it) — indistinguishable, from the numbers alone, from a fixed cost
+// paid on every cycle. It is the opposite: one long loop turn. `samples` is the
+// histogram's record count for the window (~50 at a 20ms resolution when healthy,
+// 1 when a single turn swallowed the whole second), and tick_gap_ms is the
+// WALL-CLOCK gap between consecutive sampler runs — ground truth for whether the
+// loop is actually late, measured independently of the histogram.
+let current = {
+  mean_ms: 0, p50_ms: 0, p99_ms: 0, max_ms: 0, samples: 0,
+  tick_gap_ms: 0, worst_tick_gap_ms: 0, worst_tick_at: 0,
+  band: 'normal', sampled_at: 0,
+};
+let lastSampleAt = 0;       // wall clock of the previous sample() run
+let worstTickGapMs = 0;     // largest gap seen since process start...
+let worstTickAt = 0;        // ...and when (epoch seconds). Survives coarse polling.
 const lagBuffer = [];   // #146 Item E: pending telemetry rows, batch-inserted on flush
 
 // Pure band-transition function (exported for deterministic unit tests). Given the
@@ -65,18 +81,35 @@ const round2 = (x) => Math.round(x * 100) / 100;
 const metric = (x) => (Number.isFinite(x) ? round2(x) : 0);
 
 function sample() {
+  // #240: measure the sampler's OWN lateness first. This interval is armed for
+  // lagSampleIntervalMs, so any excess is loop delay that the histogram cannot
+  // misreport — if the histogram claims seconds of lag while this stays at the
+  // interval, the block did not happen where the histogram says it did.
+  const nowMs = Date.now();
+  const tickGap = lastSampleAt ? nowMs - lastSampleAt : config.lagSampleIntervalMs;
+  lastSampleAt = nowMs;
+  if (tickGap > worstTickGapMs) { worstTickGapMs = tickGap; worstTickAt = Math.floor(nowMs / 1000); }
+
   const p99 = histogram.percentile(99) / NS_PER_MS;
   const snap = {
     mean_ms: metric(histogram.mean / NS_PER_MS),
     p50_ms: metric(histogram.percentile(50) / NS_PER_MS),
     p99_ms: metric(p99),
     max_ms: metric(histogram.max / NS_PER_MS),
+    samples: histogram.count,        // MUST be read before reset()
   };
   histogram.reset();
 
   const prev = band;
   [band, calmSamples] = nextBand(band, snap.p99_ms, calmSamples);
-  current = { ...snap, band, sampled_at: Math.floor(Date.now() / 1000) };
+  current = {
+    ...snap,
+    tick_gap_ms: tickGap,
+    worst_tick_gap_ms: worstTickGapMs,
+    worst_tick_at: worstTickAt,
+    band,
+    sampled_at: Math.floor(nowMs / 1000),
+  };
 
   // #146 Item E: BUFFER the telemetry row (batch-inserted on the flush interval) instead
   // of a synchronous INSERT per sample — under DB contention (a bloated table slowing
@@ -89,7 +122,9 @@ function sample() {
   // COALESCED (one summarized line per flush) so a sustained-critical storm can't turn
   // logging into its own loop hog. Healthy steady state stays quiet.
   if (band !== prev) {
-    console.log(`[loop-lag] band=${band} (was ${prev}) mean=${snap.mean_ms}ms p99=${snap.p99_ms}ms max=${snap.max_ms}ms`);
+    // #240: samples + tick gap ride along on the band line — without them a one-sample
+    // window reads as a permanent per-cycle cost to whoever finds this in the logs.
+    console.log(`[loop-lag] band=${band} (was ${prev}) mean=${snap.mean_ms}ms p99=${snap.p99_ms}ms max=${snap.max_ms}ms samples=${snap.samples} tick_gap=${tickGap}ms`);
   } else if (band !== 'normal') {
     // #146 P3.7: coalesce repeats and carry the PEAK p99 over the window (not a random
     // sample's) — the peak is the number that matters during an incident.

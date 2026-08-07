@@ -10,7 +10,7 @@ const { workerData, parentPort } = require('worker_threads');
 const fs = require('fs');
 const Database = require('better-sqlite3');
 
-const { dbPath, intervalMs, highWaterBytes, starvationRuns } = workerData;
+const { dbPath, intervalMs, highWaterBytes, starvationRuns, starvationFloorBytes, escalateCooldownMs } = workerData;
 
 // Fault injection for TESTS ONLY (env-gated; inert in prod). Exits immediately on start so
 // the controller's respawn / autocheckpoint-fallback path can be exercised deterministically.
@@ -25,7 +25,9 @@ const walFile = dbPath + '-wal';
 function walBytes() { try { return fs.statSync(walFile).size; } catch { return 0; } }
 
 let lastBytes = 0;
-let growthRuns = 0;   // consecutive PASSIVE runs where the WAL failed to shrink
+let growthRuns = 0;        // consecutive PASSIVE runs where the WAL failed to shrink
+let lastTruncateAt = 0;    // #240: when we last blocked for a TRUNCATE (0 = never)
+let coolingReported = false;
 let timer = null;
 
 function tick() {
@@ -36,16 +38,47 @@ function tick() {
     const bytes = walBytes();
 
     // --- STARVATION BOUND (this is where "WAL cannot grow forever" is enforced) ---
-    // Either signal forces a TRUNCATE, which BLOCKS until it has checkpointed everything
-    // and truncated the file to 0. Blocking is fatal on the loop but FINE here on the worker.
+    // Escalating forces a TRUNCATE, which BLOCKS until it has checkpointed everything and
+    // truncated the file to 0. #240: "fine here on the worker" was only ever half true —
+    // the fsync is off the loop, but SQLite's locks are held across CONNECTIONS, so the
+    // main thread's next statement waits it out in the busy handler. Hence the gates below.
     if (bytes > lastBytes) growthRuns++; else growthRuns = 0;
     const overHighWater = bytes > highWaterBytes;
-    const starved = growthRuns >= starvationRuns;
+    // #240: TRUNCATE blocks ACROSS connections — the main thread's next statement waits in
+    // SQLite's busy handler for the whole checkpoint — so the growth signal alone must not
+    // be able to spend it. Two gates, because either on its own leaves the hole open:
+    //   FLOOR: a WAL in the lower half of its budget has little to reclaim; blocking for it
+    //     is pure cost. (Ungated, every morning fleet power-on wave bought a loop stall.)
+    //   COOLDOWN: a WAL that already sits ABOVE the floor would otherwise escalate on every
+    //     burst forever. However long the pressure lasts, we stall the loop at most once
+    //     per window and let PASSIVE do the rest.
+    // overHighWater bypasses both — a runaway WAL is the one case worth blocking for.
+    const sinceLast = Date.now() - lastTruncateAt;
+    const starved = growthRuns >= starvationRuns && bytes >= starvationFloorBytes;
+    const cooling = starved && lastTruncateAt > 0 && sinceLast < escalateCooldownMs;
+
+    if (cooling && !overHighWater) {
+      // Report the transition only — a starved-and-cooling state persists for the whole
+      // window and this check runs every interval; one line, not a log flood.
+      if (!coolingReported) {
+        coolingReported = true;
+        post(`starvation escalation held off (WAL ${(bytes / 1e6).toFixed(1)}MB, last TRUNCATE ${Math.round(sinceLast / 1000)}s ago) — PASSIVE continues`);
+      }
+      lastBytes = bytes;
+      return;
+    }
 
     if (overHighWater || starved) {
-      db.pragma('wal_checkpoint(TRUNCATE)', { simple: false });
+      lastTruncateAt = Date.now();
+      coolingReported = false;
+      const r = db.pragma('wal_checkpoint(TRUNCATE)', { simple: false });
       const after = walBytes();
-      post(`escalated TRUNCATE (${overHighWater ? 'high-water' : 'starvation'}): WAL ${(bytes / 1e6).toFixed(1)}MB -> ${(after / 1e6).toFixed(1)}MB`);
+      // #240: TRUNCATE does NOT throw when it can't get the locks — it returns busy=1 having
+      // sat on SQLite's busy timeout for its full duration. Measured at ~4.9s with a single
+      // reader mid-transaction, reclaiming nothing, while every main-thread statement waited
+      // behind it. Say so plainly: a silent 5-second loss is the worst thing this can do.
+      const busy = Array.isArray(r) && r[0] && r[0].busy === 1;
+      post(`escalated TRUNCATE (${overHighWater ? 'high-water' : 'starvation'}): WAL ${(bytes / 1e6).toFixed(1)}MB -> ${(after / 1e6).toFixed(1)}MB${busy ? ' — BUSY: reclaimed nothing, blocked writers for the busy timeout' : ''}`);
       growthRuns = 0;
       lastBytes = after;
     } else {

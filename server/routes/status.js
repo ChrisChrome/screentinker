@@ -16,6 +16,7 @@ const otaBreaker = require('../lib/ota-breaker');
 const otaDownloadGuard = require('../lib/ota-download-guard');
 const logCoalescer = require('../lib/log-coalescer');
 const { getMaintenanceStats } = require('../db/database');
+const { getCheckpointerState } = require('../db/wal-checkpointer');   // #240
 const heartbeat = require('../services/heartbeat');
 const appSettings = require('../lib/app-settings');
 
@@ -47,6 +48,7 @@ router.get('/', (req, res) => {
       ota_breaker: otaBreaker.stats(),            // rateBackoff{Total,LastWindow}
       ota_download: otaDownloadGuard.stats(),     // inFlight, served/shed ThisWindow + Total
       maintenance: getMaintenanceStats(),         // deleted, ms, at, running, sweepsTotal
+      wal_checkpoint: getCheckpointerState(),     // #240 worker alive?, sticky fallback?, respawns, WAL bytes
       log_coalescer_buffer: logCoalescer._size(),
     };
   }
