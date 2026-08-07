@@ -58,17 +58,51 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# -- Prompting when we are being piped --
+#
+# The documented install is `curl -sL … | sudo bash`, which makes stdin the SCRIPT, not the
+# operator. bash has already consumed it by the time any `read` runs, so every prompt got EOF
+# instantly: the mode menu "chose" All-in-One without the operator touching anything, and the
+# Player-Only branch could never be reached that way at all. It looked like the menu was being
+# skipped, because it was.
+#
+# So prompts read from the controlling terminal instead. When there genuinely is no terminal
+# (cloud-init, a provisioning pipeline), we say so and take the documented default rather than
+# pretending a choice was made — the operator can pass --player-only / --server-url to decide
+# without a prompt.
+if [ -r /dev/tty ] && [ -t 1 ]; then
+    exec 3</dev/tty
+    HAVE_TTY=true
+else
+    HAVE_TTY=false
+fi
+
+# ask <varname> <prompt> [read-args…]
+ask() {
+    local __var="$1"; shift
+    local __prompt="$1"; shift
+    if [ "$HAVE_TTY" = true ]; then
+        read "$@" -u 3 -r -p "$__prompt" "$__var"
+    else
+        eval "$__var=''"
+    fi
+}
+
 # -- Root check --
 if [ "$(id -u)" -ne 0 ]; then
-    err "This script must be run as root. Try: sudo bash raspberry-pi-setup.sh"
+    err "This script must be run as root. Try:  curl -sL https://screentinker.com/scripts/raspberry-pi-setup.sh | sudo bash"
 fi
 
 # -- Architecture check --
 ARCH=$(uname -m)
 if [[ "$ARCH" != "aarch64" && "$ARCH" != "armv7l" ]]; then
     warn "Detected architecture: $ARCH (expected aarch64 or armv7l for Raspberry Pi)"
-    read -p "Continue anyway? (y/N) " -n 1 -r; echo
-    [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+    if [ "$HAVE_TTY" = true ]; then
+        ask REPLY "Continue anyway? (y/N) " -n 1; echo
+        [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+    else
+        err "Refusing to continue on $ARCH without a terminal to confirm at. Re-run interactively, or on the intended hardware."
+    fi
 fi
 
 # -- Interactive mode selection (if no flags passed) --
@@ -86,14 +120,24 @@ if [ "$PLAYER_ONLY" = false ] && [ -z "$SERVER_URL" ]; then
     echo "     Connects to an existing ScreenTinker server."
     echo "     This Pi just displays content."
     echo ""
-    read -p "Choose [1/2]: " MODE_CHOICE
-    case "$MODE_CHOICE" in
-        2)
-            PLAYER_ONLY=true
-            read -p "Server URL (e.g., https://screentinker.com): " SERVER_URL
-            ;;
-        *) ;;
-    esac
+    if [ "$HAVE_TTY" = false ]; then
+        # No terminal to ask at. Say which way we went, rather than letting an empty answer
+        # look like a decision — this is the exact confusion the piped-stdin bug produced.
+        warn "No terminal available for the menu — defaulting to All-in-One."
+        warn "To choose Player-Only non-interactively:  ... | sudo bash -s -- --player-only https://your-server"
+    else
+        ask MODE_CHOICE "Choose [1/2]: "
+        case "$MODE_CHOICE" in
+            2)
+                PLAYER_ONLY=true
+                while [ -z "$SERVER_URL" ]; do
+                    ask SERVER_URL "Server URL (e.g., https://screentinker.com): "
+                    [ -z "$SERVER_URL" ] && warn "Player-Only needs a server URL."
+                done
+                ;;
+            *) ;;
+        esac
+    fi
 fi
 
 # Strip trailing slash from server URL
@@ -268,22 +312,49 @@ KIOSK_URL="${KIOSK_URL}"
 # Wait for display
 sleep 2
 
-# Disable screen blanking and power management
-xset s off
-xset s noblank
-xset -dpms
-xset s 0 0
+# Which display server are we actually on? Pi 5 on Bookworm defaults to WAYLAND, where every
+# X11 tool below is a no-op that prints an error into the journal and silently does nothing —
+# so a Wayland Pi got no blanking suppression and no cursor hiding while appearing configured.
+SESSION_TYPE="\${XDG_SESSION_TYPE:-}"
+if [ -z "\$SESSION_TYPE" ]; then
+    if [ -n "\${WAYLAND_DISPLAY:-}" ]; then SESSION_TYPE=wayland
+    elif [ -n "\${DISPLAY:-}" ]; then SESSION_TYPE=x11
+    fi
+fi
+echo "Display server: \${SESSION_TYPE:-unknown}"
 
-# Hide cursor after 3 seconds of inactivity
-unclutter -idle 3 -root &
+if [ "\$SESSION_TYPE" = "wayland" ]; then
+    # Blanking/DPMS belong to the compositor here, not to us. wlopm is present on Pi OS
+    # (wlroots-based wayfire/labwc); if it is not, the compositor's own idle config is the
+    # documented fallback and README says so.
+    command -v wlopm >/dev/null 2>&1 && wlopm --on '*' 2>/dev/null || true
+    # unclutter is X11-only. Under wayfire the cursor is hidden by the compositor
+    # (hide_cursor / idle plugin), which the installer writes below when wayfire.ini exists.
+else
+    # Disable screen blanking and power management
+    xset s off
+    xset s noblank
+    xset -dpms
+    xset s 0 0
 
-# Clean Chromium crash flags (prevents restore session dialogs)
+    # Hide cursor after 3 seconds of inactivity (X11 only — no Wayland equivalent)
+    unclutter -idle 3 -root &
+fi
+
+# Clean Chromium crash flags (prevents restore session dialogs).
+#
+# The white page on every boot after the first is Chromium restoring a session it thinks
+# crashed: a kiosk is killed by the shutdown, never exits cleanly, and comes back with a
+# restore surface on top of the player — which is why ALT+F4 "fixed" it (it closed the
+# surface, not the player). Rewriting the flags is not enough on its own because Chromium
+# also replays the previous window set from Sessions/, so those go too.
 CDIR="\$HOME/.config/chromium/Default"
 mkdir -p "\$CDIR"
 if [ -f "\$CDIR/Preferences" ]; then
     sed -i 's/"exited_cleanly":false/"exited_cleanly":true/' "\$CDIR/Preferences" 2>/dev/null || true
     sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "\$CDIR/Preferences" 2>/dev/null || true
 fi
+rm -rf "\$CDIR/Sessions" "\$CDIR/Session Storage" 2>/dev/null || true
 
 # Wait for local server if running all-in-one
 if echo "\$KIOSK_URL" | grep -q "localhost"; then
@@ -306,8 +377,15 @@ if [ -z "\$SCREEN_W" ] || [ -z "\$SCREEN_H" ]; then
     SCREEN_H=1080
 fi
 
+# Wayland needs the ozone backend named explicitly on some Bookworm builds; on X11 the flag
+# is absent so nothing changes there.
+OZONE=""
+[ "\$SESSION_TYPE" = "wayland" ] && OZONE="--ozone-platform=wayland"
+
 exec ${CHROMIUM_BIN} \\
     --kiosk \\
+    \$OZONE \\
+    --password-store=basic \\
     --window-position=0,0 \\
     --window-size=\${SCREEN_W},\${SCREEN_H} \\
     --noerrdialogs \\
@@ -580,11 +658,11 @@ fi
 # ============================================================
 cat > /etc/motd << 'MOTDEOF'
 
-  ____                        _____          _
- / ___|  ___ _ __ ___  ___  |_   _|_ _ __ | | _____ _ __
- \___ \ / __| '__/ _ \/ _ \   | || | '_ \| |/ / _ \ '__|
-  ___) | (__| | |  __/  __/   | || | | | |   <  __/ |
- |____/ \___|_|  \___|\___|   |_||_|_| |_|_|\_\___|_|
+ ____                                  _____  _         _
+/ ___|   ___  _ __   ___   ___  _ __  |_   _|(_) _ __  | | __  ___  _ __
+\___ \  / __|| '__| / _ \ / _ \| '_ \   | |  | || '_ \ | |/ / / _ \| '__|
+ ___) || (__ | |   |  __/|  __/| | | |  | |  | || | | ||   < |  __/| |
+|____/  \___||_|    \___| \___||_| |_|  |_|  |_||_| |_||_|\_\ \___||_|
 
  Open-Source Digital Signage for Any Screen
 
