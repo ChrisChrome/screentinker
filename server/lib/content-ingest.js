@@ -48,12 +48,16 @@ async function deriveMediaMetadata(sourcePath, filepath, mime) {
       const metadata = await sharp(sourcePath).metadata();
       // #170: honor EXIF orientation so a portrait photo isn't stored as landscape.
       ({ width, height } = imageDisplayDims(metadata));
-      thumbnailPath = `thumb_${filepath}`;
+      // Assign thumbnailPath only AFTER the write succeeds: a sharp failure used to
+      // return the already-assigned name for a file that was never written, storing a
+      // phantom thumbnail_path that the UI then requests forever as a broken image.
+      const thumbName = `thumb_${filepath}`;
       await sharp(sourcePath)
         .rotate() // #170: auto-orient per EXIF (and strip the tag) so the thumbnail matches
         .resize(config.thumbnailWidth)
         .jpeg({ quality: 70 })
-        .toFile(path.join(config.contentDir, thumbnailPath));
+        .toFile(path.join(config.contentDir, thumbName));
+      thumbnailPath = thumbName;
     } else if (mime.startsWith('video/')) {
       try {
         const { execFileSync } = require('child_process');
