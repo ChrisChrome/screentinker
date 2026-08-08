@@ -854,6 +854,51 @@
     // playback muted).
     let userHasInteracted = false;
     let advanceTimer = null;
+
+    /*
+     * Arm the single advance timer. ALWAYS clear the outgoing one first.
+     *
+     * `advanceTimer` is one slot by design — renderContent clears it on every item change — but a
+     * dozen call sites used to write `advanceTimer = setTimeout(...)` directly, and a second write
+     * before the first fired ORPHANED the earlier timer instead of cancelling it: still pending,
+     * no longer referenced, so nothing could stop it. Every one of those fired, and each one
+     * advanced the playlist.
+     */
+    function scheduleAdvance(fn, ms) {
+      if (advanceTimer) clearTimeout(advanceTimer);
+      advanceTimer = setTimeout(fn, ms);
+      return advanceTimer;
+    }
+
+    const MEDIA_ERR_NAME = { 1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED' };
+
+    /*
+     * One broken item, one skip.
+     *
+     * A media element can raise `error` several times over for a single item, and each event used
+     * to schedule its own `nextItem`. On a SINGLE-item playlist that merely re-played the same
+     * clip, which is how this was finally noticed — a BrightSign XT245 logging four errors and
+     * three "Playing:" lines at every loop boundary. On a real playlist the identical storm SKIPS
+     * one item per surplus event, silently, and the operator sees a playlist that drops content.
+     *
+     * The second guard is that a media element still able to play is not a failure. `error` fires
+     * with `el.error` set; an event carrying no MediaError against an element with buffered frames
+     * ahead of it did not fail at anything, and discarding a healthy item on that basis is worse
+     * than the event we are reacting to. Anything genuinely unplayable (no MediaError AND nothing
+     * decoded) is still skipped, so a broken clip can never stall the playlist.
+     */
+    function mediaFailureSkip(el, label, src, mayAdvance = true) {
+      const err = el && el.error;
+      if (!err && el && el.readyState >= 3) {
+        console.warn(`[media] ${label} raised error with no MediaError while playable (readyState=${el.readyState}) — ignored: ${src}`);
+        return;
+      }
+      if (el && el.__stFailed) return;                  // however many events it raises, one skip
+      if (el) el.__stFailed = true;
+      const detail = err ? `code=${err.code} ${MEDIA_ERR_NAME[err.code] || '?'}${err.message ? ' ' + err.message : ''}` : 'no MediaError';
+      console.error(`[media] ${label} failed (${detail}) src=${src}`);
+      if (mayAdvance) scheduleAdvance(nextItem, 3000);  // skip the broken item; hold the prior frame
+    }
     // Buffered widget swap (#directory-board black-cycle): build the next widget iframe
     // behind the current content and reveal it only on 'load', so a widget reload never
     // blanks the screen. WIDGET_SWAP_TIMEOUT_MS reveals anyway if 'load' never fires (a
@@ -3275,7 +3320,7 @@
     // schedule-awareness / Fix A preserved).
     function reevaluateHeldWidget() {
       if (nextActiveIndex(currentIndex) === currentIndex) {
-        advanceTimer = setTimeout(reevaluateHeldWidget, WIDGET_SOLO_REFRESH_MS);
+        scheduleAdvance(reevaluateHeldWidget, WIDGET_SOLO_REFRESH_MS);
         return;
       }
       nextItem();
@@ -3335,7 +3380,7 @@
       const c = document.getElementById('playerContainer');
       c.style.display = 'block';
       c.appendChild(img);
-      advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+      scheduleAdvance(nextItem, (item.duration_sec || 10) * 1000);
       preloadNextImage();
     }
     // ---- GL transition (feat/transition-engine). Every failure path hard-cuts — never a blank. ----
@@ -3479,7 +3524,7 @@
       const dwellMs = (item.duration_sec || 10) * 1000;
       const container = document.getElementById('playerContainer');
       runGlWipe(fromImg, toImg, t, dwellMs,
-        () => { advanceTimer = setTimeout(nextItem, dwellMs); },   // onStart: arm the dwell for overlap
+        () => { scheduleAdvance(nextItem, dwellMs); },   // onStart: arm the dwell for overlap
         () => {                                                    // mount: swap in the image, keep the armed timer
           toImg.style.cssText = 'width:100%;height:100%;object-fit:contain';
           container.appendChild(toImg);
@@ -3509,7 +3554,9 @@
       const fail = () => {
         if (done) return; done = true;
         if (watchdog) clearTimeout(watchdog);
-        console.error('Image error'); advanceTimer = setTimeout(nextItem, 3000); // skip broken item; hold prior frame
+        // No element to inspect here: this is the load/watchdog failure path, so nothing decoded.
+        // `fail` is already `done`-guarded, so it runs at most once per render.
+        mediaFailureSkip(null, 'image', src);             // skip broken item; hold prior frame
       };
       // a hung load/decode must never stall the playlist: at 3s use what we have, else skip
       watchdog = setTimeout(() => { if (cached) swap(cached); else fail(); }, 3000);
@@ -3578,7 +3625,7 @@
         video.muted = (!userHasInteracted || !!item.muted); // autoplay policy + per-item mute (#129)
         if (!video.muted) video.volume = 1.0;
         video.onended = () => { if (!video.loop) nextItem(); };
-        video.onerror = (e) => { console.error('Video error:', src, e); advanceTimer = setTimeout(nextItem, 3000); };
+        video.onerror = () => mediaFailureSkip(video, 'video', src);
         video.play().catch(() => { video.muted = true; video.play().catch(() => {}); }); // autoplay-policy fallback
         setTimeout(() => { if (video.paused) { video.muted = true; video.play().catch(() => {}); } }, 2000); // last-resort kick
       };
@@ -3616,7 +3663,7 @@
       video.addEventListener('error', () => {
         if (done) return; done = true;
         if (watchdog) clearTimeout(watchdog);
-        console.error('Video error:', src); advanceTimer = setTimeout(nextItem, 3000); // skip broken clip; hold prior frame
+        mediaFailureSkip(video, 'video(buffered)', src);   // skip broken clip; hold prior frame
       });
       // Watchdog caps the wait so a cold/slow clip hard-cuts (mount+play) instead of the boundary hanging
       // (mirrors renderImageBuffered's watchdog).
@@ -3633,7 +3680,7 @@
       if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
       // Defense in depth: a transition widget is normalized out server-side and must never render as
       // content. If a stale/legacy payload still carries one, skip it instead of mounting a blank iframe.
-      if (item && item.widget_type === 'transition') { advanceTimer = setTimeout(nextItem, 0); return; }
+      if (item && item.widget_type === 'transition') { scheduleAdvance(nextItem, 0); return; }
       // Fullscreen (non-wall) widget: buffered swap — never blank on reload. Runs BEFORE the
       // generic teardown (which would black the screen), and owns its own refresh/advance
       // timer below. Multi-zone widgets go through renderZones; wall+widget keeps the legacy
@@ -3650,8 +3697,8 @@
           // its duration; the first mount + every genuine transition still go through the
           // buffered swap.
           const held = nextActiveIndex(currentIndex) === currentIndex;
-          if (held) advanceTimer = setTimeout(reevaluateHeldWidget, WIDGET_SOLO_REFRESH_MS);
-          else advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          if (held) scheduleAdvance(reevaluateHeldWidget, WIDGET_SOLO_REFRESH_MS);
+          else scheduleAdvance(nextItem, (item.duration_sec || 30) * 1000);
         }
         return;
       }
@@ -3776,10 +3823,7 @@
           // advances the index (and the tick seeks position % duration to stay aligned).
           video.loop = (playlist.length === 1) || !!groupSync;
           video.onended = () => { if (!video.loop && !isFollower) nextItem(); };
-          video.onerror = (e) => {
-            console.error('Video error:', src, e);
-            if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
-          };
+          video.onerror = () => mediaFailureSkip(video, 'video', src, !isFollower);
           video.onloadeddata = () => {
             console.log('[wall/audio] video loaded file=' + item.filename + ' role=' + (wallConfig ? (wallConfig.is_leader ? 'leader' : 'follower') : 'solo') + ' muted=' + video.muted + ' volume=' + video.volume);
           };
@@ -3813,13 +3857,10 @@
           img.style.cssText = wallConfig
             ? 'width:100%;height:100%;object-fit:fill'
             : 'width:100%;height:100%;object-fit:contain';
-          img.onerror = () => {
-            console.error('Image error');
-            if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
-          };
+          img.onerror = () => mediaFailureSkip(img, 'image', src, !isFollower);
           mount.appendChild(img);
           // Leader / single screen drives image advance; follower waits for sync
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+          if (!isFollower) scheduleAdvance(nextItem, (item.duration_sec || 10) * 1000);
         } else if (item.widget_id) {
           const iframe = document.createElement('iframe');
           iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}&rev=${item.widget_rev||0}`;
@@ -3830,7 +3871,7 @@
           iframe.setAttribute('sandbox', 'allow-scripts');
           mount.appendChild(iframe);
           if (PREVIEW_MODE && item.widget_type === 'webpage') addWebpageNote(mount); // #104
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          if (!isFollower) scheduleAdvance(nextItem, (item.duration_sec || 30) * 1000);
         }
       }
     }
