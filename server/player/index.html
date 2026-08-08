@@ -535,6 +535,23 @@
     // ==================== State ====================
     let socket = null;
     let config = getConfig();
+
+    /*
+     * Does a <video> on this platform actually yield pixels to a canvas? Cached: it is a property
+     * of the platform, not of the clip. Consumed by videoCompositingAvailable() ~2900 lines below.
+     *
+     * DECLARED HERE, AND IT MUST STAY HERE. It used to live next to its function, and that BRICKED
+     * a player: boot restores the cached playlist and renders item 0 from a call site far above
+     * that point, so when item 0 was a video carrying a transition, `isVideoBufferable` read this
+     * binding before its `let` had executed. That is a TemporalDeadZone *throw*, not a `null` —
+     * the player died during boot, every boot, and because the offending playlist came from the
+     * LOCAL cache it never stayed up long enough to receive a corrected one. A permanent brick,
+     * recoverable only by clearing the device's storage.
+     *
+     * Reproduced on a BrightSign XT245 on 2026-08-07: "Cannot access '_videoCompositingOk' before
+     * initialization @ player:3730". Any web-based player could hit it — it is not BrightSign-specific.
+     */
+    let _videoCompositingOk = null;
     // feat/offline-cause-log: connectivity-report state — track in-session disconnects so the next
     // reconnect can report WHY it was gone (local link lost vs server/upstream unreachable). A browser
     // can't see SSID/RSSI, so we send only offline_ms + link_lost + cold_start:false.
@@ -3402,7 +3419,9 @@
     // videoFrameIsCapturable() already asks the right question (a 16x16 ALPHA probe, so a genuine
     // fade-to-black still reads as captured) but was only ever wired into the screenshot path.
     // Cached because the answer is a property of the platform, not of the clip.
-    let _videoCompositingOk = null;
+    // (The cache variable itself is declared far above, in State — see the note there. It MUST NOT
+    // be declared here: boot renders the cached playlist from a call site above this line, and a
+    // `let` read before its declaration executes is a TemporalDeadZone throw, not a `null`.)
     function videoCompositingAvailable(v) {
       if (_videoCompositingOk !== null) return _videoCompositingOk;
       if (!v || v.readyState < 2 || !v.videoWidth) return true;   // undecided — don't cache a guess
