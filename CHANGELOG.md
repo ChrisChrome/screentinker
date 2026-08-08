@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.9.33
+
+A patch off 1.9.32. The headline is a boot-time crash that could brick a display permanently — a
+player that died on startup, every startup, and could not be recovered by rebooting it. The rest is
+the live debug log finally working on the web player, and the playlist-skipping bug that log found
+within minutes of being switched on.
+
+### Fixed — a cached playlist could brick a display across reboots
+The most serious of these. On startup the player restores its **cached** playlist and renders the
+first item immediately. If that item was a video carrying a transition, it read an internal flag
+before that flag's declaration had run — which in JavaScript is a *throw*, not an empty value. The
+player died during boot.
+
+The loop is what made it fatal rather than annoying: the playlist came from the display's own local
+cache, so it never stayed up long enough to receive a corrected one. Every boot re-read the same
+cache and died the same way. **Rebooting the player — the one remedy an operator has — did nothing.**
+Recovery meant changing the player the server hands out; nothing in the dashboard would have helped.
+
+Found on a BrightSign, but nothing about it was BrightSign-specific: any browser-based display could
+have hit it. No customer display was in this state, and the one playlist that mixed video with a
+transition happened to start on an image, which was luck rather than protection.
+
+### Fixed — one broken clip could skip several playlist items
+A media error scheduled a skip *per error event*, and each new skip orphaned the previous timer
+instead of cancelling it, so all of them fired. Four decode errors on one clip meant four advances.
+On a single-item playlist that merely replayed the same file, which is why it hid for so long; on a
+real playlist it silently dropped the next three items and nothing said why.
+
+One failure now means one skip. A clip that is still playable is no longer discarded on a stray
+event, while anything genuinely undecodable is still skipped, so a broken file can never stall a
+playlist. Failures also now report the actual media error instead of an anonymous "Video error".
+
+### Added — the live debug log works on browser-based displays
+The per-device **Debug logging** checkbox has always sent its command, but only the Android player
+ever answered it. The panel opened on every other display and streamed almost nothing.
+
+It now streams what the player has always been recording internally: its own log, uncaught errors
+with file and line, failed downloads, and on BrightSign the host's boot report. Switching it on also
+**replays what was buffered before you opened it**, timestamped with how long ago each line really
+happened — so the failure you came to investigate is already on screen instead of needing to happen
+again.
+
+It matters most where there is no alternative: on a signage player there is no console to open and
+no cable to attach, and this is the only way to see what the display thinks it is doing.
+
+**Freeze** holds the view still while continuing to buffer underneath, because the moment you freeze
+a log is the moment the lines explaining it are still arriving. **Copy** puts the visible capture on
+the clipboard, stamped with the display and time, and works on self-hosted dashboards served over
+plain HTTP where the browser clipboard API is unavailable. Errors and warnings are now coloured, so
+the one line that explains the fault no longer sits in a wall of grey.
+
+### Changed — display controls sit above the status panels
+Reboot, screen on/off, launch, force update and shutdown were flush against the status cards, which
+read as though they belonged to them.
+
 ## 1.9.32
 
 A patch off 1.9.31. The headline is that a BrightSign can finally photograph its own screen; the
