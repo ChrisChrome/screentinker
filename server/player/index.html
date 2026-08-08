@@ -24,6 +24,12 @@
         try { return Date.now(); } catch (e) { return new Date().getTime(); }
       }
 
+      // Live subscribers (the player's set_debug sink). Kept HERE rather than in the player
+      // script so entries recorded during boot -- before the player has even parsed -- reach a
+      // subscriber that registers later, via the backlog in window.__debugLog.
+      var subs = [];
+      var notifying = false;
+
       function pushLog(entry) {
         try {
           entry.t = nowMs();
@@ -32,8 +38,22 @@
             window.__debugLog.splice(0, window.__debugLog.length - MAX_LOG);
           }
         } catch (e) { /* we are the safety net; do not crash */ }
+        // Reentrancy guard, and it is not theoretical: this runs inside the console wrapper
+        // below, so a subscriber that logs anything at all -- directly, or through a library --
+        // would call back in here and recurse until the stack gave out. The player would die of
+        // its own diagnostics.
+        if (notifying) return;
+        notifying = true;
+        try {
+          for (var s = 0; s < subs.length; s++) {
+            try { subs[s](entry); } catch (e) { /* one bad subscriber must not eat the rest */ }
+          }
+        } finally { notifying = false; }
       }
       window.__debugLog_push = pushLog; // shared pusher for debug-overlay.js
+      window.__debugLog_subscribe = function (fn) {
+        try { if (typeof fn === 'function') subs.push(fn); } catch (e) {}
+      };
 
       pushLog({
         type: 'init',
@@ -515,6 +535,23 @@
     // ==================== State ====================
     let socket = null;
     let config = getConfig();
+
+    /*
+     * Does a <video> on this platform actually yield pixels to a canvas? Cached: it is a property
+     * of the platform, not of the clip. Consumed by videoCompositingAvailable() ~2900 lines below.
+     *
+     * DECLARED HERE, AND IT MUST STAY HERE. It used to live next to its function, and that BRICKED
+     * a player: boot restores the cached playlist and renders item 0 from a call site far above
+     * that point, so when item 0 was a video carrying a transition, `isVideoBufferable` read this
+     * binding before its `let` had executed. That is a TemporalDeadZone *throw*, not a `null` —
+     * the player died during boot, every boot, and because the offending playlist came from the
+     * LOCAL cache it never stayed up long enough to receive a corrected one. A permanent brick,
+     * recoverable only by clearing the device's storage.
+     *
+     * Reproduced on a BrightSign XT245 on 2026-08-07: "Cannot access '_videoCompositingOk' before
+     * initialization @ player:3730". Any web-based player could hit it — it is not BrightSign-specific.
+     */
+    let _videoCompositingOk = null;
     // feat/offline-cause-log: connectivity-report state — track in-session disconnects so the next
     // reconnect can report WHY it was gone (local link lost vs server/upstream unreachable). A browser
     // can't see SSID/RSSI, so we send only offline_ms + link_lost + cold_start:false.
@@ -542,7 +579,12 @@
         if (!BS || typeof BS.onHostLog !== 'function') return;
         BS.onHostLog((line) => {
           try {
-            if (socket?.connected && config.deviceId) {
+            // While the live stream is ON the console.log below already reaches the dashboard
+            // through the debug sink, so emitting here too would show every host line twice.
+            // Host lines still go out unconditionally when it is OFF: the boot story is the one
+            // diagnostic nobody can ask for in advance, because it is over before the operator
+            // has a device to open.
+            if (!remoteDebug && socket?.connected && config.deviceId) {
               socket.emit('device:log', {
                 device_id: config.deviceId,
                 tag: line.tag, level: line.level, message: line.message
@@ -553,6 +595,171 @@
         });
         BS.onHostEvent((ev) => emitDeviceEvent(ev.event, ev.reason, ev.detail));
       } catch (e) { /* a bridge that throws here must not stop the player starting */ }
+    }
+
+    /* ==================== Live remote debug (`set_debug`) ====================
+     *
+     * The dashboard's per-device "Debug logging" checkbox sends a `set_debug` command and opens a
+     * live panel. The Android player has honoured it for a long time -- DebugLog.* mirrors its
+     * tagged lines to the dashboard while the box is ticked. The WEB player never implemented the
+     * command at all, so the panel opened, streamed nothing, and read as a display with nothing to
+     * say. In a browser that barely mattered: press F12. On a BrightSign it is the whole story --
+     * there is no console, no adb, no logcat, and this panel is the only way to watch what the
+     * player thinks it is doing.
+     *
+     * Rather than hand-instrument eighty-odd call sites to match Android's tag-by-tag, this streams
+     * the ring buffer the error trap at the top of <head> has always filled: every console.log/
+     * warn/error, every uncaught error with file:line and stack, every unhandled rejection, every
+     * failed resource load, plus the host's own boot report on BrightSign. Turning the stream on
+     * also FLUSHES that backlog, so the operator sees the failure that happened BEFORE they opened
+     * the screen -- which is the case they actually came to investigate, and which tailing a log
+     * cannot give them.
+     */
+    let remoteDebug = false;              // is the stream on right now
+    let debugSubscribed = false;          // ring-buffer subscription is permanent once made
+    let debugAutoOffTimer = null;
+    let debugWindowAt = 0, debugWindowCount = 0, debugSuppressed = 0;
+
+    // Fed by console.*, so the ceiling has to assume the worst: a video that fails to decode and is
+    // retried every frame turns a diagnostic aid into a flood down the same socket as playback.
+    const DEBUG_MAX_LINES_PER_SEC = 40;
+    // Ticking the box and walking away must not leave a panel streaming for the rest of the week.
+    // The dashboard turns it off on teardown, but a closed laptop or a killed tab never sends that,
+    // and the device is the only party in a position to be sure.
+    const DEBUG_AUTO_OFF_MS = 30 * 60 * 1000;
+
+    function debugSend(tag, level, message) {
+      if (!socket?.connected || !config.deviceId) return;
+      try {
+        socket.emit('device:log', {
+          device_id: config.deviceId,
+          tag: String(tag || 'player').slice(0, 64),
+          level: String(level || 'i').slice(0, 8),
+          message: String(message == null ? '' : message).slice(0, 2000),
+        });
+      } catch (e) { /* a diagnostic that throws is worse than one that is missing */ }
+    }
+
+    /*
+     * One live line, rate-limited. Over the cap the lines are COUNTED, not queued -- an operator
+     * needs to know output was dropped far more than they need the four hundredth copy of one
+     * message, and a queue would go on replaying the flood after it stopped.
+     */
+    function debugEmitLine(tag, level, message) {
+      if (!remoteDebug) return;
+      const now = Date.now();
+      if (now - debugWindowAt >= 1000) {
+        debugWindowAt = now;
+        const dropped = debugSuppressed;
+        debugWindowCount = 0;
+        debugSuppressed = 0;
+        if (dropped > 0) {
+          debugWindowCount++;
+          debugSend('debug', 'w', `${dropped} line(s) suppressed — rate limit`);
+        }
+      }
+      if (debugWindowCount >= DEBUG_MAX_LINES_PER_SEC) { debugSuppressed++; return; }
+      debugWindowCount++;
+      debugSend(tag, level, message);
+    }
+
+    // The player already prefixes most of its console lines with [wall], [bs], [group-sync] and so
+    // on -- the same shape Android's tags have -- so lift that into the tag column and the panel
+    // reads the same on both platforms instead of being one long undifferentiated column.
+    const DEBUG_TAG_RE = /^\s*\[([a-zA-Z0-9/_.-]{1,24})\]\s*/;
+    function debugTagFor(entry) {
+      if (entry.tag) return String(entry.tag);
+      const m = DEBUG_TAG_RE.exec(entry.message || '');
+      if (m) return m[1];
+      if (entry.type === 'error' || entry.type === 'rejection') return 'error';
+      if (entry.type === 'timing' || entry.type === 'init') return entry.type;
+      return 'player';
+    }
+
+    function debugLevelFor(entry) {
+      if (entry.level) return entry.level;
+      if (entry.type === 'console.error' || entry.type === 'error' || entry.type === 'rejection') return 'e';
+      if (entry.type === 'console.warn') return 'w';
+      return 'i';
+    }
+
+    // The non-console entry types carry structured fields rather than a message, and they are the
+    // valuable ones -- an uncaught error is worth nothing without its file, line and stack.
+    function debugMessageFor(entry) {
+      let msg = entry.message || '';
+      if (entry.type === 'init') {
+        msg = `page ${entry.url || '?'} — screen ${entry.sw || '?'}x${entry.sh || '?'} — ${entry.ua || ''}`;
+      } else if (entry.type === 'timing') {
+        msg = `${entry.event} +${entry.sinceInit}ms`;
+      } else if (entry.type === 'error' || entry.type === 'rejection') {
+        if (entry.source) msg += ` @${entry.source}:${entry.line || 0}:${entry.col || 0}`;
+        if (entry.stack) msg += ` | ${String(entry.stack).replace(/\s+/g, ' ').slice(0, 400)}`;
+      } else if (!msg) {
+        msg = entry.type || '';
+      }
+      return msg.replace(DEBUG_TAG_RE, '');   // already lifted into the tag column
+    }
+
+    function debugSink(entry) {
+      if (!remoteDebug || !entry || entry.__stSent) return;
+      entry.__stSent = true;
+      debugEmitLine(debugTagFor(entry), debugLevelFor(entry), debugMessageFor(entry));
+    }
+
+    // What the operator needs before the first line means anything: which player this is, how big
+    // the screen really is, and -- on BrightSign -- that they are talking to the host at all.
+    function debugPlatformLine() {
+      const bits = [];
+      try { bits.push(`screen ${screen.width}x${screen.height}@${window.devicePixelRatio || 1}x`); } catch (e) {}
+      try { if (BS && BS.isBrightSign && BS.isBrightSign()) bits.push('BrightSign'); } catch (e) {}
+      try { bits.push(navigator.userAgent); } catch (e) {}
+      return bits.join(' — ');
+    }
+
+    /*
+     * Replay what is already in the buffer. Deliberately bypasses the per-second cap: it is a
+     * one-shot burst bounded by the ring buffer itself (200 entries), and throttling it would drop
+     * exactly the history the operator turned the stream on to read.
+     */
+    function debugFlushBacklog() {
+      let buf = [];
+      try { buf = (window.__debugLog || []).filter((e) => e && !e.__stSent); } catch (e) { return; }
+      debugSend('debug', 'i', `--- replaying ${buf.length} buffered line(s) from before the stream opened ---`);
+      const now = Date.now();
+      for (const entry of buf) {
+        entry.__stSent = true;
+        // The dashboard timestamps each line on arrival, so a replayed line would claim to have
+        // happened just now. Carry the real age in the text instead of quietly lying about when
+        // the crash was.
+        const age = entry.t ? `(-${((now - entry.t) / 1000).toFixed(1)}s) ` : '';
+        debugSend(debugTagFor(entry), debugLevelFor(entry), age + debugMessageFor(entry));
+      }
+      debugSend('debug', 'i', '--- end of backlog, now live ---');
+    }
+
+    function setRemoteDebug(on) {
+      if (debugAutoOffTimer) { clearTimeout(debugAutoOffTimer); debugAutoOffTimer = null; }
+      if (!on) {
+        if (remoteDebug) debugEmitLine('debug', 'i', 'Remote debug logging OFF');
+        remoteDebug = false;
+        return;
+      }
+      const wasOn = remoteDebug;
+      remoteDebug = true;
+      debugWindowAt = 0; debugWindowCount = 0; debugSuppressed = 0;
+      if (!debugSubscribed) {
+        debugSubscribed = true;
+        try { window.__debugLog_subscribe?.(debugSink); } catch (e) {}
+      }
+      if (!wasOn) {
+        debugSend('debug', 'i', `Remote debug logging ON — ${debugPlatformLine()}`);
+        debugFlushBacklog();
+      }
+      debugAutoOffTimer = setTimeout(() => {
+        debugAutoOffTimer = null;
+        debugEmitLine('debug', 'w', `Remote debug logging auto-disabled after ${Math.round(DEBUG_AUTO_OFF_MS / 60000)} min`);
+        remoteDebug = false;
+      }, DEBUG_AUTO_OFF_MS);
     }
 
     function emitDeviceEvent(type, reason, detail) {
@@ -664,6 +871,51 @@
     // playback muted).
     let userHasInteracted = false;
     let advanceTimer = null;
+
+    /*
+     * Arm the single advance timer. ALWAYS clear the outgoing one first.
+     *
+     * `advanceTimer` is one slot by design — renderContent clears it on every item change — but a
+     * dozen call sites used to write `advanceTimer = setTimeout(...)` directly, and a second write
+     * before the first fired ORPHANED the earlier timer instead of cancelling it: still pending,
+     * no longer referenced, so nothing could stop it. Every one of those fired, and each one
+     * advanced the playlist.
+     */
+    function scheduleAdvance(fn, ms) {
+      if (advanceTimer) clearTimeout(advanceTimer);
+      advanceTimer = setTimeout(fn, ms);
+      return advanceTimer;
+    }
+
+    const MEDIA_ERR_NAME = { 1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED' };
+
+    /*
+     * One broken item, one skip.
+     *
+     * A media element can raise `error` several times over for a single item, and each event used
+     * to schedule its own `nextItem`. On a SINGLE-item playlist that merely re-played the same
+     * clip, which is how this was finally noticed — a BrightSign XT245 logging four errors and
+     * three "Playing:" lines at every loop boundary. On a real playlist the identical storm SKIPS
+     * one item per surplus event, silently, and the operator sees a playlist that drops content.
+     *
+     * The second guard is that a media element still able to play is not a failure. `error` fires
+     * with `el.error` set; an event carrying no MediaError against an element with buffered frames
+     * ahead of it did not fail at anything, and discarding a healthy item on that basis is worse
+     * than the event we are reacting to. Anything genuinely unplayable (no MediaError AND nothing
+     * decoded) is still skipped, so a broken clip can never stall the playlist.
+     */
+    function mediaFailureSkip(el, label, src, mayAdvance = true) {
+      const err = el && el.error;
+      if (!err && el && el.readyState >= 3) {
+        console.warn(`[media] ${label} raised error with no MediaError while playable (readyState=${el.readyState}) — ignored: ${src}`);
+        return;
+      }
+      if (el && el.__stFailed) return;                  // however many events it raises, one skip
+      if (el) el.__stFailed = true;
+      const detail = err ? `code=${err.code} ${MEDIA_ERR_NAME[err.code] || '?'}${err.message ? ' ' + err.message : ''}` : 'no MediaError';
+      console.error(`[media] ${label} failed (${detail}) src=${src}`);
+      if (mayAdvance) scheduleAdvance(nextItem, 3000);  // skip the broken item; hold the prior frame
+    }
     // Buffered widget swap (#directory-board black-cycle): build the next widget iframe
     // behind the current content and reveal it only on 'load', so a widget reload never
     // blanks the screen. WIDGET_SWAP_TIMEOUT_MS reveals anyway if 'load' never fires (a
@@ -1705,6 +1957,10 @@
           if (v === null) console.warn('[volume] set_volume with no usable level/value:', JSON.stringify(data));
           else setMediaVolume(v);
         }
+        // The dashboard's "Debug logging" checkbox. Accepts the flag at either depth: the command
+        // relay wraps it in `payload`, but the queued-command replay path and the public API have
+        // both been seen to deliver it flat.
+        if (data.type === 'set_debug') setRemoteDebug(!!(data.payload?.enabled ?? data.enabled));
       });
 
       // #129: real-time mute. Apply immediately if the toggled item is the one playing now;
@@ -3081,7 +3337,7 @@
     // schedule-awareness / Fix A preserved).
     function reevaluateHeldWidget() {
       if (nextActiveIndex(currentIndex) === currentIndex) {
-        advanceTimer = setTimeout(reevaluateHeldWidget, WIDGET_SOLO_REFRESH_MS);
+        scheduleAdvance(reevaluateHeldWidget, WIDGET_SOLO_REFRESH_MS);
         return;
       }
       nextItem();
@@ -3141,7 +3397,7 @@
       const c = document.getElementById('playerContainer');
       c.style.display = 'block';
       c.appendChild(img);
-      advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+      scheduleAdvance(nextItem, (item.duration_sec || 10) * 1000);
       preloadNextImage();
     }
     // ---- GL transition (feat/transition-engine). Every failure path hard-cuts — never a blank. ----
@@ -3163,7 +3419,9 @@
     // videoFrameIsCapturable() already asks the right question (a 16x16 ALPHA probe, so a genuine
     // fade-to-black still reads as captured) but was only ever wired into the screenshot path.
     // Cached because the answer is a property of the platform, not of the clip.
-    let _videoCompositingOk = null;
+    // (The cache variable itself is declared far above, in State — see the note there. It MUST NOT
+    // be declared here: boot renders the cached playlist from a call site above this line, and a
+    // `let` read before its declaration executes is a TemporalDeadZone throw, not a `null`.)
     function videoCompositingAvailable(v) {
       if (_videoCompositingOk !== null) return _videoCompositingOk;
       if (!v || v.readyState < 2 || !v.videoWidth) return true;   // undecided — don't cache a guess
@@ -3285,7 +3543,7 @@
       const dwellMs = (item.duration_sec || 10) * 1000;
       const container = document.getElementById('playerContainer');
       runGlWipe(fromImg, toImg, t, dwellMs,
-        () => { advanceTimer = setTimeout(nextItem, dwellMs); },   // onStart: arm the dwell for overlap
+        () => { scheduleAdvance(nextItem, dwellMs); },   // onStart: arm the dwell for overlap
         () => {                                                    // mount: swap in the image, keep the armed timer
           toImg.style.cssText = 'width:100%;height:100%;object-fit:contain';
           container.appendChild(toImg);
@@ -3315,7 +3573,9 @@
       const fail = () => {
         if (done) return; done = true;
         if (watchdog) clearTimeout(watchdog);
-        console.error('Image error'); advanceTimer = setTimeout(nextItem, 3000); // skip broken item; hold prior frame
+        // No element to inspect here: this is the load/watchdog failure path, so nothing decoded.
+        // `fail` is already `done`-guarded, so it runs at most once per render.
+        mediaFailureSkip(null, 'image', src);             // skip broken item; hold prior frame
       };
       // a hung load/decode must never stall the playlist: at 3s use what we have, else skip
       watchdog = setTimeout(() => { if (cached) swap(cached); else fail(); }, 3000);
@@ -3384,7 +3644,7 @@
         video.muted = (!userHasInteracted || !!item.muted); // autoplay policy + per-item mute (#129)
         if (!video.muted) video.volume = 1.0;
         video.onended = () => { if (!video.loop) nextItem(); };
-        video.onerror = (e) => { console.error('Video error:', src, e); advanceTimer = setTimeout(nextItem, 3000); };
+        video.onerror = () => mediaFailureSkip(video, 'video', src);
         video.play().catch(() => { video.muted = true; video.play().catch(() => {}); }); // autoplay-policy fallback
         setTimeout(() => { if (video.paused) { video.muted = true; video.play().catch(() => {}); } }, 2000); // last-resort kick
       };
@@ -3422,7 +3682,7 @@
       video.addEventListener('error', () => {
         if (done) return; done = true;
         if (watchdog) clearTimeout(watchdog);
-        console.error('Video error:', src); advanceTimer = setTimeout(nextItem, 3000); // skip broken clip; hold prior frame
+        mediaFailureSkip(video, 'video(buffered)', src);   // skip broken clip; hold prior frame
       });
       // Watchdog caps the wait so a cold/slow clip hard-cuts (mount+play) instead of the boundary hanging
       // (mirrors renderImageBuffered's watchdog).
@@ -3439,7 +3699,7 @@
       if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
       // Defense in depth: a transition widget is normalized out server-side and must never render as
       // content. If a stale/legacy payload still carries one, skip it instead of mounting a blank iframe.
-      if (item && item.widget_type === 'transition') { advanceTimer = setTimeout(nextItem, 0); return; }
+      if (item && item.widget_type === 'transition') { scheduleAdvance(nextItem, 0); return; }
       // Fullscreen (non-wall) widget: buffered swap — never blank on reload. Runs BEFORE the
       // generic teardown (which would black the screen), and owns its own refresh/advance
       // timer below. Multi-zone widgets go through renderZones; wall+widget keeps the legacy
@@ -3456,8 +3716,8 @@
           // its duration; the first mount + every genuine transition still go through the
           // buffered swap.
           const held = nextActiveIndex(currentIndex) === currentIndex;
-          if (held) advanceTimer = setTimeout(reevaluateHeldWidget, WIDGET_SOLO_REFRESH_MS);
-          else advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          if (held) scheduleAdvance(reevaluateHeldWidget, WIDGET_SOLO_REFRESH_MS);
+          else scheduleAdvance(nextItem, (item.duration_sec || 30) * 1000);
         }
         return;
       }
@@ -3582,10 +3842,7 @@
           // advances the index (and the tick seeks position % duration to stay aligned).
           video.loop = (playlist.length === 1) || !!groupSync;
           video.onended = () => { if (!video.loop && !isFollower) nextItem(); };
-          video.onerror = (e) => {
-            console.error('Video error:', src, e);
-            if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
-          };
+          video.onerror = () => mediaFailureSkip(video, 'video', src, !isFollower);
           video.onloadeddata = () => {
             console.log('[wall/audio] video loaded file=' + item.filename + ' role=' + (wallConfig ? (wallConfig.is_leader ? 'leader' : 'follower') : 'solo') + ' muted=' + video.muted + ' volume=' + video.volume);
           };
@@ -3619,13 +3876,10 @@
           img.style.cssText = wallConfig
             ? 'width:100%;height:100%;object-fit:fill'
             : 'width:100%;height:100%;object-fit:contain';
-          img.onerror = () => {
-            console.error('Image error');
-            if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
-          };
+          img.onerror = () => mediaFailureSkip(img, 'image', src, !isFollower);
           mount.appendChild(img);
           // Leader / single screen drives image advance; follower waits for sync
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+          if (!isFollower) scheduleAdvance(nextItem, (item.duration_sec || 10) * 1000);
         } else if (item.widget_id) {
           const iframe = document.createElement('iframe');
           iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render?device=${encodeURIComponent(config.deviceId||'')}&rev=${item.widget_rev||0}`;
@@ -3636,7 +3890,7 @@
           iframe.setAttribute('sandbox', 'allow-scripts');
           mount.appendChild(iframe);
           if (PREVIEW_MODE && item.widget_type === 'webpage') addWebpageNote(mount); // #104
-          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          if (!isFollower) scheduleAdvance(nextItem, (item.duration_sec || 30) * 1000);
         }
       }
     }

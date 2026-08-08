@@ -33,6 +33,81 @@ let shellHandler = null;
 let diagPollTimer = null; // polls a diag-smoothness widget's reported frame stats while the page is open
 let screenshotInterval = null;
 let remoteActive = false;
+// Mirrors the Debug-logging checkbox so cleanup() can switch the device's stream back off.
+// Without this, leaving the screen left the panel streaming into nothing: the device kept
+// emitting, the dashboard kept relaying, and nobody was listening. The player carries its own
+// auto-off as the backstop for the case this can't cover -- a tab that is killed, not closed.
+let debugStreamOn = false;
+let debugFrozen = false;
+let debugHeld = [];              // lines that arrived while frozen, replayed on resume
+const DEBUG_PANEL_MAX = 500;     // panel rows AND the held-while-frozen cap
+
+// Every player sends a level and the panel used to render all four identically, so the one line
+// that explains the fault sat in a wall of grey. Errors and warnings are why the operator opened it.
+const DEBUG_LEVEL_COLOR = { e: '#f87171', w: '#fbbf24', d: '#64748b' };
+
+function debugLineText(d) {
+  return `${new Date(d.ts || Date.now()).toLocaleTimeString()} [${d.tag || ''}] ${d.message || ''}`;
+}
+
+function appendDebugLine(d) {
+  const panel = document.getElementById('debugLogPanel');
+  if (!panel) return;
+  const line = document.createElement('div');
+  line.textContent = debugLineText(d);                       // textContent — no HTML injection
+  const tone = DEBUG_LEVEL_COLOR[(d.level || '').toLowerCase()];
+  if (tone) line.style.color = tone;
+  panel.appendChild(line);
+  while (panel.childElementCount > DEBUG_PANEL_MAX) panel.removeChild(panel.firstChild);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function updateDebugTools() {
+  const btn = document.getElementById('debugFreezeBtn');
+  const status = document.getElementById('debugLogStatus');
+  if (btn) btn.textContent = debugFrozen ? t('device.debug.resume') : t('device.debug.freeze');
+  if (status) {
+    // Say how many are waiting, so freezing never feels like the device went quiet.
+    status.textContent = debugFrozen
+      ? (debugHeld.length >= DEBUG_PANEL_MAX
+          ? t('device.debug.held_max', { n: debugHeld.length })
+          : t('device.debug.held', { n: debugHeld.length }))
+      : '';
+  }
+}
+
+function setDebugFrozen(frozen) {
+  debugFrozen = frozen;
+  if (!frozen) {
+    const held = debugHeld;
+    debugHeld = [];
+    for (const d of held) appendDebugLine(d);   // resume shows what you missed, in order
+  }
+  updateDebugTools();
+}
+
+/*
+ * Clipboard with a fallback, because a self-hosted dashboard on plain http is NOT a secure context
+ * and `navigator.clipboard` is simply absent there — the copy buttons elsewhere in this app quietly
+ * do nothing in that case. A debug log is precisely what a self-hoster wants to paste into an issue.
+ */
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch (e) { /* fall through to the legacy path */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:-1000px;left:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+}
 
 // Belt for the orphaned-stream fix: if the tab is hidden/closed/backgrounded while a Remote session
 // is live, stop it (the server also auto-stops on socket drop, but bfcache keeps the socket alive).
@@ -184,14 +259,16 @@ export function render(container, deviceId) {
   // checkbox is on). Appended via textContent — no HTML injection.
   logHandler = (data) => {
     if (data.device_id !== deviceId) return;
-    const panel = document.getElementById('debugLogPanel');
-    if (!panel) return;
-    const line = document.createElement('div');
-    const time = new Date(data.ts || Date.now()).toLocaleTimeString();
-    line.textContent = `${time} [${data.tag || ''}] ${data.message || ''}`;
-    panel.appendChild(line);
-    while (panel.childElementCount > 500) panel.removeChild(panel.firstChild);
-    panel.scrollTop = panel.scrollHeight;
+    // Frozen: HOLD the line rather than drop it. A log you froze to read something is the exact
+    // moment the lines that explain it are still arriving — pausing the stream would throw away
+    // the part you were about to want.
+    if (debugFrozen) {
+      debugHeld.push(data);
+      if (debugHeld.length > DEBUG_PANEL_MAX) debugHeld.shift();
+      updateDebugTools();
+      return;
+    }
+    appendDebugLine(data);
   };
 
   on('device-status', statusHandler);
@@ -356,7 +433,7 @@ async function loadDevice(deviceId, activeTab = null) {
              past everything to reach the one button you came for. Kept as a single wrapping row
              so a narrow screen reflows rather than clipping, and each button still renders only
              where the display can honour it. -->
-        <div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap">
+        <div style="margin:20px 0;display:flex;gap:8px;flex-wrap:wrap">
           ${can('system.reboot') ? `
           <button class="btn btn-secondary btn-sm" id="rebootBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -624,6 +701,16 @@ async function loadDevice(deviceId, activeTab = null) {
             <input type="checkbox" id="debugLogToggle"> ${t('device.debug.toggle')}
           </label>
           <div style="font-size:11px;color:var(--text-muted);margin:4px 0 0 24px">${t('device.debug.hint')}</div>
+          <!-- Freeze holds the view still WITHOUT dropping what arrives: a log you are reading
+               scrolls the interesting line off the top, and pausing the stream instead would lose
+               exactly the lines that follow the fault. Copy exists because the useful next step is
+               pasting this into an issue. -->
+          <div id="debugLogTools" style="display:none;margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-secondary btn-sm" id="debugFreezeBtn">${t('device.debug.freeze')}</button>
+            <button class="btn btn-secondary btn-sm" id="debugCopyBtn">${t('device.debug.copy')}</button>
+            <button class="btn btn-secondary btn-sm" id="debugClearBtn">${t('device.debug.clear')}</button>
+            <span id="debugLogStatus" style="font-size:11px;color:var(--text-muted)"></span>
+          </div>
           <div id="debugLogPanel" style="display:none;margin-top:8px;background:#0b0f1a;border:1px solid var(--border);border-radius:6px;padding:8px;height:220px;overflow-y:auto;font-family:monospace;font-size:11px;line-height:1.45;color:#cbd5e1"></div>
         </div>
 
@@ -1150,7 +1237,34 @@ function setupActions(device) {
     const enabled = e.target.checked;
     const panel = document.getElementById('debugLogPanel');
     if (panel) panel.style.display = enabled ? 'block' : 'none';
+    const tools = document.getElementById('debugLogTools');
+    if (tools) tools.style.display = enabled ? 'flex' : 'none';
+    debugStreamOn = enabled;
+    // Unticking and reticking should not resume into a frozen panel the operator forgot about.
+    if (!enabled) { debugFrozen = false; debugHeld = []; }
+    updateDebugTools();
     sendCommand(device.id, 'set_debug', { enabled });
+  });
+
+  document.getElementById('debugFreezeBtn')?.addEventListener('click', () => setDebugFrozen(!debugFrozen));
+
+  document.getElementById('debugClearBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('debugLogPanel');
+    if (panel) panel.textContent = '';
+    debugHeld = [];
+    updateDebugTools();
+  });
+
+  document.getElementById('debugCopyBtn')?.addEventListener('click', async () => {
+    const panel = document.getElementById('debugLogPanel');
+    // Copy what is ON SCREEN. Anything held while frozen is deliberately excluded — the operator
+    // is copying the capture they are looking at, and silently appending lines they have not seen
+    // would make the paste disagree with the panel.
+    const text = panel ? [...panel.children].map((el) => el.textContent).join('\n') : '';
+    if (!text) { showToast(t('device.debug.copy_empty'), 'error'); return; }
+    const header = `${device.name || device.id} — ${device.platform || ''} ${device.hardware_model || ''} — ${new Date().toISOString()}`.trim();
+    const ok = await copyToClipboard(`${header}\n${'-'.repeat(header.length)}\n${text}\n`);
+    showToast(ok ? t('device.debug.copied', { n: panel.childElementCount }) : t('device.debug.copy_failed'), ok ? 'success' : 'error');
   });
 
   document.getElementById('saveNotesBtn')?.addEventListener('click', async () => {
@@ -2171,6 +2285,12 @@ export function cleanup() {
   if (shellHandler) off('shell-result', shellHandler);   // #161 owner-tools listener
   if (screenshotInterval) clearInterval(screenshotInterval);
   if (remoteActive && currentDevice) stopRemote(currentDevice.id);
+  // Same reasoning as stopRemote above: an operator who navigates away has stopped watching, so
+  // the display should stop talking. Must run BEFORE currentDevice is cleared.
+  if (debugStreamOn && currentDevice) sendCommand(currentDevice.id, 'set_debug', { enabled: false });
+  debugStreamOn = false;
+  debugFrozen = false;
+  debugHeld = [];
   remoteActive = false;
   currentDevice = null;
   window._sendKey = null;
