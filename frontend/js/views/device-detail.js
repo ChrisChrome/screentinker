@@ -177,6 +177,39 @@ function isBrightSignDevice(device) {
   return String(device.platform || '').toLowerCase().includes('brightsign');
 }
 
+// Mirrors platformFamily() in server/lib/player-capabilities.js — SAME FOUR SIGNALS, SAME ORDER,
+// so the UI and the server never disagree about what a device is.
+//
+// The precedence is the whole point and is easy to get wrong. An earlier version of this helper
+// kept only the last test, and a Tizen TV registers `android_version: 'Tizen 6.5'` (see
+// tizen/js/app.js) — non-empty, not "Web/..." — so every Samsung panel in the fleet classified as
+// Android. It was invisible only because Tizen happens to declare remote.screenshot today; the
+// moment that changes, a MediaProjection button appears on a TV that has no such API.
+//
+// Gates the MediaProjection capture bootstrap below, and that gate is deliberately Android-and-
+// nothing-else — NOT "Android that cannot already capture".
+//
+// The tempting extra condition is to hide it once a panel declares remote.screenshot. Two reasons
+// not to. First, the dashboard cannot tell "this device declared it" from "the server filled in a
+// baseline": /api/devices/:id ships capabilitiesFor(), which resolves both into one array (see
+// server/routes/devices.js), and the android baseline CONTAINS remote.screenshot — so that
+// condition hides the button from every one of the ~440 undeclared panels in the field, which is
+// exactly backwards. Second, even where capture already works it is the accessibility path;
+// MediaProjection is the better one (WebSocketService tries it FIRST), so offering the upgrade to
+// a panel that has the weaker path is a feature, not redundancy.
+function isAndroidDevice(device) {
+  if (!device) return false;
+  const platform = String(device.platform || '').toLowerCase();
+  if (platform.includes('brightsign')) return false;
+  if (platform.includes('tizen')) return false;
+  // Second, independent signal for a Tizen TV: the .wgt player sends client_type 'wgt'. `platform`
+  // is the primary key, but it lives in a column an older client's register could overwrite.
+  if (device.client_type === 'wgt') return false;
+  if (device.client_type === 'apk') return true;
+  const av = String(device.android_version || '');
+  return av !== '' && !av.startsWith('Web/');
+}
+
 export function render(container, deviceId) {
   container.innerHTML = `
     <div class="device-detail">
@@ -799,7 +832,7 @@ async function loadDevice(deviceId, activeTab = null) {
             ${device.tier === 2 ? `
             <span style="font-size:10px;color:var(--success);line-height:1.2;display:block;margin-top:8px">${t('device.remote.system_view_owner')}</span>
             ` : `
-            ${can('remote.screenshot') ? `
+            ${isAndroidDevice(device) ? `
             <button class="btn btn-primary btn-sm" id="enableSystemCaptureBtn" onclick="window._enableSystemView()" title="${t('device.remote.system_view_tooltip')}" style="margin-top:8px">
               ${t('device.remote.enable_system_view')}
             </button>

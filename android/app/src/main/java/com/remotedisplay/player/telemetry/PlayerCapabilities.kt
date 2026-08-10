@@ -52,6 +52,27 @@ object PlayerCapabilities {
                 // Native view rotation: the ExoPlayer surface sits inside the rotated view, so video
                 // turns with the graphics. No hardware-plane problem here.
                 "display.rotation",
+                // Per-window overlay dim (WindowManager.LayoutParams.screenBrightness) — Tier 0, no
+                // permission, works at any privilege level. Distinct from "system.brightness" below,
+                // which writes the system-wide setting and DOES need WRITE_SETTINGS or owner.
+                // Declared here because the android BASELINE already grants it: without this line an
+                // updated panel replaces the baseline with a declared set that lacks it, and LOSES
+                // the dim slider it had before it updated.
+                "display.brightness",
+                // Capture, at ANY privilege level. captureScreen() is a three-rung fallback —
+                // MediaProjection (system-wide, needs consent), then the accessibility screenshot
+                // API, then ScreenshotCapture.captureView, which is a plain view draw with no
+                // permission check of any kind. The last rung is narrower than the others (the
+                // player's own window, foreground only) but on a kiosk panel that window IS the
+                // content, so the operator gets a picture rather than a refusal.
+                //
+                // Declared unconditionally for the same reason display.brightness is: the android
+                // BASELINE grants both, and a declared set replaces the baseline rather than
+                // merging with it. Gating on accessibility meant a panel LOST live view and
+                // screenshots by updating, while the fallback that still served them kept working.
+                // It also made granting MediaProjection invisible — consent was given, capture
+                // genuinely started, and the server went on refusing because nothing re-declared.
+                "remote.screenshot", "remote.stream",
                 // Input is plain view dispatch and works regardless of privilege.
                 "remote.input",
                 // The player restarts itself; the OTA checker updates the APK.
@@ -67,10 +88,6 @@ object PlayerCapabilities {
 
             // ---- conditional on runtime state -------------------------------------------------------
 
-            // Full-screen capture needs the accessibility service; without it capture falls back to
-            // the app's own view. Declared only for the real thing, per the capability contract.
-            if (accessibility) caps += listOf("remote.screenshot", "remote.stream")
-
             // Display power is asymmetric and only honest when BOTH halves exist. screen_off needs
             // owner, device-admin FORCE_LOCK, or accessibility; screen_on now works anywhere via a
             // wake lock (WAKE_LOCK is a normal permission). So the binding constraint is the OFF
@@ -85,6 +102,13 @@ object PlayerCapabilities {
             // Silent lock-task. Off-owner startLockTask() gives screen pinning, which prompts for
             // confirmation — unusable on a panel with no input, so not claimed.
             if (isOwner) caps += "system.kiosk"
+
+            // The privilege itself, declared as a capability. Every #161 Tier-2 command
+            // (lock_now / power_menu / status_bar / block_uninstall / unblock_uninstall) gates on
+            // this name. No player declared it, so the server accepts "system.kiosk" as a stand-in —
+            // exact, because kiosk is itself owner-only, but a stand-in nonetheless. Declaring the
+            // canonical name makes those refusals say what they mean and lets the stand-in retire.
+            if (isOwner) caps += "system.device_owner"
 
             // Owner-only clock control.
             if (isOwner) caps += "system.time"
