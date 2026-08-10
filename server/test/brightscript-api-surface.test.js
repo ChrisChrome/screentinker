@@ -68,6 +68,12 @@ const BAD_METHODS = [
   ['.VerifyPackage(', 'roBrightPackage has no VerifyPackage — hash the bytes yourself'],
   ['.UnpackAll(', 'roBrightPackage has Unpack(path) and UnpackFile(name, path)'],
   ['SetOrientation(vm', 'roVideoMode has no SetOrientation — rotation is SetScreenModes()[i].transform'],
+  // Nearly shipped 2026-08-10, while fixing the very thing it would have broken. BrightSign's
+  // roDeviceInfo has NO network method of any kind — checked against the published Object
+  // Reference, where the string does not occur once. The address comes from
+  // roNetworkConfiguration(iface).GetCurrentConfig().ip4_address. Calling this would have raised
+  // "Member function not found" from inside SendHostTelemetry, once a minute, forever.
+  ['GetIPAddrs', 'roDeviceInfo has no network methods on BrightSign; use roNetworkConfiguration(iface).GetCurrentConfig().ip4_address'],
 ];
 
 for (const [needle, advice] of BAD_METHODS) {
