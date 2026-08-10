@@ -565,6 +565,20 @@ async function loadDevice(deviceId, activeTab = null) {
             <div class="info-card-label">${t('device.info.temperature')}</div>
             <div class="info-card-value small" id="telTemp">${latestTelemetry.temperature_c}&deg;C</div>
           </div>` : ''}
+          <!-- The physical panel, from its EDID, and the mode the output is negotiated to. Shown
+               only when the player reports them, like every other card here: a family that cannot
+               read its own output must not grow an empty row. On a dual-output player each device
+               row is one output, so this is THAT output's screen — not the box's first. -->
+          ${latestTelemetry.attached_display ? `
+          <div class="info-card">
+            <div class="info-card-label">${t('device.info.attached_display')}</div>
+            <div class="info-card-value small" id="telDisplay">${esc(latestTelemetry.attached_display)}</div>
+          </div>` : ''}
+          ${latestTelemetry.video_mode ? `
+          <div class="info-card">
+            <div class="info-card-label">${t('device.info.video_mode')}</div>
+            <div class="info-card-value small" id="telVideoMode">${esc(latestTelemetry.video_mode)}</div>
+          </div>` : ''}
           ${device.android_version && !device.android_version.startsWith('Web/') ? `
           <div class="info-card">
             <div class="info-card-label">${t('device.info.wifi')}</div>

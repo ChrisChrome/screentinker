@@ -388,6 +388,16 @@ const migrations = [
   // dual-stack panel genuinely has both and an operator may need either — collapsing them would
   // make the field mean "whichever we happened to enumerate first".
   "ALTER TABLE device_telemetry ADD COLUMN local_ip6 TEXT",
+  // What is physically PLUGGED IN, read from the display's EDID, and the mode actually being
+  // driven. A signage operator's first question about a dark screen is which panel it is and
+  // whether the player is outputting at all — the dashboard could say neither, and
+  // screen_width/height are what the PAGE thinks it has, not what the hardware negotiated.
+  //
+  // Per-telemetry-row rather than on `devices` because a display can be swapped, unplugged or
+  // renegotiated without the player re-registering, and because a dual-output player registers ONE
+  // ROW PER OUTPUT (see output_index) — each row must carry its own screen, not the box's first.
+  "ALTER TABLE device_telemetry ADD COLUMN attached_display TEXT",
+  "ALTER TABLE device_telemetry ADD COLUMN video_mode TEXT",
   // Panel temperature in Celsius. REAL because the sensor reports fractions, and nullable because
   // only some hardware exposes one — Android and the browser players send nothing and must keep
   // reading as "no sensor" rather than "0 degrees", which is why every read site treats null as

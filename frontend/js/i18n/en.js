@@ -488,6 +488,8 @@ export default {
   'device.info.os_version': 'OS Version',
   'device.info.serial': 'Serial',
   'device.info.temperature': 'Temperature',
+  'device.info.attached_display': 'Attached display',
+  'device.info.video_mode': 'Video mode',
   'device.info.output_n': '(output {n})',
   'device.info.player_type': 'Player Type',
   'device.info.web_player': 'Web Player',

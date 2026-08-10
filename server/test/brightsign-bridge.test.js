@@ -22,7 +22,7 @@ const path = require('node:path');
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'brightsign', 'st-bridge.js'), 'utf8');
 
 /** Load the bridge into a fake window. `mods` present => pretend we are on a BrightSign. */
-function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = {}, storageEstimate = null, temperature = null, os = null, fs = null } = {}) {
+function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = {}, storageEstimate = null, temperature = null, os = null, fs = null, edid = null, activeMode = null } = {}) {
   const posted = [];
   const registryStore = new Map(Object.entries(seed));
   const cec = { sent: [] };
@@ -70,6 +70,23 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
       // Not an @brightsign module, so it is answered before the platform ones.
       if (name === 'os') { if (!os) throw new Error("Cannot find module 'os'"); return os; }
       if (name === 'fs') { if (!fs) throw new Error("Cannot find module 'fs'"); return fs; }
+      // The attached panel's EDID, per OUTPUT. `edid` maps an output name to a monitor name;
+      // anything not in it behaves like a real player asked for an output it does not have —
+      // "hdmi2" throws from the constructor, "HDMI-2" rejects. Both observed on an XT245.
+      if (name === '@brightsign/videooutput') {
+        if (!edid) throw new Error('no videooutput');
+        return function (outputName) {
+          if (!(outputName in edid)) {
+            if (/^hdmi\d/.test(outputName)) throw new Error('no such output');
+            return { getEdidIdentity: () => Promise.reject(new Error('Output not connected')) };
+          }
+          return { getEdidIdentity: () => Promise.resolve({ monitorName: edid[outputName] }) };
+        };
+      }
+      if (name === '@brightsign/videomodeconfiguration') {
+        if (!activeMode) throw new Error('no videomodeconfiguration');
+        return function () { return { getActiveMode: () => Promise.resolve(activeMode) }; };
+      }
       if (name === '@brightsign/messageport') {
         return function () {
           return {
@@ -556,4 +573,70 @@ test('a firmware without statfs degrades instead of throwing', () => {
   const { api } = load({ mods: [], os: OS_STUB, fs: { readdirSync: () => [] } });
   assert.doesNotThrow(() => api.refreshTelemetry());
   assert.equal(api.telemetrySnapshot().local_ip, '192.168.1.46', 'and the rest still reports');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Which screen is plugged in, and what the output is driving.
+//
+// screen_width/height are what the PAGE believes it has — the widget's own geometry. They say
+// nothing about the panel. Our XT245 drives a CX101 at 1920x1200@60 while the page reports its own
+// canvas, so an operator asking "which display is that and is it even outputting?" had no answer.
+//
+// The output is chosen by SCREEN NUMBER because a dual-output player registers one device row per
+// output (?screen=N → output_index), and each row must report its own panel.
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+test('the attached display is read from EDID', async () => {
+  const { api } = load({ mods: true, os: OS_STUB, edid: { 'HDMI-1': 'CX101' } });
+  api.refreshTelemetry();
+  await flush();
+  assert.equal(api.telemetrySnapshot().attached_display, 'CX101');
+});
+
+test('MULTI-SCREEN: each output reports its OWN panel, not the box\'s first', async () => {
+  // The bug this prevents: a player driving a lobby TV and a menu board showing the lobby TV twice.
+  const wiring = { edid: { 'HDMI-1': 'Lobby-55', 'HDMI-2': 'MenuBoard-32' } };
+  const one = load({ mods: true, os: OS_STUB, search: '?screen=1', ...wiring });
+  const two = load({ mods: true, os: OS_STUB, search: '?screen=2', ...wiring });
+  one.api.refreshTelemetry();
+  two.api.refreshTelemetry();
+  await flush();
+  assert.equal(one.api.telemetrySnapshot().attached_display, 'Lobby-55');
+  assert.equal(two.api.telemetrySnapshot().attached_display, 'MenuBoard-32');
+});
+
+test('a single-output player reports nothing rather than inventing a second screen', async () => {
+  // Verified on hardware: "hdmi2" throws from the constructor and "HDMI-2" rejects.
+  const { api } = load({ mods: true, os: OS_STUB, search: '?screen=2', edid: { 'HDMI-1': 'CX101' } });
+  assert.doesNotThrow(() => api.refreshTelemetry());
+  await flush();
+  assert.equal(api.telemetrySnapshot().attached_display, undefined);
+});
+
+test('screen 1 also accepts the lowercase name the vendor cookbook uses', async () => {
+  const { api } = load({ mods: true, os: OS_STUB, edid: { hdmi: 'CX101' } });
+  api.refreshTelemetry();
+  await flush();
+  assert.equal(api.telemetrySnapshot().attached_display, 'CX101');
+});
+
+test('the active mode is reported as WxH@Hz, the way an installer says it', async () => {
+  const { api } = load({
+    mods: true, os: OS_STUB,
+    activeMode: { graphicsPlaneWidth: 1920, graphicsPlaneHeight: 1200, frequency: 60 },
+  });
+  api.refreshTelemetry();
+  await flush();
+  assert.equal(api.telemetrySnapshot().video_mode, '1920x1200@60');
+});
+
+test('a firmware with neither module degrades quietly', async () => {
+  const { api } = load({ mods: true, os: OS_STUB });
+  assert.doesNotThrow(() => api.refreshTelemetry());
+  await flush();
+  const t = api.telemetrySnapshot();
+  assert.equal(t.attached_display, undefined);
+  assert.equal(t.video_mode, undefined);
+  assert.equal(t.local_ip, '192.168.1.46', 'and everything else still reports');
 });

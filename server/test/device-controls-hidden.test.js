@@ -238,3 +238,16 @@ test('a browser tab gains nothing — it measures none of this', () => {
   assert.equal(has(html, 'telRam'), false);
   assert.equal(has(html, 'telCpu'), false);
 });
+
+test('the attached display and video mode get cards when reported', () => {
+  const html = renderWith(BS_WITH_DATA, { ...REAL_TELEMETRY, attached_display: 'CX101', video_mode: '1920x1200@60' });
+  assert.ok(has(html, 'telDisplay'), 'the panel EDID card');
+  assert.ok(has(html, 'telVideoMode'), 'the negotiated mode card');
+  assert.ok(html.includes('CX101'), 'and the monitor name itself');
+});
+
+test('a player that cannot read its output grows no empty rows', () => {
+  const html = renderWith(BS_WITH_DATA, REAL_TELEMETRY);
+  assert.equal(has(html, 'telDisplay'), false);
+  assert.equal(has(html, 'telVideoMode'), false);
+});

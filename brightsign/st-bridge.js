@@ -47,6 +47,8 @@
    */
   var VideoModeConfigClass = tryRequire('@brightsign/videomodeconfiguration');
   var CecClass = tryRequire('@brightsign/cec');
+  // Reads the attached display's EDID. Read-only; the mode setter is videomodeconfiguration.
+  var VideoOutputClass = tryRequire('@brightsign/videooutput');
   /*
    * Node's standard library, present because the widget is created with nodejs_enabled. Used for
    * the LAN address (see refreshTelemetry) exactly as BrightSign's own dev-cookbook templates do.
@@ -918,19 +920,93 @@
         try {
           var ifaces = osModule.networkInterfaces() || {};
           var names = Object.keys(ifaces);
-          for (var ni = 0; ni < names.length && !telemetry.local_ip; ni++) {
+          for (var ni = 0; ni < names.length; ni++) {
             var addrs = ifaces[names[ni]] || [];
             for (var ai = 0; ai < addrs.length; ai++) {
               var a = addrs[ai];
               if (!a || a.internal) continue;
-              if (a.family !== 'IPv4' && a.family !== 4) continue;
               var ip = String(a.address || '');
-              if (!ip || ip.indexOf('169.254.') === 0) continue;
-              telemetry.local_ip = ip;
-              break;
+              if (!ip) continue;
+              var isV4 = (a.family === 'IPv4' || a.family === 4);
+              var isV6 = (a.family === 'IPv6' || a.family === 6);
+              if (isV4 && !telemetry.local_ip && ip.indexOf('169.254.') !== 0) telemetry.local_ip = ip;
+              /*
+               * The v6 column has existed as long as the v4 one and has never held anything, on any
+               * player. The dashboard is already built for it — it renders a second card ONLY when
+               * this is set, precisely so the overwhelmingly v4 fleet does not pay screen space for
+               * an empty row.
+               *
+               * fe80:: is skipped for the same reason 169.254 is: a link-local address is scoped to
+               * one interface and cannot be dialled from a laptop across the office, so reporting it
+               * would send someone somewhere they cannot go. A ULA (fd00::/8) is kept — that IS
+               * reachable on the site network, which is the question this field answers.
+               */
+              if (isV6 && !telemetry.local_ip6 && ip.toLowerCase().indexOf('fe80') !== 0) {
+                // Node appends a zone id to link-locals ("fe80::1%eth0"); strip any that survives.
+                var pct = ip.indexOf('%');
+                telemetry.local_ip6 = pct === -1 ? ip : ip.slice(0, pct);
+              }
             }
           }
         } catch (e) { /* no networking yet, or a firmware without it — stay silent */ }
+      }
+
+      /*
+       * WHICH SCREEN IS PLUGGED IN, and what the output is actually driving.
+       *
+       * The first question about a dark sign is "which panel is that?", and until now the dashboard
+       * could not answer it: screen_width/height are what the PAGE believes it has, which is the
+       * widget's own geometry, not what the hardware negotiated with the display.
+       *
+       * The output is chosen by SCREEN NUMBER, because a dual-output player registers one device
+       * row per output (?screen=N, see output_index) and each row must report its OWN panel — a box
+       * driving a lobby TV and a menu board would otherwise show the lobby TV twice.
+       *
+       * Both names are tried. Probed on an XT245 (FW 9.1.93.2): "hdmi" and "HDMI-1" both resolve to
+       * output 1 and answer with the same monitor, while a second output that does not exist fails
+       * cleanly — "hdmi2" throws from the constructor and "HDMI-2" rejects. So a single-output
+       * player simply reports nothing here rather than inventing a screen.
+       */
+      if (VideoOutputClass) {
+        var wantScreen = screenNumber();
+        var outNames = ['HDMI-' + wantScreen];
+        if (wantScreen === 1) outNames.push('hdmi');
+        for (var oi = 0; oi < outNames.length; oi++) {
+          try {
+            var vo = new VideoOutputClass(outNames[oi]);
+            if (!vo || typeof vo.getEdidIdentity !== 'function') continue;
+            var edid = vo.getEdidIdentity();
+            if (edid && typeof edid.then === 'function') {
+              edid.then(function (e) {
+                var mn = e && (e.monitorName || e.monitor_name);
+                if (typeof mn === 'string' && mn.trim()) telemetry.attached_display = mn.trim();
+              }, function () { /* no display on this output */ });
+            }
+          } catch (e) { /* no such output on this model */ }
+        }
+      }
+
+      /*
+       * The mode the output is negotiated to, which is not the same as the widget's size. Reported
+       * as WxH@Hz so it reads the way an installer would say it out loud. Our XT245 answers
+       * 1920x1200@60 — the panel's native mode, while the page reports its own 1920x1080 canvas.
+       */
+      if (VideoModeConfigClass) {
+        try {
+          var vmc = new VideoModeConfigClass();
+          if (vmc && typeof vmc.getActiveMode === 'function') {
+            var mode = vmc.getActiveMode();
+            if (mode && typeof mode.then === 'function') {
+              mode.then(function (m) {
+                if (!m) return;
+                var w = m.graphicsPlaneWidth || m.width;
+                var h = m.graphicsPlaneHeight || m.height;
+                var f = m.frequency || m.refreshRate;
+                if (w && h) telemetry.video_mode = w + 'x' + h + (f ? '@' + f : '');
+              }, function () { /* mode not readable on this firmware */ });
+            }
+          }
+        } catch (e) { /* older OS without the call */ }
       }
 
       /*
