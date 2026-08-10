@@ -609,8 +609,8 @@ function updateVerifyBanner(user) {
   const unverified = user && user.email_verified === 0 && user.auth_provider === 'local';
   if (!unverified) { if (existing) existing.remove(); return; }
   if (existing) return;
-  const appEl = document.getElementById('app');
-  if (!appEl || !appEl.parentNode) return;
+  const bannersEl = document.getElementById('banners');
+  if (!bannersEl) return;
   const b = document.createElement('div');
   b.id = 'verifyBanner';
   b.style.cssText = 'background:var(--warning,#f59e0b);color:#1a1200;padding:9px 16px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap';
@@ -624,7 +624,7 @@ function updateVerifyBanner(user) {
     catch { showToast(t('auth.verify_resend_failed'), 'error'); }
   });
   b.appendChild(btn);
-  appEl.prepend(b);
+  bannersEl.appendChild(b);
 }
 
 function updateWidgetSandboxWarningBanner(user) {
@@ -632,8 +632,8 @@ function updateWidgetSandboxWarningBanner(user) {
   const disabled = !!user?.current_organization?.widget_sandbox_isolation_disabled;
   if (!disabled) { if (existing) existing.remove(); return; }
   if (existing) return;
-  const appEl = document.getElementById('app');
-  if (!appEl || !appEl.parentNode) return;
+  const bannersEl = document.getElementById('banners');
+  if (!bannersEl) return;
   const b = document.createElement('div');
   b.id = 'widgetSandboxWarningBanner';
   b.style.cssText = 'background:var(--danger,#dc2626);color:#fff;padding:10px 16px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;font-weight:600';
@@ -646,7 +646,7 @@ function updateWidgetSandboxWarningBanner(user) {
   link.style.cssText = 'color:#fff;text-decoration:underline;font-weight:700';
   b.appendChild(text);
   b.appendChild(link);
-  appEl.prepend(b);
+  bannersEl.appendChild(b);
 }
 
 // Initialize

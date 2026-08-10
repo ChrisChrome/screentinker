@@ -38,7 +38,7 @@ export function openTypeToConfirmModal(opts = {}) {
   const input = overlay.querySelector('#ttcInput');
   const confirmBtn = overlay.querySelector('#ttcConfirm');
   const errorEl = overlay.querySelector('#ttcError');
-  input.focus();
+  input.focus({ preventScroll: true });
 
   const matches = () => input.value.trim() === String(expected);
   input.addEventListener('input', () => { confirmBtn.disabled = !matches(); });

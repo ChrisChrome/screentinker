@@ -1505,6 +1505,7 @@ body {
   .sidebar-backdrop.open { display: block; }
   .nav-link { min-height: 44px; padding: 10px 14px; }
   .content { margin-left: 0; padding: 16px; padding-top: 68px; }
+  #banners { margin-left: 0; }
   .page-header { flex-direction: column; gap: 12px; align-items: flex-start; }
   .device-grid { grid-template-columns: 1fr; }
   .content-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
