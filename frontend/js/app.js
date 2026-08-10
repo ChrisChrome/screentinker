@@ -556,6 +556,7 @@ function updateSidebarUser() {
   const user = getCurrentUser();
   if (!user) return;
   updateVerifyBanner(user);
+  updateWidgetSandboxWarningBanner(user);
 
   // Show admin nav only for platform admins (legacy 'superadmin' or Phase 1 renamed 'platform_admin')
   const adminNav = document.getElementById('adminNavItem');
@@ -623,6 +624,28 @@ function updateVerifyBanner(user) {
     catch { showToast(t('auth.verify_resend_failed'), 'error'); }
   });
   b.appendChild(btn);
+  appEl.parentNode.insertBefore(b, appEl);
+}
+
+function updateWidgetSandboxWarningBanner(user) {
+  const existing = document.getElementById('widgetSandboxWarningBanner');
+  const disabled = !!user?.current_organization?.widget_sandbox_isolation_disabled;
+  if (!disabled) { if (existing) existing.remove(); return; }
+  if (existing) return;
+  const appEl = document.getElementById('app');
+  if (!appEl || !appEl.parentNode) return;
+  const b = document.createElement('div');
+  b.id = 'widgetSandboxWarningBanner';
+  b.style.cssText = 'background:var(--danger,#dc2626);color:#fff;padding:10px 16px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;font-weight:600';
+  const text = document.createElement('span');
+  text.style.whiteSpace = 'pre-line';
+  text.textContent = 'Widget sandbox isolation is DISABLED. Widget code in this organization runs\nwith full access to user sessions. Re-enable in Settings > Security.';
+  const link = document.createElement('a');
+  link.href = '#/settings';
+  link.textContent = 'Open Settings';
+  link.style.cssText = 'color:#fff;text-decoration:underline;font-weight:700';
+  b.appendChild(text);
+  b.appendChild(link);
   appEl.parentNode.insertBefore(b, appEl);
 }
 

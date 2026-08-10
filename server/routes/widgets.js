@@ -193,14 +193,15 @@ router.delete('/:id', (req, res) => {
 });
 
 const KNOWN_WIDGET_TYPES = new Set(['clock','weather','rss','text','webpage','social','directory-board','directory-search','diag-smoothness']);
-function renderWidgetHtml(type, config) {
+function renderWidgetHtml(type, config, opts = {}) {
+  const iframeSandbox = opts.iframeSandbox || 'allow-scripts';
   config = config || {};
   switch (type) {
     case 'clock': return renderClock(config);
     case 'weather': return renderWeather(config);
     case 'rss': return renderRSS(config);
-    case 'text': return renderText(config);
-    case 'webpage': return renderWebpage(config);
+    case 'text': return renderText(config, iframeSandbox);
+    case 'webpage': return renderWebpage(config, iframeSandbox);
     case 'social': return renderSocial(config);
     case 'directory-board': return renderDirectoryBoard(config);
     case 'directory-search': return renderDirectorySearch(config);
@@ -209,11 +210,29 @@ function renderWidgetHtml(type, config) {
   }
 }
 
+function widgetIframeSandboxForWorkspace(workspaceId) {
+  if (!workspaceId) return 'allow-scripts';
+  try {
+    const row = db.prepare(`
+      SELECT COALESCE(o.widget_sandbox_isolation_disabled, 0) AS disabled
+      FROM workspaces ws
+      LEFT JOIN organizations o ON o.id = ws.organization_id
+      WHERE ws.id = ?
+    `).get(workspaceId);
+    return Number(row?.disabled || 0) === 1
+      ? 'allow-scripts allow-same-origin'
+      : 'allow-scripts';
+  } catch (_) {
+    return 'allow-scripts';
+  }
+}
+
 // Render widget as HTML page
 router.get('/:id/render', (req, res) => {
   const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
   if (!widget) return res.status(404).send('Widget not found');
   const config = JSON.parse(widget.config || '{}');
+  const iframeSandbox = widgetIframeSandboxForWorkspace(widget.workspace_id);
   // This page is DESIGNED to be embedded by the player, which frames it in a
   // sandboxed (allow-scripts, no allow-same-origin) iframe = a null origin. The
   // global helmet X-Frame-Options: SAMEORIGIN refuses that (null != same), so
@@ -235,7 +254,7 @@ router.get('/:id/render', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
   }
   res.setHeader('Content-Type', 'text/html');
-  res.send(renderWidgetHtml(widget.widget_type, config));
+  res.send(renderWidgetHtml(widget.widget_type, config, { iframeSandbox }));
 });
 
 // Public JSON feed of a directory board's entries. A directory-search page polls
@@ -309,7 +328,8 @@ router.post('/preview', (req, res) => {
   const { widget_type, config } = req.body || {};
   if (!widget_type || typeof widget_type !== 'string') return res.status(400).json({ error: 'widget_type required' });
   if (!KNOWN_WIDGET_TYPES.has(widget_type)) return res.status(400).json({ error: 'Unknown widget_type' });
-  let html = renderWidgetHtml(widget_type, config || {});
+  const iframeSandbox = widgetIframeSandboxForWorkspace(req.workspaceId);
+  let html = renderWidgetHtml(widget_type, config || {}, { iframeSandbox });
   if (req.workspaceId) html = inlineUserContent(html, req.workspaceId);
   res.setHeader('Content-Type', 'text/html');
   res.send(html);
@@ -331,7 +351,8 @@ router.post('/preview-session', (req, res) => {
   if (!widget_type || typeof widget_type !== 'string') return res.status(400).json({ error: 'widget_type required' });
   if (!KNOWN_WIDGET_TYPES.has(widget_type)) return res.status(400).json({ error: 'Unknown widget_type' });
   const id = uuidv4();
-  const html = renderWidgetHtml(widget_type, config || {});
+  const iframeSandbox = widgetIframeSandboxForWorkspace(req.workspaceId);
+  const html = renderWidgetHtml(widget_type, config || {}, { iframeSandbox });
   previewStore.set(id, { html, widget_type, created: Date.now() });
   res.json({ id, url: `/api/widgets/preview-session/${id}` });
 });
@@ -433,7 +454,7 @@ load(); setInterval(load, 300000);
 </script></body></html>`;
 }
 
-function renderText(c) {
+function renderText(c, iframeSandbox = 'allow-scripts') {
   let html = c.html || '<p style="color:white;padding:20px">Empty text widget</p>';
 
   // LEGACY DESIGNER RESCUE — deliberately narrow.
@@ -535,17 +556,17 @@ function renderText(c) {
   * { margin:0; padding:0; }
   html, body { width:100vw; height:100vh; overflow:hidden; background:${safeCss(c.background, 'transparent')}; }
   iframe { width:100%; height:100%; border:0; display:block; }
-</style></head><body><iframe sandbox="allow-scripts" srcdoc="${escapeHtml(inner)}"></iframe></body></html>`;
+</style></head><body><iframe sandbox="${escapeHtml(iframeSandbox)}" srcdoc="${escapeHtml(inner)}"></iframe></body></html>`;
 }
 
-function renderWebpage(c) {
+function renderWebpage(c, iframeSandbox = 'allow-scripts') {
   const zoom = (c.zoom || 100) / 100;
   const invZoom = 100 / (c.zoom || 100) * 100;
   return `<!DOCTYPE html><html><head><style>
   * { margin:0; } body { height:100vh; overflow:hidden; }
   iframe { width:${invZoom}%; height:${invZoom}%; border:0; transform:scale(${zoom}); transform-origin:0 0; }
 </style></head><body>
-<iframe src="${escapeHtml(safeUrl(c.url))}" sandbox="allow-scripts"></iframe>
+<iframe src="${escapeHtml(safeUrl(c.url))}" sandbox="${escapeHtml(iframeSandbox)}"></iframe>
 ${c.refresh_interval > 0 ? `<script>setInterval(()=>document.querySelector('iframe').src=document.querySelector('iframe').src,${c.refresh_interval * 1000});</script>` : ''}
 </body></html>`;
 }
