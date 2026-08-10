@@ -357,3 +357,87 @@ test('capability names are spelled the same in the server and in all four player
     }
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// THE INVARIANT THAT WAS MISSING: an Android panel must not lose controls by updating.
+//
+// A declared set REPLACES the baseline, it does not merge with it. So every capability the android
+// baseline grants has to survive in the declaration a fielded panel will send after it updates —
+// otherwise the reward for updating is a smaller control panel than before.
+//
+// This is not hypothetical. `display.brightness` was missing and was restored; `remote.screenshot`
+// and `remote.stream` were gated on the accessibility service while the capture path that serves
+// them (ScreenshotCapture.captureView) needs no permission at all, so a Tier-0 panel lost live view
+// by updating. Both were invisible to this suite: the tests above assert things ABOUT the baseline
+// and about hypothetical declared arrays, and nothing compared the two.
+
+/** The capabilities PlayerCapabilities.kt declares for EVERY panel, whatever its privilege. */
+function androidUnconditional() {
+  const src = read('android/app/src/main/java/com/remotedisplay/player/telemetry/PlayerCapabilities.kt');
+  const start = src.indexOf('caps += listOf(');
+  assert.notEqual(start, -1, 'PlayerCapabilities.kt no longer has the unconditional caps += listOf(...) block');
+  let depth = 0, end = -1;
+  for (let i = src.indexOf('(', start); i < src.length; i++) {
+    if (src[i] === '(') depth++;
+    else if (src[i] === ')' && --depth === 0) { end = i; break; }
+  }
+  assert.ok(end > start, 'could not find the end of the unconditional block');
+  // Strip comments first: the block is heavily commented and the prose quotes capability names.
+  const body = src.slice(start, end)
+    .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+  return new Set([...body.matchAll(/"([a-z]+\.[a-z_]+)"/g)].map((m) => m[1]));
+}
+
+test('THE UPDATE INVARIANT: no Android panel loses a baseline capability by updating', () => {
+  const declared = androidUnconditional();
+
+  /*
+   * The one documented exception. display.power is asymmetric: screen_on works anywhere via a wake
+   * lock, but screen_off needs device owner, device-admin FORCE_LOCK, or accessibility — so it is
+   * declared conditionally on purpose, and offering a control that sleeps a panel it cannot wake
+   * would be the worst version of this feature. PlayerCapabilities.kt reasons it out where it is
+   * declared, and player-capabilities.js reasons about the same asymmetry.
+   *
+   * Anything added to this set is a deliberate, argued regression. Adding one to silence a failure
+   * is how the two losses above survived a whole release cycle.
+   */
+  const DELIBERATE = new Set(['display.power']);
+
+  const lost = caps.BASELINE.android.filter((c) => !declared.has(c) && !DELIBERATE.has(c));
+  assert.deepEqual(lost, [],
+    `updating an Android panel would silently remove ${JSON.stringify(lost)} — either declare them `
+    + 'unconditionally, or add them to DELIBERATE with the reasoning written down');
+});
+
+test('the exception list stays honest — every entry is really absent and really argued', () => {
+  // A DELIBERATE entry that is actually declared unconditionally is stale bookkeeping, and hides
+  // the next real regression behind a name that no longer means anything.
+  const declared = androidUnconditional();
+  assert.equal(declared.has('display.power'), false,
+    'display.power is now unconditional — remove it from DELIBERATE above rather than leaving a lie');
+  const src = read('android/app/src/main/java/com/remotedisplay/player/telemetry/PlayerCapabilities.kt');
+  assert.ok(/isOwner \|\| policy\.isAdminActive\(\) \|\| accessibility/.test(src),
+    'display.power is excepted because of that specific three-way guard; if the guard changed, re-argue it');
+});
+
+test('capture is claimed at every tier, because the fallback that serves it needs no permission', () => {
+  // The regression this pins: gating these on `accessibility` while captureScreen() falls through
+  // to a plain view draw. It also made a granted MediaProjection invisible to the server — consent
+  // given, capture working, screenshots still refused, because nothing re-declared.
+  const declared = androidUnconditional();
+  for (const c of ['remote.screenshot', 'remote.stream']) {
+    assert.ok(declared.has(c), `${c} must be unconditional — the baseline grants it and captureView serves it`);
+  }
+  const shot = read('android/app/src/main/java/com/remotedisplay/player/remote/ScreenshotCapture.kt');
+  assert.equal(/checkSelfPermission|Settings\.canWrite|isDeviceOwner/.test(shot), false,
+    'the claim above rests on captureView needing no privilege — it now appears to check one');
+});
+
+test('the Tier-2 privilege is declared under the same guard as the kiosk it stands in for', () => {
+  // Mutation-proofs the other half of the change: deleting this line must fail something.
+  const src = read('android/app/src/main/java/com/remotedisplay/player/telemetry/PlayerCapabilities.kt');
+  assert.ok(/if \(isOwner\) caps \+= "system\.device_owner"/.test(src),
+    'system.device_owner must be declared, so Tier-2 refusals name the capability they mean');
+  assert.ok(/if \(isOwner\) caps \+= "system\.kiosk"/.test(src),
+    'and system.kiosk must remain until the stand-in retires a release later');
+});

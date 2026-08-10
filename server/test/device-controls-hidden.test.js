@@ -53,6 +53,20 @@ function render(device) {
     renderDeviceClock: () => '',
     renderPlaylist: () => '',
     isBrightSignDevice: (d) => String(d.platform || '').toLowerCase().includes('brightsign'),
+    // Same four signals, same order, as the real helper in device-detail.js and platformFamily()
+    // in server/lib/player-capabilities.js. Kept as a stub rather than imported because this file
+    // renders the template in a bare VM context — but if the real rule changes, change it here too.
+    // The brightsign/tizen/wgt short-circuits come FIRST and are load-bearing: a Tizen TV registers
+    // android_version 'Tizen 6.5', which satisfies the Android test below.
+    isAndroidDevice: (d) => {
+      if (!d) return false;
+      const p = String(d.platform || '').toLowerCase();
+      if (p.includes('brightsign') || p.includes('tizen')) return false;
+      if (d.client_type === 'wgt') return false;
+      if (d.client_type === 'apk') return true;
+      const av = String(d.android_version || '');
+      return av !== '' && !av.startsWith('Web/');
+    },
     TERMINAL_PRESETS: [],
     localStorage: { getItem: () => null, setItem: () => {} },
     Math, Date, JSON, String, Array, Object,
@@ -71,8 +85,12 @@ const WEB = {
   capabilities: ['playback.video', 'audio.volume', 'remote.screenshot', 'remote.stream',
     'remote.input', 'system.restart_player'],
 };
+// Exactly what tizen/js/app.js registers, including the android_version field — which reads
+// 'Tizen 6.5' and NOT anything Android-shaped. An earlier version of this fixture omitted it, so
+// every "not offered to Tizen" assertion below passed without ever exercising the case that
+// actually matters.
 const TIZEN = {
-  platform: 'Tizen 6.5',
+  platform: 'Tizen 6.5', client_type: 'wgt', android_version: 'Tizen 6.5',
   capabilities: ['playback.video', 'audio.volume', 'display.rotation', 'remote.input',
     'system.restart_player'],
 };
@@ -187,4 +205,104 @@ test('every gated control still renders balanced markup', () => {
     const bclose = (html.match(/<\/button>/g) || []).length;
     assert.equal(bopen, bclose, 'unbalanced <button>');
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The MediaProjection capture bootstrap.
+//
+// This button is what turns screen capture ON for an Android panel that cannot do it yet. It hung
+// off can('remote.screenshot') — which is backwards twice over. Android declares that capability
+// only once the accessibility service is running, so the gate hid the button from every panel that
+// still needed pressing, and showed it on browsers and TVs that have no MediaProjection at all.
+
+test('the capture bootstrap is offered to an Android panel that cannot capture yet', () => {
+  const html = render({ client_type: 'apk', android_version: '13',
+    capabilities: ['playback.video', 'remote.input'] });
+  assert.ok(has(html, 'enableSystemCaptureBtn'),
+    'a panel with no remote.screenshot is exactly the one that needs the bootstrap');
+});
+
+test('THE ~440: a legacy panel keeps the button, using the shape the API really returns', () => {
+  // Fed through the REAL capabilitiesFor(), not a fixture with the field missing. That distinction
+  // sank an earlier version of this test: it rendered a device with no `capabilities` key at all,
+  // which made the harness's caps null — a shape GET /api/devices/:id never produces, because it
+  // resolves declared-or-baseline into one populated array. The test passed while production did
+  // the opposite, and the android baseline CONTAINS remote.screenshot, so any gate keyed on
+  // "already has capture" hides the bootstrap from every undeclared panel in the field.
+  const { capabilitiesFor } = require('../lib/player-capabilities');
+  const row = { client_type: 'apk', android_version: '11' };            // declares nothing
+  const resolved = capabilitiesFor(row);
+  assert.ok(resolved.includes('remote.screenshot'),
+    'precondition: the baseline grants capture, which is what makes the naive gate wrong');
+  const html = render({ ...row, capabilities: resolved });
+  assert.ok(has(html, 'enableSystemCaptureBtn'), 'the ~440 must not lose the bootstrap');
+});
+
+test('a panel that already declares capture is still offered the better path', () => {
+  // Deliberately NOT hidden. Declaring remote.screenshot on Android means the accessibility path;
+  // MediaProjection is the one WebSocketService tries first and is strictly better, so this is an
+  // upgrade rather than a redundant control.
+  assert.ok(has(render(ANDROID_FULL), 'enableSystemCaptureBtn'));
+});
+
+test('nothing that lacks MediaProjection is offered it', () => {
+  // A browser tab, a Tizen TV and a BrightSign have no such API. The old gate showed the button on
+  // all three whenever they declared remote.screenshot by their own, unrelated means.
+  for (const [name, dev] of [['web', WEB], ['tizen', TIZEN], ['brightsign', BRIGHTSIGN]]) {
+    assert.equal(has(render(dev), 'enableSystemCaptureBtn'), false,
+      `${name} has no MediaProjection to bootstrap`);
+  }
+});
+
+test('a device-owner panel is told it already has system capture instead', () => {
+  // Tier 2 needs no consent flow at all, so it gets the explanatory line, not the button.
+  const html = render({ client_type: 'apk', android_version: '13', tier: 2,
+    capabilities: ['playback.video'] });
+  assert.equal(has(html, 'enableSystemCaptureBtn'), false, 'an owner does not need to be asked');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Pinning the REAL helper.
+//
+// Everything above renders the genuine template but runs it against the stubbed isAndroidDevice in
+// the sandbox, because the template is evaluated in a bare VM context. That means the assertions
+// about Tizen prove the STUB is right, not the shipped function — mutation-testing confirmed it:
+// reverting device-detail.js to the buggy two-signal helper leaves every test above green.
+//
+// So assert against the source directly. It is a coarse check, but it is the difference between a
+// convention ("if the real rule changes, change it here too") and something that fails.
+
+test('the shipped isAndroidDevice short-circuits brightsign, tizen and wgt BEFORE the Android test', () => {
+  const fn = (() => {
+    const i = SRC.indexOf('function isAndroidDevice(device) {');
+    assert.notEqual(i, -1, 'device-detail.js no longer defines isAndroidDevice');
+    let depth = 0, end = -1;
+    for (let k = SRC.indexOf('{', i); k < SRC.length; k++) {
+      if (SRC[k] === '{') depth++;
+      else if (SRC[k] === '}' && --depth === 0) { end = k + 1; break; }
+    }
+    return SRC.slice(i, end);
+  })();
+
+  // A Tizen TV registers android_version 'Tizen 6.5' (tizen/js/app.js), which satisfies the
+  // Android test. Only an earlier short-circuit keeps a MediaProjection button off a Samsung panel.
+  const brightsign = fn.indexOf("includes('brightsign')");
+  const tizen = fn.indexOf("includes('tizen')");
+  const wgt = fn.indexOf("'wgt'");
+  const androidTest = fn.indexOf("startsWith('Web/')");
+  for (const [name, idx] of [['brightsign', brightsign], ['tizen', tizen], ['wgt', wgt]]) {
+    assert.notEqual(idx, -1, `isAndroidDevice lost its ${name} short-circuit`);
+    assert.ok(idx < androidTest, `the ${name} short-circuit must come BEFORE the android_version test`);
+  }
+
+  // And behave correctly when actually executed, not merely contain the right text.
+  const real = eval(`(${fn.replace('function isAndroidDevice', 'function')})`);   // eslint-disable-line no-eval
+  assert.equal(real({ platform: 'Tizen 6.5', client_type: 'wgt', android_version: 'Tizen 6.5' }), false,
+    'a Tizen TV as it really registers');
+  assert.equal(real({ client_type: 'wgt' }), false, 'the .wgt signal alone is enough');
+  assert.equal(real({ platform: 'brightsign', android_version: 'Web/Chrome 120' }), false, 'a BrightSign');
+  assert.equal(real({ android_version: 'Web/Chrome' }), false, 'a browser tab');
+  assert.equal(real({ client_type: 'apk', android_version: '11' }), true, 'a legacy Android panel');
+  assert.equal(real({ android_version: '9' }), true, 'an Android panel paired before client_type existed');
+  assert.equal(real(null), false, 'and it never throws on a missing device');
 });
