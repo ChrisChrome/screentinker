@@ -22,7 +22,7 @@ const path = require('node:path');
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'brightsign', 'st-bridge.js'), 'utf8');
 
 /** Load the bridge into a fake window. `mods` present => pretend we are on a BrightSign. */
-function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = {}, storageEstimate = null, temperature = null } = {}) {
+function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = {}, storageEstimate = null, temperature = null, os = null, fs = null } = {}) {
   const posted = [];
   const registryStore = new Map(Object.entries(seed));
   const cec = { sent: [] };
@@ -66,6 +66,10 @@ function load({ search = '', mods = null, ua = 'Mozilla/5.0 Chrome/150', seed = 
 
   if (mods) {
     sandbox.require = (name) => {
+      // Node's standard library, present because the widget runs with nodejs_enabled.
+      // Not an @brightsign module, so it is answered before the platform ones.
+      if (name === 'os') { if (!os) throw new Error("Cannot find module 'os'"); return os; }
+      if (name === 'fs') { if (!fs) throw new Error("Cannot find module 'fs'"); return fs; }
       if (name === '@brightsign/messageport') {
         return function () {
           return {
@@ -423,4 +427,133 @@ test('off-platform it resolves false immediately rather than hanging the render'
   const { api, ready } = load();
   await ready;
   assert.equal(await api.setOrientation('portrait'), false);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The LAN address.
+//
+// The dashboard has had a "Local IP" field since 1.9.29 and it was NULL for every BrightSign ever
+// paired — 6000 consecutive telemetry rows on our XT245 while it sat at a perfectly reachable
+// 192.168.1.46. The host half (autorun.brs) does collect it, but nothing the host sends was
+// arriving, so the field could only ever be filled from the page.
+//
+// There is no @brightsign module for this, and looking for one is the trap: on FW 9.1.93.2
+// @brightsign/networkconfiguration exists but exposes only callback/getNeighborInformation/
+// enableLeds, and @brightsign/hostconfiguration returns host settings with no address in them.
+// Both enumerated on the live player. BrightSign's own dev-cookbook (html5-app-template, both the
+// .ts and .js variants) uses Node's os.networkInterfaces(), which is available because the widget
+// is created with nodejs_enabled.
+
+test('the LAN address comes from os.networkInterfaces(), the way the vendor does it', () => {
+  const { api } = load({
+    mods: [],
+    os: {
+      networkInterfaces: () => ({
+        lo: [{ address: '127.0.0.1', family: 'IPv4', internal: true }],
+        eth0: [{ address: '192.168.1.46', family: 'IPv4', internal: false }],
+      }),
+    },
+  });
+  api.refreshTelemetry();
+  assert.equal(api.telemetrySnapshot().local_ip, '192.168.1.46');
+});
+
+test('loopback and a DHCP-less link-local are never reported', () => {
+  // 169.254.x is what a player assigns itself when DHCP never answered. Sending an operator to an
+  // address that cannot be reached is worse than showing nothing.
+  for (const bad of ['127.0.0.1', '169.254.10.4']) {
+    const { api } = load({
+      mods: [],
+      os: { networkInterfaces: () => ({ eth0: [{ address: bad, family: 'IPv4', internal: bad.startsWith('127.') }] }) },
+    });
+    api.refreshTelemetry();
+    assert.equal(api.telemetrySnapshot().local_ip, undefined, `${bad} must not be reported`);
+  }
+});
+
+test('family is accepted as the string OR the number', () => {
+  // "IPv4" on the Node in this firmware and in the cookbook; the number 4 since Node 18. This file
+  // outlives firmwares, so it must not care which it is handed.
+  const { api } = load({
+    mods: [],
+    os: { networkInterfaces: () => ({ eth0: [{ address: '10.0.0.7', family: 4, internal: false }] }) },
+  });
+  api.refreshTelemetry();
+  assert.equal(api.telemetrySnapshot().local_ip, '10.0.0.7');
+});
+
+test('a browser has no os module and simply reports no address', () => {
+  const { api } = load({ mods: [] });
+  assert.doesNotThrow(() => api.refreshTelemetry());
+  assert.equal(api.telemetrySnapshot().local_ip, undefined);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Memory, load, uptime and REAL disk — all from Node's stdlib, all previously NULL on BrightSign.
+//
+// The storage numbers are the ones that were actively misleading rather than merely absent: the
+// page reported navigator.storage.estimate(), so our XT245 answered "1026 MB total" for a 119 GB
+// NVMe. That is the browser's cache budget, not the machine, and an operator reading it has been
+// told something false. Verified on the player: 119616 MB, which matches the kernel's block count.
+
+const OS_STUB = {
+  networkInterfaces: () => ({ eth0: [{ address: '192.168.1.46', family: 'IPv4', internal: false }] }),
+  totalmem: () => 3656 * 1048576,
+  freemem: () => 2773 * 1048576,
+  uptime: () => 149,
+  loadavg: () => [0.2, 0.3, 0.3],
+  cpus: () => [{}, {}, {}, {}],
+};
+
+test('memory and load are reported from os, not left empty', () => {
+  const { api } = load({ mods: [], os: OS_STUB });
+  api.refreshTelemetry();
+  const t = api.telemetrySnapshot();
+  assert.equal(t.ram_total_mb, 3656);
+  assert.equal(t.ram_free_mb, 2773);
+  assert.equal(t.cpu_usage, 5, '0.2 load over 4 cores = 5%');
+});
+
+test('uptime is the MACHINE, which is what makes a reboot loop visible', () => {
+  // The page sends performance.now()/1000 — how long the PAGE has been up. A widget rebuilt by the
+  // watchdog resets that while the player has been running for weeks.
+  const { api } = load({ mods: [], os: OS_STUB });
+  api.refreshTelemetry();
+  assert.equal(api.telemetrySnapshot().uptime_seconds, 149);
+});
+
+test('THE MISLEADING ONE: storage is the disk, not the browser cache quota', () => {
+  const fsStub = {
+    readdirSync: (p) => (p === '/storage' ? ['sd', 'ssd'] : []),
+    statfsSync: (p) => {
+      if (p === '/storage/ssd') return { blocks: 31258710, bsize: 4096, bavail: 31245000, bfree: 31245000 };
+      if (p === '/storage/sd') return { blocks: 1000, bsize: 4096, bavail: 500, bfree: 500 };
+      throw new Error('not a mount');
+    },
+  };
+  const { api } = load({ mods: [], os: OS_STUB, fs: fsStub, storageEstimate: { quota: 1026 * 1048576, usage: 2 * 1048576 } });
+  api.refreshTelemetry();
+  const t = api.telemetrySnapshot();
+  assert.equal(t.storage_total_mb, 122104, 'the 119 GB volume, not the 1026 MB quota');
+  assert.ok(t.storage_total_mb > 100000, 'a browser quota would be ~1000');
+});
+
+test('the LARGEST mount wins, because which volume a player boots from varies', () => {
+  // Ours runs from an NVMe with a dead card slot; others boot from SD. Picking the first mount
+  // would report a 4 MB card as the content volume on exactly those players.
+  const fsStub = {
+    readdirSync: () => ['sd', 'ssd'],
+    statfsSync: (p) => (p === '/storage/sd'
+      ? { blocks: 1024, bsize: 4096, bavail: 1000, bfree: 1000 }
+      : { blocks: 262144, bsize: 4096, bavail: 200000, bfree: 200000 }),
+  };
+  const { api } = load({ mods: [], os: OS_STUB, fs: fsStub });
+  api.refreshTelemetry();
+  assert.equal(api.telemetrySnapshot().storage_total_mb, 1024, 'the 1 GiB ssd, not the 4 MiB sd');
+});
+
+test('a firmware without statfs degrades instead of throwing', () => {
+  const { api } = load({ mods: [], os: OS_STUB, fs: { readdirSync: () => [] } });
+  assert.doesNotThrow(() => api.refreshTelemetry());
+  assert.equal(api.telemetrySnapshot().local_ip, '192.168.1.46', 'and the rest still reports');
 });

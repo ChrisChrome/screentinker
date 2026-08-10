@@ -47,6 +47,14 @@
    */
   var VideoModeConfigClass = tryRequire('@brightsign/videomodeconfiguration');
   var CecClass = tryRequire('@brightsign/cec');
+  /*
+   * Node's standard library, present because the widget is created with nodejs_enabled. Used for
+   * the LAN address (see refreshTelemetry) exactly as BrightSign's own dev-cookbook templates do.
+   * tryRequire, not a bare require: in a plain browser there is no require at all, and this file
+   * must load there too.
+   */
+  var osModule = tryRequire('os');
+  var fsModule = tryRequire('fs');
 
   var port = null;
   if (MessagePortClass) {
@@ -879,6 +887,125 @@
             }, function () { /* sensor unavailable on this model */ });
           }
         } catch (e) { /* older OS without the call */ }
+      }
+
+      /*
+       * The address this player holds on the LAN — the one an integrator needs to reach its DWS on
+       * site, and the field the dashboard has always had a slot for and never been able to fill.
+       *
+       * This is Node's own `os.networkInterfaces()`, which is what BrightSign's dev-cookbook does in
+       * both html5-app-template/src/info.ts and src-js/info.js. The widget is created with
+       * nodejs_enabled, so the standard library is simply there — there is no @brightsign module for
+       * this, and looking for one is a dead end that cost a whole afternoon:
+       *
+       *   @brightsign/networkconfiguration EXISTS but exposes only callback,
+       *   getNeighborInformation and enableLeds — no config reader at all.
+       *   @brightsign/hostconfiguration has getConfig()/applyConfig(), but it returns HOST settings
+       *   (forwardingEnabled, hostName, loginPassword, nameServers…) with no address in them.
+       *
+       * Both verified by enumerating the live objects on our XT245 (FW 9.1.93.2), not from docs —
+       * the docs pages for the JavaScript API 404, and their own roNetworkConfiguration page links
+       * to one of the dead URLs. getCurrentConfig() is BrightScript-only.
+       *
+       * `internal` is Node's own loopback flag, which beats string-matching 127.*; the 169.254
+       * link-local a player assigns itself when DHCP never answered is still filtered by hand,
+       * because sending an operator to an unreachable address is worse than showing nothing.
+       *
+       * family is compared loosely: it is the string "IPv4" on the Node in this firmware (and in
+       * the cookbook), but became the number 4 in Node 18, and this file outlives firmwares.
+       */
+      if (osModule && typeof osModule.networkInterfaces === 'function') {
+        try {
+          var ifaces = osModule.networkInterfaces() || {};
+          var names = Object.keys(ifaces);
+          for (var ni = 0; ni < names.length && !telemetry.local_ip; ni++) {
+            var addrs = ifaces[names[ni]] || [];
+            for (var ai = 0; ai < addrs.length; ai++) {
+              var a = addrs[ai];
+              if (!a || a.internal) continue;
+              if (a.family !== 'IPv4' && a.family !== 4) continue;
+              var ip = String(a.address || '');
+              if (!ip || ip.indexOf('169.254.') === 0) continue;
+              telemetry.local_ip = ip;
+              break;
+            }
+          }
+        } catch (e) { /* no networking yet, or a firmware without it — stay silent */ }
+      }
+
+      /*
+       * Memory, load and REAL uptime — all from the same Node standard library the address above
+       * came from, and all previously NULL on every BrightSign in the fleet.
+       *
+       * uptime deliberately OVERRIDES the page's own figure. index.html sends
+       * performance.now()/1000, which is how long this PAGE has been up; a widget rebuilt by the
+       * watchdog resets it while the player has been running for weeks. os.uptime() is the machine,
+       * which is what an operator reading "uptime" means and what makes a reboot loop visible.
+       *
+       * cpu_usage is the 1-minute load average normalised by core count and expressed as a
+       * percentage, so it is comparable with what the other players report rather than being a raw
+       * load figure that means nothing next to them. Clamped, because load can exceed core count.
+       */
+      if (osModule) {
+        try {
+          if (typeof osModule.totalmem === 'function' && typeof osModule.freemem === 'function') {
+            var totalB = osModule.totalmem();
+            var freeB = osModule.freemem();
+            if (isFinite(totalB) && totalB > 0) telemetry.ram_total_mb = Math.round(totalB / 1048576);
+            if (isFinite(freeB) && freeB >= 0) telemetry.ram_free_mb = Math.round(freeB / 1048576);
+          }
+          if (typeof osModule.uptime === 'function') {
+            var up = osModule.uptime();
+            if (isFinite(up) && up > 0) telemetry.uptime_seconds = Math.round(up);
+          }
+          if (typeof osModule.loadavg === 'function' && typeof osModule.cpus === 'function') {
+            var la = osModule.loadavg();
+            var cores = (osModule.cpus() || []).length || 1;
+            if (la && isFinite(la[0])) {
+              var pct = Math.round((la[0] / cores) * 100);
+              telemetry.cpu_usage = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+            }
+          }
+        } catch (e) { /* a firmware without part of the stdlib — report what did work */ }
+      }
+
+      /*
+       * REAL disk, from statfs rather than the browser's storage quota.
+       *
+       * The quota is what this file used to report and it is not the disk: our XT245 answered
+       * "1026 MB total" for a 119 GB NVMe, because navigator.storage.estimate() describes the
+       * widget's cache budget. An operator reading that has been told something false about the
+       * machine, which is worse than an empty field.
+       *
+       * The volume is DISCOVERED, not assumed. BrightSign mounts storage under /storage (SD, SSD,
+       * USB), and which one a given player boots from varies — ours runs from an NVMe while the
+       * card slot is dead. So statfs every mount and keep the largest, which is the content volume
+       * on every shape of player. Falls back to the widget's own working directory.
+       */
+      if (fsModule && typeof fsModule.statfsSync === 'function') {
+        try {
+          var candidates = [];
+          try {
+            var mounts = fsModule.readdirSync('/storage') || [];
+            for (var mi = 0; mi < mounts.length; mi++) candidates.push('/storage/' + mounts[mi]);
+          } catch (e) { /* no /storage on this firmware */ }
+          candidates.push('/');
+          var bestTotal = 0, bestFree = 0;
+          for (var ci = 0; ci < candidates.length; ci++) {
+            try {
+              var st = fsModule.statfsSync(candidates[ci]);
+              if (!st || !isFinite(st.blocks) || !isFinite(st.bsize)) continue;
+              var tot = st.blocks * st.bsize;
+              // bavail is space usable by an unprivileged writer; bfree includes the reserve.
+              var fre = (isFinite(st.bavail) ? st.bavail : st.bfree) * st.bsize;
+              if (tot > bestTotal) { bestTotal = tot; bestFree = fre; }
+            } catch (e) { /* not a mount point */ }
+          }
+          if (bestTotal > 0) {
+            telemetry.storage_total_mb = Math.round(bestTotal / 1048576);
+            telemetry.storage_free_mb = Math.round(bestFree / 1048576);
+          }
+        } catch (e) { /* leave the quota estimate below to fill in */ }
       }
 
       /*
