@@ -613,7 +613,7 @@ function updateVerifyBanner(user) {
   if (!appEl || !appEl.parentNode) return;
   const b = document.createElement('div');
   b.id = 'verifyBanner';
-  b.style.cssText = 'background:var(--warning,#f59e0b);color:#1a1200;padding:9px 16px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap';
+  b.style.cssText = 'background:var(--warning,#f59e0b);color:#1a1200;padding:9px 16px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;margin-left:var(--sidebar-width,220px)';
   b.innerHTML = `<span>✉️ ${t('auth.verify_banner')}</span>`;
   const btn = document.createElement('button');
   btn.className = 'btn btn-sm';
@@ -636,7 +636,7 @@ function updateWidgetSandboxWarningBanner(user) {
   if (!appEl || !appEl.parentNode) return;
   const b = document.createElement('div');
   b.id = 'widgetSandboxWarningBanner';
-  b.style.cssText = 'background:var(--danger,#dc2626);color:#fff;padding:10px 16px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;font-weight:600';
+  b.style.cssText = 'background:var(--danger,#dc2626);color:#fff;padding:10px 16px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;font-weight:600;margin-left:var(--sidebar-width,220px)';
   const text = document.createElement('span');
   text.style.whiteSpace = 'pre-line';
   text.textContent = 'Widget sandbox isolation is DISABLED. Widget code in this organization runs\nwith full access to user sessions. Re-enable in Settings > Security.';
