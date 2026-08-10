@@ -896,13 +896,42 @@ Sub SendHostTelemetry(widget As Object, cfg As Object)
         t.os_version = di.GetVersion()
     end if
 
-    ' The wired address. Empty string when nothing is configured, per the documented contract.
-    nc = CreateObject("roNetworkConfiguration", 0)
-    if nc <> invalid then
-        cur = nc.GetCurrentConfig()
-        if cur <> invalid and cur.ip4_address <> invalid and cur.ip4_address <> "" then
-            t.local_ip = cur.ip4_address
+    ' The address this player holds on the LAN — the one an integrator needs to reach its DWS on
+    ' site, and the one the dashboard has never been able to show for a BrightSign.
+    '
+    ' Interface 0 alone was not enough. Our XT245 produced 6000 telemetry rows with local_ip NULL
+    ' while sitting on a healthy PoE network with a perfectly good address, and every other field in
+    ' this same payload arrived. So try each interface the platform documents rather than assuming
+    ' the first one answers: 0/"eth0" is the Ethernet port, "eth1" the control port on players that
+    ' have one, 1/"wlan0" the internal WiFi.
+    '
+    ' ⚠️ The STRING forms matter. Per the Object Reference, an INTEGER interface "must currently
+    ' exist on the player; otherwise the object-creation function will return Invalid" — the string
+    ' names carry no such condition, so they are the ones that answer when the integer does not.
+    '
+    ' NOT roDeviceInfo.GetIPAddrs(): that is Roku's API. BrightSign's roDeviceInfo has no network
+    ' method at all, and calling it would raise "Member function not found" here every minute. This
+    ' is the exact family of mistake server/test/brightscript-api-surface.test.js exists to catch.
+    ' The list is mixed integer/string on purpose (see above) and is walked in full rather than with
+    ' an early exit, because the guard is the same either way and a typed `exit for` inside a nested
+    ' if is exactly the sort of thing that cannot be checked from this repo.
+    for each iface in [0, "eth0", "eth1", 1, "wlan0"]
+        if t.local_ip = invalid then
+            nc = CreateObject("roNetworkConfiguration", iface)
+            if nc <> invalid then
+                cur = nc.GetCurrentConfig()
+                if cur <> invalid and cur.ip4_address <> invalid and cur.ip4_address <> "" then
+                    t.local_ip = cur.ip4_address
+                end if
+            end if
         end if
+    end for
+
+    ' Say so when nothing answered. Silence here is what made this invisible for a whole fleet: the
+    ' field simply stayed NULL and looked like a server-side gap rather than a player that never
+    ' sent it. One line on the host log costs nothing and names the real state.
+    if t.local_ip = invalid then
+        HostLog(widget, "net", "no ip4_address on any interface (0/eth0/eth1/1/wlan0)")
     end if
 
     vm = CreateObject("roVideoMode")
