@@ -862,7 +862,6 @@ per display.
     overlay.querySelector('#widgetSandboxConfirmCancel').addEventListener('click', () => close(false));
     submit.addEventListener('click', () => close(true));
     overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(false); });
-    setTimeout(() => input.focus(), 0);
   });
 }
 
