@@ -110,3 +110,63 @@ test('#245: the login banner spells the product name', () => {
   const banner = lines.join('\n');
   assert.ok(banner.includes('| | | |'), 'the n glyph is missing from the banner — it reads "Scree Tinker"');
 });
+
+// ---------------------------------------------------------------------------------------------
+// #245 round two: the installer advertised what it had not installed.
+//
+// The MOTD is written unconditionally and listed three commands, but section 11 creates them only
+// on an All-in-One install. So a Player-Only Pi greeted its operator at every SSH login with three
+// commands that were not on it. Same failure shape as the first round — the script describing a
+// state it never reached — and the same reporter found both.
+
+// The generated MOTD for a given mode: the base heredoc plus whichever command block that mode
+// appends. Extracted rather than re-typed, so a future edit to either half shows up here.
+function motdFor(playerOnly) {
+  const base = SRC.match(/cat > \/etc\/motd << 'MOTDEOF'\n([\s\S]*?)\nMOTDEOF/);
+  assert.ok(base, 'MOTD heredoc not found — did the installer restructure?');
+  const blocks = [...SRC.matchAll(/cat >> \/etc\/motd << 'MOTDCMDEOF'\n([\s\S]*?)\nMOTDCMDEOF/g)];
+  assert.equal(blocks.length, 2, 'expected exactly two per-mode MOTD command blocks');
+  // The all-in-one block is written in the `if [ "$PLAYER_ONLY" = false ]` arm, which comes first.
+  return base[1] + (playerOnly ? blocks[1][1] : blocks[0][1]);
+}
+
+// Which management commands the installer actually creates in a given mode.
+function commandsCreated(playerOnly) {
+  const all = [...SRC.matchAll(/cat > \/usr\/local\/bin\/(screentinker-[a-z]+)/g)].map((m) => m[1]);
+  // Section 11 is an if/else: the all-in-one arm creates update, the player arm does not.
+  return playerOnly ? all.filter((c) => c !== 'screentinker-update') : all;
+}
+
+test('#245: the MOTD never advertises a command that mode did not install', () => {
+  for (const playerOnly of [false, true]) {
+    const motd = motdFor(playerOnly);
+    const created = commandsCreated(playerOnly);
+    const advertised = [...motd.matchAll(/(screentinker-[a-z]+)/g)].map((m) => m[1]);
+    assert.ok(advertised.length > 0, `${playerOnly ? 'player' : 'all-in-one'} MOTD lists no commands at all`);
+    for (const cmd of advertised) {
+      assert.ok(created.includes(cmd),
+        `the ${playerOnly ? 'Player-Only' : 'All-in-One'} MOTD advertises ${cmd}, which that mode does not install`);
+    }
+  }
+});
+
+test('#245: a Player-Only Pi is not left with no diagnostics at all', () => {
+  // The cheap fix would have been to print nothing on a player. That trades a wrong banner for a
+  // machine an operator cannot inspect over SSH, which is the harder support call.
+  const motd = motdFor(true);
+  assert.match(motd, /screentinker-status/, 'a player still needs to answer "is it running?"');
+  assert.match(motd, /screentinker-logs/, 'and "why did it stop?"');
+  assert.doesNotMatch(motd, /screentinker-update/,
+    'there is no local server to update on a player-only install, so it must not be offered');
+});
+
+test('#245: the Wayland cursor claim is backed by something that runs', () => {
+  // The launcher used to state that the installer wrote the compositor cursor config "below". It
+  // did not: wayfire.ini and hide_cursor each appeared exactly once, both inside that comment.
+  const code = SRC.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+  assert.match(code, /wayfire\.ini/, 'no wayfire.ini handling outside comments');
+  assert.match(code, /\[hide-cursor\]/, 'the hide-cursor section is never written');
+  assert.match(code, /hide_delay/, 'the plugin is configured without a delay');
+  // Non-destructive: a Pi whose owner already tuned wayfire must not silently lose it.
+  assert.match(code, /screentinker-bak/, 'wayfire.ini is edited without a backup');
+});

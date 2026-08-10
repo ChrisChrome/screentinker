@@ -81,7 +81,13 @@
 
     <h2>Step 2: Run the ScreenTinker installer</h2>
     <p>Open a terminal on the Pi and run:</p>
-    <pre><code>curl -sL https://screentinker.com/scripts/raspberry-pi-setup.sh | bash</code></pre>
+    <pre><code>curl -sL https://screentinker.com/scripts/raspberry-pi-setup.sh | sudo bash</code></pre>
+    <p>The <code>sudo</code> is required — the installer writes systemd units, installs packages and
+    configures autostart. Without it the script stops on its first line and prints the correct
+    command, so nothing is half-installed.</p>
+    <p>That gives you <strong>All-in-One</strong>: the server and the player on the same Pi. To use
+    the Pi as a player only, pointing at a ScreenTinker server you already run:</p>
+    <pre><code>curl -sL https://screentinker.com/scripts/raspberry-pi-setup.sh | sudo bash -s -- --player-only https://your-server</code></pre>
     <p>The script will:</p>
     <ul>
       <li>Install Chromium (the kiosk browser used as the player)</li>

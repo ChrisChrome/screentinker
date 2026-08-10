@@ -328,8 +328,11 @@ if [ "\$SESSION_TYPE" = "wayland" ]; then
     # (wlroots-based wayfire/labwc); if it is not, the compositor's own idle config is the
     # documented fallback and README says so.
     command -v wlopm >/dev/null 2>&1 && wlopm --on '*' 2>/dev/null || true
-    # unclutter is X11-only. Under wayfire the cursor is hidden by the compositor
-    # (hide_cursor / idle plugin), which the installer writes below when wayfire.ini exists.
+    # unclutter is X11-only — it exits immediately here, which is why a Wayland Pi kept its cursor
+    # on screen while the install looked complete. Hiding it is the COMPOSITOR's job on Wayland;
+    # the installer configures wayfire's hide-cursor plugin at install time (section 9b). If this
+    # Pi runs labwc instead, there is no equivalent setting and the cursor stays — README says so
+    # rather than this pretending otherwise.
 else
     # Disable screen blanking and power management
     xset s off
@@ -533,6 +536,49 @@ EOF
 fi
 
 # ============================================================
+# 9b. Wayland cursor hiding (wayfire)
+# ============================================================
+# On X11 the launcher runs `unclutter -idle 3`. On Wayland unclutter cannot work at all — there is
+# no root window to track and no client may move or hide another client's cursor — so hiding it is
+# the compositor's decision. Pi OS Bookworm on Pi 4/5 defaults to wayfire, which has a hide-cursor
+# plugin; this configures it. A previous version of this script claimed in a comment to do exactly
+# this and never did, so a Wayland Pi sat there with a mouse pointer on the sign (#245).
+#
+# Written at install time rather than from the launcher because wayfire reads this at session
+# start. It is also idempotent and non-destructive: a Pi whose owner has already tuned wayfire.ini
+# keeps their settings, and the file is backed up before the first edit either way.
+if [ -f "$PI_HOME/.config/wayfire.ini" ]; then
+    log "Configuring wayfire to hide the cursor..."
+    WF="$PI_HOME/.config/wayfire.ini"
+    [ -f "${WF}.screentinker-bak" ] || cp "$WF" "${WF}.screentinker-bak"
+
+    if grep -q '^\[hide-cursor\]' "$WF"; then
+        log "  wayfire.ini already has [hide-cursor] — leaving it alone"
+    else
+        printf '\n[hide-cursor]\nhide_delay = 3000\n' >> "$WF"
+    fi
+
+    # The plugin only loads if it is named in core's plugin list, and that list is space-separated
+    # on one line. Appending to it is fiddly enough to be worth doing carefully rather than with a
+    # blind sed: only touch the line when it exists and does not already mention us.
+    if grep -qE '^\s*plugins\s*=' "$WF"; then
+        if ! grep -E '^\s*plugins\s*=' "$WF" | grep -q 'hide-cursor'; then
+            sed -i 's/^\(\s*plugins\s*=.*\)$/\1 hide-cursor/' "$WF"
+        fi
+    else
+        warn "wayfire.ini has no [core] plugins line — add 'hide-cursor' to it to hide the pointer"
+    fi
+    chown "$PI_USER":"$PI_USER" "$WF" 2>/dev/null || true
+elif [ "$HAS_DESKTOP" = true ]; then
+    # labwc (the newer Pi OS compositor) has no cursor-hiding option, and neither do we from the
+    # outside. Say so plainly instead of leaving the operator to wonder whether it failed.
+    if command -v labwc >/dev/null 2>&1; then
+        warn "This Pi appears to run labwc, which has no cursor-hide setting — the pointer will stay visible."
+        warn "Switch to wayfire (raspi-config > Advanced > Wayland) or to X11 if a hidden cursor matters."
+    fi
+fi
+
+# ============================================================
 # 10. Pi display and boot optimizations
 # ============================================================
 log "Applying display optimizations..."
@@ -651,6 +697,52 @@ case "${1:-server}" in
 esac
 LOGSEOF
     chmod +x /usr/local/bin/screentinker-logs
+else
+    # Player-Only gets its own pair. It used to get NONE, while section 12 below wrote an MOTD
+    # advertising all three to every install — so a player Pi greeted its operator at each SSH
+    # login with three commands that were never on it (#245). There is no server here to update,
+    # so screentinker-update is genuinely not applicable and is not offered; status and logs are,
+    # and a player with no way to answer "is it running?" is the harder machine to support.
+    log "Creating management scripts (player)..."
+
+    cat > /usr/local/bin/screentinker-status << PSTATUSEOF
+#!/bin/bash
+echo ""
+echo "=== ScreenTinker Player Status ==="
+echo ""
+if systemctl is-active screentinker-kiosk.service &>/dev/null; then
+    echo "Kiosk:     RUNNING"
+else
+    echo "Kiosk:     STOPPED   (screentinker-logs to see why)"
+fi
+echo "Server:    ${SERVER_URL}"
+# Whether this player can actually reach the server it was pointed at — the first question worth
+# asking on a panel that is showing nothing.
+if curl -sf --max-time 5 "${SERVER_URL}/api/status" >/dev/null 2>&1; then
+    echo "Reachable: yes"
+else
+    echo "Reachable: NO  (network, DNS, or the server is down)"
+fi
+echo ""
+echo "Uptime:    \$(uptime -p)"
+echo "CPU Temp:  \$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || echo 'n/a')"
+echo "Disk:      \$(df -h / 2>/dev/null | tail -1 | awk '{print \$3 "/" \$2 " (" \$5 " used)"}')"
+echo "Memory:    \$(free -h | awk '/Mem:/ {print \$3 " / " \$2}')"
+echo ""
+PSTATUSEOF
+    chmod +x /usr/local/bin/screentinker-status
+
+    cat > /usr/local/bin/screentinker-logs << 'PLOGSEOF'
+#!/bin/bash
+# Only the kiosk exists on a player, so it is the default AND the only target. Accepting
+# "server" here and following an empty unit would be a worse answer than saying so.
+case "${1:-kiosk}" in
+    kiosk|all) journalctl -u screentinker-kiosk.service -f --no-hostname ;;
+    server)    echo "This is a player-only install — there is no local server. Point at your server's logs instead." ;;
+    *)         echo "Usage: screentinker-logs [kiosk]" ;;
+esac
+PLOGSEOF
+    chmod +x /usr/local/bin/screentinker-logs
 fi
 
 # ============================================================
@@ -666,12 +758,29 @@ cat > /etc/motd << 'MOTDEOF'
 
  Open-Source Digital Signage for Any Screen
 
+MOTDEOF
+
+# The command list is appended SEPARATELY and per-mode, because section 11 creates
+# screentinker-update on an All-in-One install only. A single hard-coded list here is what made a
+# Player-Only Pi advertise three commands it did not have, at every SSH login (#245). The MOTD is
+# the first thing an operator reads on a machine that is misbehaving, which makes it the worst
+# place in the system to be confidently wrong.
+if [ "$PLAYER_ONLY" = false ]; then
+    cat >> /etc/motd << 'MOTDCMDEOF'
  Commands:
    screentinker-status   Show system info and URLs
    screentinker-update   Pull latest and restart
    screentinker-logs     Follow logs (server|kiosk|all)
 
-MOTDEOF
+MOTDCMDEOF
+else
+    cat >> /etc/motd << 'MOTDCMDEOF'
+ Commands:
+   screentinker-status   Kiosk state, server URL, and whether it is reachable
+   screentinker-logs     Follow the kiosk log
+
+MOTDCMDEOF
+fi
 
 # ============================================================
 # 13. Clean up legacy remotedisplay naming
