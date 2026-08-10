@@ -47,6 +47,16 @@
    */
   var VideoModeConfigClass = tryRequire('@brightsign/videomodeconfiguration');
   var CecClass = tryRequire('@brightsign/cec');
+  // Reads the attached display's EDID. Read-only; the mode setter is videomodeconfiguration.
+  var VideoOutputClass = tryRequire('@brightsign/videooutput');
+  /*
+   * Node's standard library, present because the widget is created with nodejs_enabled. Used for
+   * the LAN address (see refreshTelemetry) exactly as BrightSign's own dev-cookbook templates do.
+   * tryRequire, not a bare require: in a plain browser there is no require at all, and this file
+   * must load there too.
+   */
+  var osModule = tryRequire('os');
+  var fsModule = tryRequire('fs');
 
   var port = null;
   if (MessagePortClass) {
@@ -879,6 +889,199 @@
             }, function () { /* sensor unavailable on this model */ });
           }
         } catch (e) { /* older OS without the call */ }
+      }
+
+      /*
+       * The address this player holds on the LAN — the one an integrator needs to reach its DWS on
+       * site, and the field the dashboard has always had a slot for and never been able to fill.
+       *
+       * This is Node's own `os.networkInterfaces()`, which is what BrightSign's dev-cookbook does in
+       * both html5-app-template/src/info.ts and src-js/info.js. The widget is created with
+       * nodejs_enabled, so the standard library is simply there — there is no @brightsign module for
+       * this, and looking for one is a dead end that cost a whole afternoon:
+       *
+       *   @brightsign/networkconfiguration EXISTS but exposes only callback,
+       *   getNeighborInformation and enableLeds — no config reader at all.
+       *   @brightsign/hostconfiguration has getConfig()/applyConfig(), but it returns HOST settings
+       *   (forwardingEnabled, hostName, loginPassword, nameServers…) with no address in them.
+       *
+       * Both verified by enumerating the live objects on our XT245 (FW 9.1.93.2), not from docs —
+       * the docs pages for the JavaScript API 404, and their own roNetworkConfiguration page links
+       * to one of the dead URLs. getCurrentConfig() is BrightScript-only.
+       *
+       * `internal` is Node's own loopback flag, which beats string-matching 127.*; the 169.254
+       * link-local a player assigns itself when DHCP never answered is still filtered by hand,
+       * because sending an operator to an unreachable address is worse than showing nothing.
+       *
+       * family is compared loosely: it is the string "IPv4" on the Node in this firmware (and in
+       * the cookbook), but became the number 4 in Node 18, and this file outlives firmwares.
+       */
+      if (osModule && typeof osModule.networkInterfaces === 'function') {
+        try {
+          var ifaces = osModule.networkInterfaces() || {};
+          var names = Object.keys(ifaces);
+          for (var ni = 0; ni < names.length; ni++) {
+            var addrs = ifaces[names[ni]] || [];
+            for (var ai = 0; ai < addrs.length; ai++) {
+              var a = addrs[ai];
+              if (!a || a.internal) continue;
+              var ip = String(a.address || '');
+              if (!ip) continue;
+              var isV4 = (a.family === 'IPv4' || a.family === 4);
+              var isV6 = (a.family === 'IPv6' || a.family === 6);
+              if (isV4 && !telemetry.local_ip && ip.indexOf('169.254.') !== 0) telemetry.local_ip = ip;
+              /*
+               * The v6 column has existed as long as the v4 one and has never held anything, on any
+               * player. The dashboard is already built for it — it renders a second card ONLY when
+               * this is set, precisely so the overwhelmingly v4 fleet does not pay screen space for
+               * an empty row.
+               *
+               * fe80:: is skipped for the same reason 169.254 is: a link-local address is scoped to
+               * one interface and cannot be dialled from a laptop across the office, so reporting it
+               * would send someone somewhere they cannot go. A ULA (fd00::/8) is kept — that IS
+               * reachable on the site network, which is the question this field answers.
+               */
+              if (isV6 && !telemetry.local_ip6 && ip.toLowerCase().indexOf('fe80') !== 0) {
+                // Node appends a zone id to link-locals ("fe80::1%eth0"); strip any that survives.
+                var pct = ip.indexOf('%');
+                telemetry.local_ip6 = pct === -1 ? ip : ip.slice(0, pct);
+              }
+            }
+          }
+        } catch (e) { /* no networking yet, or a firmware without it — stay silent */ }
+      }
+
+      /*
+       * WHICH SCREEN IS PLUGGED IN, and what the output is actually driving.
+       *
+       * The first question about a dark sign is "which panel is that?", and until now the dashboard
+       * could not answer it: screen_width/height are what the PAGE believes it has, which is the
+       * widget's own geometry, not what the hardware negotiated with the display.
+       *
+       * The output is chosen by SCREEN NUMBER, because a dual-output player registers one device
+       * row per output (?screen=N, see output_index) and each row must report its OWN panel — a box
+       * driving a lobby TV and a menu board would otherwise show the lobby TV twice.
+       *
+       * Both names are tried. Probed on an XT245 (FW 9.1.93.2): "hdmi" and "HDMI-1" both resolve to
+       * output 1 and answer with the same monitor, while a second output that does not exist fails
+       * cleanly — "hdmi2" throws from the constructor and "HDMI-2" rejects. So a single-output
+       * player simply reports nothing here rather than inventing a screen.
+       */
+      if (VideoOutputClass) {
+        var wantScreen = screenNumber();
+        var outNames = ['HDMI-' + wantScreen];
+        if (wantScreen === 1) outNames.push('hdmi');
+        for (var oi = 0; oi < outNames.length; oi++) {
+          try {
+            var vo = new VideoOutputClass(outNames[oi]);
+            if (!vo || typeof vo.getEdidIdentity !== 'function') continue;
+            var edid = vo.getEdidIdentity();
+            if (edid && typeof edid.then === 'function') {
+              edid.then(function (e) {
+                var mn = e && (e.monitorName || e.monitor_name);
+                if (typeof mn === 'string' && mn.trim()) telemetry.attached_display = mn.trim();
+              }, function () { /* no display on this output */ });
+            }
+          } catch (e) { /* no such output on this model */ }
+        }
+      }
+
+      /*
+       * The mode the output is negotiated to, which is not the same as the widget's size. Reported
+       * as WxH@Hz so it reads the way an installer would say it out loud. Our XT245 answers
+       * 1920x1200@60 — the panel's native mode, while the page reports its own 1920x1080 canvas.
+       */
+      if (VideoModeConfigClass) {
+        try {
+          var vmc = new VideoModeConfigClass();
+          if (vmc && typeof vmc.getActiveMode === 'function') {
+            var mode = vmc.getActiveMode();
+            if (mode && typeof mode.then === 'function') {
+              mode.then(function (m) {
+                if (!m) return;
+                var w = m.graphicsPlaneWidth || m.width;
+                var h = m.graphicsPlaneHeight || m.height;
+                var f = m.frequency || m.refreshRate;
+                if (w && h) telemetry.video_mode = w + 'x' + h + (f ? '@' + f : '');
+              }, function () { /* mode not readable on this firmware */ });
+            }
+          }
+        } catch (e) { /* older OS without the call */ }
+      }
+
+      /*
+       * Memory, load and REAL uptime — all from the same Node standard library the address above
+       * came from, and all previously NULL on every BrightSign in the fleet.
+       *
+       * uptime deliberately OVERRIDES the page's own figure. index.html sends
+       * performance.now()/1000, which is how long this PAGE has been up; a widget rebuilt by the
+       * watchdog resets it while the player has been running for weeks. os.uptime() is the machine,
+       * which is what an operator reading "uptime" means and what makes a reboot loop visible.
+       *
+       * cpu_usage is the 1-minute load average normalised by core count and expressed as a
+       * percentage, so it is comparable with what the other players report rather than being a raw
+       * load figure that means nothing next to them. Clamped, because load can exceed core count.
+       */
+      if (osModule) {
+        try {
+          if (typeof osModule.totalmem === 'function' && typeof osModule.freemem === 'function') {
+            var totalB = osModule.totalmem();
+            var freeB = osModule.freemem();
+            if (isFinite(totalB) && totalB > 0) telemetry.ram_total_mb = Math.round(totalB / 1048576);
+            if (isFinite(freeB) && freeB >= 0) telemetry.ram_free_mb = Math.round(freeB / 1048576);
+          }
+          if (typeof osModule.uptime === 'function') {
+            var up = osModule.uptime();
+            if (isFinite(up) && up > 0) telemetry.uptime_seconds = Math.round(up);
+          }
+          if (typeof osModule.loadavg === 'function' && typeof osModule.cpus === 'function') {
+            var la = osModule.loadavg();
+            var cores = (osModule.cpus() || []).length || 1;
+            if (la && isFinite(la[0])) {
+              var pct = Math.round((la[0] / cores) * 100);
+              telemetry.cpu_usage = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+            }
+          }
+        } catch (e) { /* a firmware without part of the stdlib — report what did work */ }
+      }
+
+      /*
+       * REAL disk, from statfs rather than the browser's storage quota.
+       *
+       * The quota is what this file used to report and it is not the disk: our XT245 answered
+       * "1026 MB total" for a 119 GB NVMe, because navigator.storage.estimate() describes the
+       * widget's cache budget. An operator reading that has been told something false about the
+       * machine, which is worse than an empty field.
+       *
+       * The volume is DISCOVERED, not assumed. BrightSign mounts storage under /storage (SD, SSD,
+       * USB), and which one a given player boots from varies — ours runs from an NVMe while the
+       * card slot is dead. So statfs every mount and keep the largest, which is the content volume
+       * on every shape of player. Falls back to the widget's own working directory.
+       */
+      if (fsModule && typeof fsModule.statfsSync === 'function') {
+        try {
+          var candidates = [];
+          try {
+            var mounts = fsModule.readdirSync('/storage') || [];
+            for (var mi = 0; mi < mounts.length; mi++) candidates.push('/storage/' + mounts[mi]);
+          } catch (e) { /* no /storage on this firmware */ }
+          candidates.push('/');
+          var bestTotal = 0, bestFree = 0;
+          for (var ci = 0; ci < candidates.length; ci++) {
+            try {
+              var st = fsModule.statfsSync(candidates[ci]);
+              if (!st || !isFinite(st.blocks) || !isFinite(st.bsize)) continue;
+              var tot = st.blocks * st.bsize;
+              // bavail is space usable by an unprivileged writer; bfree includes the reserve.
+              var fre = (isFinite(st.bavail) ? st.bavail : st.bfree) * st.bsize;
+              if (tot > bestTotal) { bestTotal = tot; bestFree = fre; }
+            } catch (e) { /* not a mount point */ }
+          }
+          if (bestTotal > 0) {
+            telemetry.storage_total_mb = Math.round(bestTotal / 1048576);
+            telemetry.storage_free_mb = Math.round(bestFree / 1048576);
+          }
+        } catch (e) { /* leave the quota estimate below to fill in */ }
       }
 
       /*

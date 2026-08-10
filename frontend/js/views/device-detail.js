@@ -577,10 +577,15 @@ async function loadDevice(deviceId, activeTab = null) {
           </div>` : ''}
           ${latestTelemetry.storage_total_mb ? `
           <div class="info-card">
-            <!-- Labelled "player storage", not "storage": on this family the number is the
-                 widget's cache quota, not the device filesystem. Same column as Android's real
-                 disk figures, so the label is what stops it being read as "the disk is 1 GB". -->
-            <div class="info-card-label">${t('device.info.player_storage')}</div>
+            <!-- This used to be labelled "player storage" because the number WAS the widget's
+                 cache quota rather than the disk — a real XT245 with a 119 GB NVMe reported
+                 "1026 MB", and the label was the only thing stopping that being read as the disk
+                 size. The bridge now reads the actual filesystem (statfs over the mounts under
+                 /storage, largest wins), so it means the same thing as Android's figure and is
+                 labelled the same. ⚠️ The bridge is served per page load, so a player that has not
+                 re-fetched it yet still reports the quota — see the CDN caching note in
+                 docs/player-parity.md before trusting a suspiciously round ~1 GB here. -->
+            <div class="info-card-label">${t('device.info.storage')}</div>
             <div class="info-card-value small" id="telStorage">${latestTelemetry.storage_free_mb != null ? t('device.info.size_free', { size: formatBytes(latestTelemetry.storage_free_mb) }) : '--'}</div>
             <div class="progress-bar">
               <div class="progress-bar-fill ${((latestTelemetry.storage_total_mb - latestTelemetry.storage_free_mb) / latestTelemetry.storage_total_mb) < 0.8 ? 'success' : 'warning'}"
@@ -592,6 +597,20 @@ async function loadDevice(deviceId, activeTab = null) {
           <div class="info-card">
             <div class="info-card-label">${t('device.info.temperature')}</div>
             <div class="info-card-value small" id="telTemp">${latestTelemetry.temperature_c}&deg;C</div>
+          </div>` : ''}
+          <!-- The physical panel, from its EDID, and the mode the output is negotiated to. Shown
+               only when the player reports them, like every other card here: a family that cannot
+               read its own output must not grow an empty row. On a dual-output player each device
+               row is one output, so this is THAT output's screen — not the box's first. -->
+          ${latestTelemetry.attached_display ? `
+          <div class="info-card">
+            <div class="info-card-label">${t('device.info.attached_display')}</div>
+            <div class="info-card-value small" id="telDisplay">${esc(latestTelemetry.attached_display)}</div>
+          </div>` : ''}
+          ${latestTelemetry.video_mode ? `
+          <div class="info-card">
+            <div class="info-card-label">${t('device.info.video_mode')}</div>
+            <div class="info-card-value small" id="telVideoMode">${esc(latestTelemetry.video_mode)}</div>
           </div>` : ''}
           ${device.android_version && !device.android_version.startsWith('Web/') ? `
           <div class="info-card">
@@ -638,11 +657,18 @@ async function loadDevice(deviceId, activeTab = null) {
             <div class="info-card-label">${t('device.clock.label')}</div>
             <div class="info-card-value small">${renderDeviceClock(device)}</div>
           </div>
-          ${device.android_version && !device.android_version.startsWith('Web/') ? `
+          <!-- Shown for Android as before, and now for ANY player that actually reports the value.
+               These were platform-gated when Android was the only family that could measure them;
+               a BrightSign widget runs with nodejs_enabled and the bridge reads os.totalmem/freemem
+               and the load average, so the numbers exist and were being thrown away by a gate that
+               asked what the device IS instead of what it SENT. Keeping the Android arm means a
+               panel that reports nothing still shows "--" there rather than losing its cards. -->
+          ${(device.android_version && !device.android_version.startsWith('Web/')) || latestTelemetry.ram_free_mb != null ? `
           <div class="info-card">
             <div class="info-card-label">${t('device.info.ram')}</div>
             <div class="info-card-value small" id="telRam">${latestTelemetry.ram_free_mb ? t('device.info.size_free', { size: formatBytes(latestTelemetry.ram_free_mb) }) : '--'}</div>
-          </div>
+          </div>` : ''}
+          ${(device.android_version && !device.android_version.startsWith('Web/')) || latestTelemetry.cpu_usage != null ? `
           <div class="info-card">
             <div class="info-card-label">${t('device.info.cpu_usage')}</div>
             <div class="info-card-value small" id="telCpu">${latestTelemetry.cpu_usage != null ? latestTelemetry.cpu_usage.toFixed(1) + '%' : '--'}</div>

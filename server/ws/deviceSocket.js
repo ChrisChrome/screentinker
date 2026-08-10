@@ -1202,8 +1202,9 @@ module.exports = function setupDeviceSocket(io) {
       if (telemetry && deviceExists(device_id)) {
         db.prepare(`
           INSERT INTO device_telemetry (device_id, battery_level, battery_charging, storage_free_mb, storage_total_mb,
-            ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds, local_ip, local_ip6, temperature_c)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ram_free_mb, ram_total_mb, cpu_usage, wifi_ssid, wifi_rssi, uptime_seconds, local_ip, local_ip6, temperature_c,
+            attached_display, video_mode)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           device_id,
           telemetry.battery_level ?? null,
@@ -1225,7 +1226,12 @@ module.exports = function setupDeviceSocket(io) {
           // Only a finite number is a reading. A panel with no sensor sends nothing, and NaN or
           // Infinity from a flaky one must land as "no reading" rather than poisoning the column.
           typeof telemetry.temperature_c === 'number' && Number.isFinite(telemetry.temperature_c)
-            ? telemetry.temperature_c : null
+            ? telemetry.temperature_c : null,
+          // Free text from the panel's EDID and the mode the output is driving. Trimmed and
+          // bounded like the address fields above: this is a string the DISPLAY chose, not one
+          // we control, and a monitor with a silly name must not be able to grow the row.
+          typeof telemetry.attached_display === 'string' ? telemetry.attached_display.trim().slice(0, 64) || null : null,
+          typeof telemetry.video_mode === 'string' ? telemetry.video_mode.trim().slice(0, 32) || null : null
         );
         pruneTelemetry(device_id);
 

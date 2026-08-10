@@ -34,13 +34,13 @@ const template = (() => {
   return SRC.slice(i + START.length, j);
 })();
 
-function render(device) {
+function render(device, telemetry) {
   const caps = Array.isArray(device.capabilities) ? device.capabilities : null;
   const sandbox = {
     device,
     caps,
     can: (cap) => (caps ? caps.includes(cap) : true),
-    latestTelemetry: {},
+    latestTelemetry: telemetry || {},
     diagWidget: null,
     // Stubs. Each returns something recognisable so a control cannot be "found" by accident.
     t: (key) => key,
@@ -101,6 +101,13 @@ const BRIGHTSIGN = {
 };
 
 const has = (html, id) => html.includes(`id="${id}"`);
+
+// Same harness, but with a telemetry payload — the cards above are driven by it.
+function renderWith(device, telemetry) {
+  const saved = renderWith._tel;
+  renderWith._tel = telemetry;
+  try { return render(device, telemetry); } finally { renderWith._tel = saved; }
+}
 
 test('a browser tab is no longer offered controls over a machine it cannot touch', () => {
   const html = render(WEB);
@@ -305,4 +312,59 @@ test('the shipped isAndroidDevice short-circuits brightsign, tizen and wgt BEFOR
   assert.equal(real({ client_type: 'apk', android_version: '11' }), true, 'a legacy Android panel');
   assert.equal(real({ android_version: '9' }), true, 'an Android panel paired before client_type existed');
   assert.equal(real(null), false, 'and it never throws on a missing device');
+});
+
+// Info cards follow the DATA, not the platform.
+//
+// RAM and CPU were gated on "is this an Android panel?", which was right when Android was the only
+// family that could measure them. A BrightSign widget runs with nodejs_enabled, so the bridge now
+// reads os.totalmem/freemem and the load average — the numbers arrive and the old gate threw them
+// away. Storage on that family was worse than absent: it reported the browser's cache quota, so a
+// 119 GB player displayed "1026 MB".
+
+const BS_WITH_DATA = {
+  platform: 'brightsign', hardware_model: 'XT245', hardware_os_version: '9.1.93.2',
+  android_version: 'Web/Safari/537.36', local_ip: '192.168.1.46',
+  capabilities: ['playback.video', 'audio.volume', 'remote.input'],
+};
+const REAL_TELEMETRY = {
+  storage_free_mb: 119563, storage_total_mb: 119616,
+  ram_free_mb: 2773, ram_total_mb: 3656, cpu_usage: 5, uptime_seconds: 149,
+};
+
+test('a BrightSign that reports memory and load gets cards for them', () => {
+  const html = renderWith(BS_WITH_DATA, REAL_TELEMETRY);
+  assert.ok(has(html, 'telRam'), 'RAM card missing on a player that reports RAM');
+  assert.ok(has(html, 'telCpu'), 'CPU card missing on a player that reports load');
+  assert.ok(has(html, 'telStorage'), 'and the disk it now measures for real');
+});
+
+test('Android keeps its cards whether or not a reading has arrived yet', () => {
+  // The old gate was platform-based, so an Android panel with no telemetry still showed "--".
+  // Switching to data-presence must not take that away — an empty card is a known state, a missing
+  // one reads as "this panel cannot do that".
+  for (const tel of [REAL_TELEMETRY, {}]) {
+    const html = renderWith({ client_type: 'apk', android_version: '13', capabilities: ['playback.video'] }, tel);
+    assert.ok(has(html, 'telRam'), 'Android must keep its RAM card');
+    assert.ok(has(html, 'telCpu'), 'Android must keep its CPU card');
+  }
+});
+
+test('a browser tab gains nothing — it measures none of this', () => {
+  const html = renderWith({ android_version: 'Web/Chrome', capabilities: ['playback.video'] }, {});
+  assert.equal(has(html, 'telRam'), false);
+  assert.equal(has(html, 'telCpu'), false);
+});
+
+test('the attached display and video mode get cards when reported', () => {
+  const html = renderWith(BS_WITH_DATA, { ...REAL_TELEMETRY, attached_display: 'CX101', video_mode: '1920x1200@60' });
+  assert.ok(has(html, 'telDisplay'), 'the panel EDID card');
+  assert.ok(has(html, 'telVideoMode'), 'the negotiated mode card');
+  assert.ok(html.includes('CX101'), 'and the monitor name itself');
+});
+
+test('a player that cannot read its output grows no empty rows', () => {
+  const html = renderWith(BS_WITH_DATA, REAL_TELEMETRY);
+  assert.equal(has(html, 'telDisplay'), false);
+  assert.equal(has(html, 'telVideoMode'), false);
 });
