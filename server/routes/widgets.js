@@ -427,29 +427,62 @@ load(); setInterval(load, 600000);
 }
 
 function renderRSS(c) {
+  // scroll_speed is authored in the UI as "seconds" (legacy field), but that used to be wired
+  // straight into animation-duration: a *fixed total time* for the whole strip to cross the
+  // screen. That makes the on-screen speed depend on how much content there is - a feed with
+  // many items gets dragged through in the same {scroll_speed}s as a feed with one, so it
+  // flies past far too fast, never lets the reader finish, and simply "jumps back to the
+  // start" once the fixed duration is up. Instead we treat scroll_speed as calibrating a
+  // constant px/sec rate (using one viewport-width per scroll_speed seconds as the reference,
+  // matching prior behaviour for content that fits in one screen), then measure the actual
+  // rendered width of the ticker and derive a duration long enough to move that full distance
+  // at the same constant speed - so more items simply take proportionally longer, and every
+  // item scrolls fully into and out of view before the loop restarts.
+  const scrollSpeedSec = safeNumber(c.scroll_speed, 30);
   return `<!DOCTYPE html><html><head><style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:${safeCss(c.background, '#000')}; height:100vh; overflow:hidden; font-family:-apple-system,sans-serif; }
-  .ticker { display:flex; align-items:center; height:100%; white-space:nowrap; animation:scroll ${safeNumber(c.scroll_speed, 30)}s linear infinite; }
+  .ticker { display:flex; align-items:center; height:100%; white-space:nowrap; position:relative; will-change:transform; }
   .item { display:inline-block; padding:0 40px; font-size:${safeNumber(c.font_size, 24)}px; color:${safeCss(c.color, '#FFF')}; }
   .item .title { font-weight:600; }
   .item .sep { margin:0 20px; opacity:0.3; }
-  @keyframes scroll { 0%{transform:translateX(100vw)} 100%{transform:translateX(-100%)} }
 </style></head><body>
 <div class="ticker" id="ticker"><div class="item">Loading feed...</div></div>
 <script>
+var SCROLL_SPEED_SEC = ${scrollSpeedSec};
+var ticker = document.getElementById('ticker');
+var anim = null;
+function restartAnimation() {
+  if (anim) { anim.cancel(); anim = null; }
+  var viewportW = window.innerWidth;
+  var tickerW = ticker.scrollWidth;
+  // Reference speed: one viewport-width travelled every SCROLL_SPEED_SEC seconds, so the
+  // default of 30s behaves the same as before for a feed that fits within one screen.
+  var pxPerSec = viewportW / SCROLL_SPEED_SEC;
+  var distance = viewportW + tickerW; // starts fully off-screen right, ends fully off-screen left
+  var durationMs = Math.max(1000, (distance / pxPerSec) * 1000);
+  anim = ticker.animate(
+    [
+      { transform: 'translateX(' + viewportW + 'px)' },
+      { transform: 'translateX(-' + tickerW + 'px)' },
+    ],
+    { duration: durationMs, iterations: Infinity, easing: 'linear' }
+  );
+}
 async function load() {
   try {
     const r = await fetch('https://api.rss2json.com/v1/api.json?rss_url=' + encodeURIComponent('${escapeHtml(c.feed_url) || ''}'));
     const d = await r.json();
     const items = d.items?.slice(0, ${safeNumber(c.max_items, 10)}) || [];
     // NOTE: RSS feed titles are external content - using textContent instead of innerHTML to prevent XSS
-    document.getElementById('ticker').innerHTML = items.map(i => {
+    ticker.innerHTML = items.map(i => {
       const el = document.createElement('span'); el.textContent = i.title;
       return '<div class="item"><span class="title">' + el.innerHTML + '</span></div><div class="item sep">•</div>';
     }).join('') || '<div class="item">No items</div>';
-  } catch(e) { document.getElementById('ticker').innerHTML = '<div class="item">Feed unavailable</div>'; }
+  } catch(e) { ticker.innerHTML = '<div class="item">Feed unavailable</div>'; }
+  requestAnimationFrame(restartAnimation);
 }
+window.addEventListener('resize', restartAnimation);
 load(); setInterval(load, 300000);
 </script></body></html>`;
 }
